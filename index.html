@@ -2,19 +2,21 @@
 <html>
 <head>
     <title>المعلم - بدء البث</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: sans-serif; background: #f0f0f0; text-align: center; padding-top: 50px; }
-        video { background: black; border: 2px solid #333; width: 80%; max-width: 600px; }
-        input { padding: 10px; font-size: 16px; margin-bottom: 10px; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
-        #broadcast-link { margin-top: 20px; font-size: 18px; background: #e0e0e0; padding: 15px; display: none; }
-        #status { margin-top: 15px; font-size: 18px; color: #555; }
+        body { font-family: sans-serif; background: #f0f0f0; text-align: center; padding: 20px; }
+        video { background: black; border: 2px solid #333; width: 100%; max-width: 600px; margin-top: 15px; }
+        input { padding: 10px; font-size: 16px; margin-bottom: 10px; width: 80%; max-width: 400px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; background-color: #007bff; color: white; border-radius: 5px; }
+        button:disabled { background-color: #cccccc; cursor: not-allowed; }
+        #broadcast-link { margin-top: 20px; font-size: 16px; background: #e0e0e0; padding: 15px; display: none; word-wrap: break-word; }
+        #status { margin-top: 15px; font-size: 18px; color: #555; font-weight: bold; }
     </style>
 </head>
 <body>
     <h1>صفحة المعلم</h1>
     <div id="setup">
-        <input type="text" id="broadcastId" placeholder="أدخل معرف البث هنا">
+        <input type="text" id="broadcastId" placeholder="أدخل معرف البث هنا (مثال: class101)">
         <br>
         <button id="startBtn">بدء البث</button>
     </div>
@@ -40,51 +42,70 @@
         const playerLink = document.getElementById('playerLink');
 
         startBtn.onclick = async () => {
+            startBtn.disabled = true;
             const broadcastId = broadcastIdInput.value.trim();
             if (!broadcastId) {
                 alert('الرجاء إدخال معرف للبث');
+                startBtn.disabled = false;
                 return;
             }
 
-            statusEl.innerText = 'الحالة: جارٍ الحصول على الكاميرا...';
-            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-            localVideo.srcObject = stream;
-            const track = stream.getVideoTracks()[0];
-            const params = { track, encodings: [{ rid: 'r0', maxBitrate: 100000 }] };
+            try {
+                statusEl.innerText = 'الحالة: جارٍ الحصول على الكاميرا...';
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = stream;
+                const videoTrack = stream.getVideoTracks()[0];
+                const audioTrack = stream.getAudioTracks()[0];
 
-            statusEl.innerText = 'الحالة: جارٍ الاتصال بالخادم...';
-            socket.emit('startBroadcast', broadcastId, async (transportParams) => {
-                if (transportParams.error) {
-                    alert(transportParams.error);
-                    statusEl.innerText = `الحالة: خطأ - ${transportParams.error}`;
-                    return;
-                }
+                statusEl.innerText = 'الحالة: جارٍ الاتصال بالخادم...';
                 
                 const routerRtpCapabilities = await new Promise(resolve => socket.emit('getRouterRtpCapabilities', resolve));
                 await device.load({ routerRtpCapabilities });
 
+                const transportParams = await new Promise(resolve => socket.emit('startBroadcast', broadcastId, resolve));
+                if (transportParams.error) {
+                    throw new Error(transportParams.error);
+                }
+                
                 producerTransport = device.createSendTransport(transportParams);
 
                 producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    socket.emit('connectProducerTransport', dtlsParameters);
-                    callback();
+                    try {
+                        socket.emit('connectProducerTransport', { dtlsParameters });
+                        callback();
+                    } catch (error) {
+                        errback(error);
+                    }
                 });
 
                 producerTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
-                    socket.emit('produce', { kind, rtpParameters }, ({ id }) => {
+                    try {
+                        const { id } = await new Promise(resolve => socket.emit('produce', { kind, rtpParameters }, resolve));
                         callback({ id });
-                    });
+                    } catch (error) {
+                        errback(error);
+                    }
                 });
 
-                await producerTransport.produce(params);
+                if (videoTrack) {
+                    await producerTransport.produce({ track: videoTrack });
+                }
+                if (audioTrack) {
+                    await producerTransport.produce({ track: audioTrack });
+                }
+
                 statusEl.innerText = 'الحالة: البث مباشر!';
                 
-                // إظهار رابط المشاركة
-                const link = `https://pokiklas123-wq.github.io/new-antik/player?id=${broadcastId}`;
+                const link = `https://pokiklas123-wq.github.io/new-antik/player.html?id=${broadcastId}`;
                 playerLink.href = link;
                 playerLink.innerText = link;
                 linkDiv.style.display = 'block';
-            });
+
+            } catch (error) {
+                console.error(error);
+                statusEl.innerText = `الحالة: فشل - ${error.message}`;
+                startBtn.disabled = false;
+            }
         };
     </script>
 </body>
