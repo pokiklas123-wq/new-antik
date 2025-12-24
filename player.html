@@ -15,10 +15,12 @@
     <video id="remoteVideo" autoplay playsinline></video>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
+    <!-- الإصلاح: استخدام النسخة المخصصة للمتصفح من المكتبة -->
+    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
     <script>
         const socket = io("https://new-antik-p2p-20.onrender.com");
-        const device = new mediasoup.Device();
+        const mediasoupClient = window.mediasoupClient; // استخدام الكائن الصحيح
+        const device = new mediasoupClient.Device();
         let consumerTransport;
 
         const remoteVideo = document.getElementById('remoteVideo');
@@ -32,18 +34,13 @@
         } else {
             socket.on('connect', () => {
                 socket.emit('checkBroadcast', broadcastId, ({ isBroadcasting }) => {
-                    if (isBroadcasting) {
-                        joinBroadcast();
-                    } else {
-                        messageEl.innerText = 'البث غير متاح حاليًا. في انتظار بدء المعلم للبث...';
-                    }
+                    if (isBroadcasting) joinBroadcast();
+                    else messageEl.innerText = 'البث غير متاح حاليًا. في انتظار بدء المعلم للبث...';
                 });
             });
 
             socket.on('newBroadcast', (newBroadcastId) => {
-                if (newBroadcastId === broadcastId && !consumerTransport) {
-                    joinBroadcast();
-                }
+                if (newBroadcastId === broadcastId && !consumerTransport) joinBroadcast();
             });
         }
 
@@ -68,9 +65,8 @@
 
                 const { rtpCapabilities } = device;
                 socket.emit('consume', { rtpCapabilities }, async (params) => {
-                    if (params.error) {
-                        throw new Error(params.error);
-                    }
+                    if (params.error) throw new Error(params.error);
+                    
                     const consumer = await consumerTransport.consume({
                         id: params.id,
                         producerId: params.producerId,
