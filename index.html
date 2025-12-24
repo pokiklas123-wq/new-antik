@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>المعلم - بدء البث</title>
+    <style>
+        body { font-family: sans-serif; background: #f0f0f0; text-align: center; padding-top: 50px; }
+        video { background: black; border: 2px solid #333; width: 80%; max-width: 600px; }
+        input { padding: 10px; font-size: 16px; margin-bottom: 10px; }
+        button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+        #broadcast-link { margin-top: 20px; font-size: 18px; background: #e0e0e0; padding: 15px; display: none; }
+        #status { margin-top: 15px; font-size: 18px; color: #555; }
+    </style>
+</head>
+<body>
+    <h1>صفحة المعلم</h1>
+    <div id="setup">
+        <input type="text" id="broadcastId" placeholder="أدخل معرف البث هنا">
+        <br>
+        <button id="startBtn">بدء البث</button>
+    </div>
+    <p id="status">الحالة: في الانتظار</p>
+    <video id="localVideo" autoplay muted playsinline></video>
+    <div id="broadcast-link">
+        <p>تم بدء البث بنجاح! شارك هذا الرابط مع الطلاب:</p>
+        <a href="#" id="playerLink" target="_blank"></a>
+    </div>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
+    <script>
+        const socket = io("https://new-antik-p2p-20.onrender.com"); // رابط سيرفر Render الخاص بك
+        const device = new mediasoup.Device();
+        let producerTransport;
+
+        const startBtn = document.getElementById('startBtn');
+        const broadcastIdInput = document.getElementById('broadcastId');
+        const localVideo = document.getElementById('localVideo');
+        const statusEl = document.getElementById('status');
+        const linkDiv = document.getElementById('broadcast-link');
+        const playerLink = document.getElementById('playerLink');
+
+        startBtn.onclick = async () => {
+            const broadcastId = broadcastIdInput.value.trim();
+            if (!broadcastId) {
+                alert('الرجاء إدخال معرف للبث');
+                return;
+            }
+
+            statusEl.innerText = 'الحالة: جارٍ الحصول على الكاميرا...';
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            localVideo.srcObject = stream;
+            const track = stream.getVideoTracks()[0];
+            const params = { track, encodings: [{ rid: 'r0', maxBitrate: 100000 }] };
+
+            statusEl.innerText = 'الحالة: جارٍ الاتصال بالخادم...';
+            socket.emit('startBroadcast', broadcastId, async (transportParams) => {
+                if (transportParams.error) {
+                    alert(transportParams.error);
+                    statusEl.innerText = `الحالة: خطأ - ${transportParams.error}`;
+                    return;
+                }
+                
+                const routerRtpCapabilities = await new Promise(resolve => socket.emit('getRouterRtpCapabilities', resolve));
+                await device.load({ routerRtpCapabilities });
+
+                producerTransport = device.createSendTransport(transportParams);
+
+                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                    socket.emit('connectProducerTransport', dtlsParameters);
+                    callback();
+                });
+
+                producerTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+                    socket.emit('produce', { kind, rtpParameters }, ({ id }) => {
+                        callback({ id });
+                    });
+                });
+
+                await producerTransport.produce(params);
+                statusEl.innerText = 'الحالة: البث مباشر!';
+                
+                // إظهار رابط المشاركة
+                const link = `https://pokiklas123-wq.github.io/new-antik/player?id=${broadcastId}`;
+                playerLink.href = link;
+                playerLink.innerText = link;
+                linkDiv.style.display = 'block';
+            });
+        };
+    </script>
+</body>
+</html>
