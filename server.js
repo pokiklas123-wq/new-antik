@@ -5,6 +5,7 @@ const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const mediasoup = require('mediasoup');
+const os = require('os');
 
 const app = express();
 const server = http.createServer(app);
@@ -20,13 +21,30 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 
 // ####################################################
-//           منطق Mediasoup (الوسيط)
+//           منطق Mediasoup (الوسيط) - نسخة محدثة
 // ####################################################
 let worker;
 let router;
 let producerTransport;
 let producer;
 let broadcastId = null; // لتخزين معرف البث الحالي
+
+const mediaCodecs = [
+  {
+    kind: 'audio',
+    mimeType: 'audio/opus',
+    clockRate: 48000,
+    channels: 2
+  },
+  {
+    kind: 'video',
+    mimeType: 'video/VP8',
+    clockRate: 90000,
+    parameters: {
+      'x-google-start-bitrate': 1000
+    }
+  }
+];
 
 const createWorker = async () => {
   worker = await mediasoup.createWorker({
@@ -38,7 +56,8 @@ const createWorker = async () => {
     setTimeout(() => process.exit(1), 2000);
   });
 
-  router = await worker.createWebRtcTransportRouter();
+  // الإصلاح: استخدام createRouter بدلاً من createWebRtcTransportRouter
+  router = await worker.createRouter({ mediaCodecs });
 };
 
 createWorker();
@@ -52,7 +71,6 @@ io.on('connection', (socket) => {
   // --- للمعلم (Broadcaster) ---
   socket.on('startBroadcast', async (id, callback) => {
     if (producer) {
-      // إذا كان هناك بث قائم بالفعل
       callback({ error: 'بث آخر قائم بالفعل.' });
       return;
     }
@@ -74,7 +92,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('connectProducerTransport', async (dtlsParameters) => {
+  socket.on('connectProducerTransport', async ({ dtlsParameters }) => {
     await producerTransport.connect({ dtlsParameters });
   });
 
@@ -82,8 +100,7 @@ io.on('connection', (socket) => {
     producer = await producerTransport.produce({ kind, rtpParameters });
     callback({ id: producer.id });
     console.log('تم إنشاء المنتج (Producer)، البث مباشر الآن.');
-    // إعلام جميع المشاهدين بوجود بث جديد
-    io.emit('newBroadcast');
+    io.emit('newBroadcast', broadcastId); // إرسال المعرف مع الحدث
   });
 
   // --- للمشاهد (Viewer) ---
@@ -92,19 +109,23 @@ io.on('connection', (socket) => {
   });
 
   socket.on('createConsumerTransport', async (callback) => {
-    const consumerTransport = await router.createWebRtcTransport({
-      listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
-      enableUdp: true,
-      enableTcp: true,
-      preferUdp: true,
-    });
-
-    callback({
-      id: consumerTransport.id,
-      iceParameters: consumerTransport.iceParameters,
-      iceCandidates: consumerTransport.iceCandidates,
-      dtlsParameters: consumerTransport.dtlsParameters,
-    });
+    try {
+      const consumerTransport = await router.createWebRtcTransport({
+        listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+      });
+      callback({
+        id: consumerTransport.id,
+        iceParameters: consumerTransport.iceParameters,
+        iceCandidates: consumerTransport.iceCandidates,
+        dtlsParameters: consumerTransport.dtlsParameters,
+      });
+    } catch (error) {
+      console.error('فشل إنشاء consumer transport:', error);
+      callback({ error: error.message });
+    }
   });
 
   socket.on('connectConsumerTransport', async ({ transportId, dtlsParameters }) => {
@@ -114,34 +135,46 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('consume', async ({ transportId, rtpCapabilities }, callback) => {
+  socket.on('consume', async ({ rtpCapabilities }, callback) => {
     if (!producer || !router.canConsume({ producerId: producer.id, rtpCapabilities })) {
       return callback({ error: 'لا يمكن استهلاك البث' });
     }
 
-    const transport = router.transports.find(t => t.id === transportId);
-    if (!transport) {
-      return callback({ error: 'لم يتم العثور على النقل' });
+    // إنشاء consumer transport جديد لكل مشاهد
+    try {
+        const transport = await router.createWebRtcTransport({
+            listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
+        });
+
+        const consumer = await transport.consume({
+            producerId: producer.id,
+            rtpCapabilities,
+            paused: true,
+        });
+
+        callback({
+            id: consumer.id,
+            producerId: consumer.producerId,
+            kind: consumer.kind,
+            rtpParameters: consumer.rtpParameters,
+            transportId: transport.id, // إرسال معرف النقل الجديد
+            iceParameters: transport.iceParameters,
+            iceCandidates: transport.iceCandidates,
+            dtlsParameters: transport.dtlsParameters,
+        });
+    } catch (error) {
+        console.error('فشل في Consume:', error);
+        callback({ error: error.message });
     }
-
-    const consumer = await transport.consume({
-      producerId: producer.id,
-      rtpCapabilities,
-      paused: true,
-    });
-
-    callback({
-      id: consumer.id,
-      producerId: consumer.producerId,
-      kind: consumer.kind,
-      rtpParameters: consumer.rtpParameters,
-    });
   });
 
-  socket.on('resume', async (consumerId) => {
-    const consumer = router.transports.flatMap(t => Array.from(t.consumers.values())).find(c => c.id === consumerId);
-    if (consumer) {
-      await consumer.resume();
+  socket.on('resume', async ({ consumerId }) => {
+    for (const transport of router.transports) {
+        const consumer = transport.consumers.get(consumerId);
+        if (consumer) {
+            await consumer.resume();
+            break;
+        }
     }
   });
   
