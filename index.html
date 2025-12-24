@@ -1,106 +1,74 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>المعلم - بدء البث</title>
+    <title>Broadcaster</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body { font-family: sans-serif; background: #f0f0f0; text-align: center; padding: 20px; }
-        video { background: black; border: 2px solid #333; width: 100%; max-width: 600px; margin-top: 15px; }
-        input { padding: 10px; font-size: 16px; margin-bottom: 10px; width: 80%; max-width: 400px; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; border: none; background-color: #007bff; color: white; border-radius: 5px; }
-        button:disabled { background-color: #cccccc; cursor: not-allowed; }
-        #broadcast-link { margin-top: 20px; font-size: 16px; background: #e0e0e0; padding: 15px; display: none; word-wrap: break-word; }
-        #status { margin-top: 15px; font-size: 18px; color: #555; font-weight: bold; }
-    </style>
 </head>
 <body>
-    <h1>v1صفحة المعلم</h1>
-    <div id="setup">
-        <input type="text" id="broadcastId" placeholder="أدخل معرف البث هنا (مثال: class101)">
-        <br>
-        <button id="startBtn">بدء البث</button>
-    </div>
-    <p id="status">الحالة: في الانتظار</p>
-    <video id="localVideo" autoplay muted playsinline></video>
-    <div id="broadcast-link">
-        <p>تم بدء البث بنجاح! شارك هذا الرابط مع الطلاب:</p>
-        <a href="#" id="playerLink" target="_blank"></a>
-    </div>
+    <h1>Broadcaster Page</h1>
+    <video id="localVideo" autoplay muted playsinline style="width:400px; border: 1px solid black;"></video>
+    <br>
+    <button id="startBtn">Start Broadcasting</button>
+    <p>Status: <span id="status">Waiting</span></p>
+    <p id="link-container" style="display:none;">Share this link: <a id="share-link" href="#" target="_blank"></a></p>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <!-- الإصلاح: استخدام النسخة المخصصة للمتصفح من المكتبة -->
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
     <script>
         const socket = io("https://new-antik-p2p-20.onrender.com");
-        const mediasoupClient = window.mediasoupClient; // استخدام الكائن الصحيح
+        const mediasoupClient = window.mediasoupClient;
         const device = new mediasoupClient.Device();
         let producerTransport;
 
         const startBtn = document.getElementById('startBtn');
-        const broadcastIdInput = document.getElementById('broadcastId');
         const localVideo = document.getElementById('localVideo');
         const statusEl = document.getElementById('status');
-        const linkDiv = document.getElementById('broadcast-link');
-        const playerLink = document.getElementById('playerLink');
+        const linkContainer = document.getElementById('link-container');
+        const shareLink = document.getElementById('share-link');
 
         startBtn.onclick = async () => {
             startBtn.disabled = true;
-            const broadcastId = broadcastIdInput.value.trim();
-            if (!broadcastId) {
-                alert('الرجاء إدخال معرف للبث');
-                startBtn.disabled = false;
-                return;
-            }
+            statusEl.innerText = 'Connecting...';
 
             try {
-                statusEl.innerText = 'الحالة: جارٍ طلب إذن الكاميرا والميكروفون...';
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = stream;
-                const videoTrack = stream.getVideoTracks()[0];
-                const audioTrack = stream.getAudioTracks()[0];
 
-                statusEl.innerText = 'الحالة: جارٍ الاتصال بالخادم...';
-                
-                const routerRtpCapabilities = await new Promise(resolve => socket.emit('getRouterRtpCapabilities', resolve));
+                const routerRtpCapabilities = await new Promise(r => socket.emit('getRouterRtpCapabilities', r));
                 await device.load({ routerRtpCapabilities });
 
-                const transportParams = await new Promise(resolve => socket.emit('startBroadcast', broadcastId, resolve));
-                if (transportParams.error) throw new Error(transportParams.error);
-                
+                const transportParams = await new Promise(r => socket.emit('createProducerTransport', r));
                 producerTransport = device.createSendTransport(transportParams);
 
-                producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                     socket.emit('connectProducerTransport', { dtlsParameters }, () => callback());
                 });
 
                 producerTransport.on('produce', async (parameters, callback, errback) => {
                     try {
-                        const { id } = await new Promise(resolve => socket.emit('produce', {
-                            kind: parameters.kind,
-                            rtpParameters: parameters.rtpParameters,
-                        }, resolve));
+                        const { id } = await new Promise(r => socket.emit('produce', { kind: parameters.kind, rtpParameters: parameters.rtpParameters }, r));
                         callback({ id });
-                    } catch (error) {
-                        errback(error);
+                    } catch (err) {
+                        errback(err);
                     }
                 });
 
+                const videoTrack = stream.getVideoTracks()[0];
                 if (videoTrack) await producerTransport.produce({ track: videoTrack });
+                
+                const audioTrack = stream.getAudioTracks()[0];
                 if (audioTrack) await producerTransport.produce({ track: audioTrack });
 
-                statusEl.innerText = 'الحالة: البث مباشر!';
-                
+                statusEl.innerText = 'Broadcasting!';
+                const broadcastId = Math.random().toString(36).substring(2, 8);
                 const link = `https://pokiklas123-wq.github.io/new-antik/player.html?id=${broadcastId}`;
-                playerLink.href = link;
-                playerLink.innerText = link;
-                linkDiv.style.display = 'block';
+                shareLink.href = link;
+                shareLink.innerText = link;
+                linkContainer.style.display = 'block';
 
-            } catch (error) {
-                console.error(error);
-                statusEl.innerText = `الحالة: فشل - ${error.message}`;
-                if (error.name === 'NotAllowedError') {
-                    statusEl.innerText = 'الحالة: فشل - لم يتم منح إذن استخدام الكاميرا/الميكروفون.';
-                }
+            } catch (err) {
+                console.error(err);
+                statusEl.innerText = 'Failed!';
                 startBtn.disabled = false;
             }
         };
