@@ -30,7 +30,7 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
     <script>
-        const socket = io("https://new-antik-p2p-20.onrender.com"); // رابط سيرفر Render الخاص بك
+        const socket = io("https://new-antik-p2p-20.onrender.com");
         const device = new mediasoup.Device();
         let producerTransport;
 
@@ -51,7 +51,8 @@
             }
 
             try {
-                statusEl.innerText = 'الحالة: جارٍ الحصول على الكاميرا...';
+                statusEl.innerText = 'الحالة: جارٍ طلب إذن الكاميرا والميكروفون...';
+                // طلب الأذونات أولاً وعرض الفيديو المحلي
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = stream;
                 const videoTrack = stream.getVideoTracks()[0];
@@ -78,9 +79,12 @@
                     }
                 });
 
-                producerTransport.on('produce', async ({ kind, rtpParameters }, callback, errback) => {
+                producerTransport.on('produce', async (parameters, callback, errback) => {
                     try {
-                        const { id } = await new Promise(resolve => socket.emit('produce', { kind, rtpParameters }, resolve));
+                        const { id } = await new Promise(resolve => socket.emit('produce', {
+                            kind: parameters.kind,
+                            rtpParameters: parameters.rtpParameters,
+                        }, resolve));
                         callback({ id });
                     } catch (error) {
                         errback(error);
@@ -104,6 +108,9 @@
             } catch (error) {
                 console.error(error);
                 statusEl.innerText = `الحالة: فشل - ${error.message}`;
+                if (error.name === 'NotAllowedError') {
+                    statusEl.innerText = 'الحالة: فشل - لم يتم منح إذن استخدام الكاميرا/الميكروفون.';
+                }
                 startBtn.disabled = false;
             }
         };
