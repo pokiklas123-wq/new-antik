@@ -28,10 +28,12 @@
     </div>
 
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
+    <!-- الإصلاح: استخدام النسخة المخصصة للمتصفح من المكتبة -->
+    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
     <script>
         const socket = io("https://new-antik-p2p-20.onrender.com");
-        const device = new mediasoup.Device();
+        const mediasoupClient = window.mediasoupClient; // استخدام الكائن الصحيح
+        const device = new mediasoupClient.Device();
         let producerTransport;
 
         const startBtn = document.getElementById('startBtn');
@@ -52,7 +54,6 @@
 
             try {
                 statusEl.innerText = 'الحالة: جارٍ طلب إذن الكاميرا والميكروفون...';
-                // طلب الأذونات أولاً وعرض الفيديو المحلي
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
                 localVideo.srcObject = stream;
                 const videoTrack = stream.getVideoTracks()[0];
@@ -64,19 +65,12 @@
                 await device.load({ routerRtpCapabilities });
 
                 const transportParams = await new Promise(resolve => socket.emit('startBroadcast', broadcastId, resolve));
-                if (transportParams.error) {
-                    throw new Error(transportParams.error);
-                }
+                if (transportParams.error) throw new Error(transportParams.error);
                 
                 producerTransport = device.createSendTransport(transportParams);
 
-                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    try {
-                        socket.emit('connectProducerTransport', { dtlsParameters });
-                        callback();
-                    } catch (error) {
-                        errback(error);
-                    }
+                producerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                    socket.emit('connectProducerTransport', { dtlsParameters }, () => callback());
                 });
 
                 producerTransport.on('produce', async (parameters, callback, errback) => {
@@ -91,12 +85,8 @@
                     }
                 });
 
-                if (videoTrack) {
-                    await producerTransport.produce({ track: videoTrack });
-                }
-                if (audioTrack) {
-                    await producerTransport.produce({ track: audioTrack });
-                }
+                if (videoTrack) await producerTransport.produce({ track: videoTrack });
+                if (audioTrack) await producerTransport.produce({ track: audioTrack });
 
                 statusEl.innerText = 'الحالة: البث مباشر!';
                 
