@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>المشاهد - مشاهدة البث</title>
+    <style>
+        body { font-family: sans-serif; background: #222; color: white; text-align: center; padding-top: 50px; margin: 0; }
+        video { background: black; border: 2px solid #555; width: 90%; max-width: 800px; }
+        #message { font-size: 24px; }
+    </style>
+</head>
+<body>
+    <h1>مشاهدة البث المباشر</h1>
+    <p id="message">جارٍ البحث عن البث...</p>
+    <video id="remoteVideo" autoplay playsinline></video>
+
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
+    <script>
+        const socket = io("https://new-antik-p2p-20.onrender.com"); // رابط سيرفر Render الخاص بك
+        const device = new mediasoup.Device();
+        let consumerTransport;
+
+        const remoteVideo = document.getElementById('remoteVideo');
+        const messageEl = document.getElementById('message');
+
+        // استخراج معرف البث من رابط الصفحة
+        const params = new URLSearchParams(window.location.search);
+        const broadcastId = params.get('id');
+
+        if (!broadcastId) {
+            messageEl.innerText = 'خطأ: لم يتم تحديد معرف البث في الرابط.';
+        } else {
+            socket.on('connect', () => {
+                // التحقق أولاً إذا كان البث موجودًا
+                socket.emit('checkBroadcast', broadcastId, ({ isBroadcasting }) => {
+                    if (isBroadcasting) {
+                        messageEl.innerText = 'تم العثور على البث! جارٍ الاتصال...';
+                        startConsuming();
+                    } else {
+                        messageEl.innerText = 'البث غير متاح حاليًا. في انتظار بدء المعلم للبث...';
+                        // الاستماع لحدث بدء البث
+                        socket.on('newBroadcast', () => {
+                            // إعادة التحقق عند وصول بث جديد
+                            socket.emit('checkBroadcast', broadcastId, ({ isBroadcasting }) => {
+                                if (isBroadcasting) {
+                                    messageEl.innerText = 'بدأ البث! جارٍ الاتصال...';
+                                    startConsuming();
+                                }
+                            });
+                        });
+                    }
+                });
+            });
+        }
+
+        async function startConsuming() {
+            const routerRtpCapabilities = await new Promise(resolve => socket.emit('getRouterRtpCapabilities', resolve));
+            await device.load({ routerRtpCapabilities });
+
+            socket.emit('createConsumerTransport', async (transportParams) => {
+                consumerTransport = device.createRecvTransport(transportParams);
+
+                consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
+                    socket.emit('connectConsumerTransport', { transportId: consumerTransport.id, dtlsParameters });
+                    callback();
+                });
+
+                socket.emit('consume', { transportId: consumerTransport.id, rtpCapabilities: device.rtpCapabilities }, async ({ id, producerId, kind, rtpParameters }) => {
+                    const consumer = await consumerTransport.consume({ id, producerId, kind, rtpParameters });
+                    const stream = new MediaStream();
+                    stream.addTrack(consumer.track);
+                    remoteVideo.srcObject = stream;
+                    messageEl.style.display = 'none'; // إخفاء الرسالة عند بدء الفيديو
+
+                    socket.emit('resume', id);
+                });
+            });
+        }
+    </script>
+</body>
+</html>
