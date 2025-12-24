@@ -1,14 +1,14 @@
 {
-  "name": "new-antik-server",
+  "name": "sfu-working-example-server",
   "version": "1.0.0",
-  "description": "Mediasoup SFU server for new-antik",
-  "main": "src/server.js",
+  "description": "A working SFU server for Render",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "express": "^4.18.2",
-    "mediasoup": "^3.11.16",
+    "mediasoup": "^3.12.4",
     "socket.io": "^4.7.2"
   },
   "engines": {
