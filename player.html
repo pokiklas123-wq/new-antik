@@ -2,10 +2,11 @@
 <html>
 <head>
     <title>المشاهد - مشاهدة البث</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: sans-serif; background: #222; color: white; text-align: center; padding-top: 50px; margin: 0; }
-        video { background: black; border: 2px solid #555; width: 90%; max-width: 800px; }
-        #message { font-size: 24px; }
+        body { font-family: sans-serif; background: #222; color: white; text-align: center; padding: 20px; margin: 0; }
+        video { background: black; border: 2px solid #555; width: 100%; max-width: 800px; }
+        #message { font-size: 24px; font-weight: bold; }
     </style>
 </head>
 <body>
@@ -16,14 +17,13 @@
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/lib/index.js"></script>
     <script>
-        const socket = io("https://new-antik-p2p-20.onrender.com"); // رابط سيرفر Render الخاص بك
+        const socket = io("https://new-antik-p2p-20.onrender.com");
         const device = new mediasoup.Device();
         let consumerTransport;
 
         const remoteVideo = document.getElementById('remoteVideo');
         const messageEl = document.getElementById('message');
 
-        // استخراج معرف البث من رابط الصفحة
         const params = new URLSearchParams(window.location.search);
         const broadcastId = params.get('id');
 
@@ -31,33 +31,31 @@
             messageEl.innerText = 'خطأ: لم يتم تحديد معرف البث في الرابط.';
         } else {
             socket.on('connect', () => {
-                // التحقق أولاً إذا كان البث موجودًا
                 socket.emit('checkBroadcast', broadcastId, ({ isBroadcasting }) => {
                     if (isBroadcasting) {
-                        messageEl.innerText = 'تم العثور على البث! جارٍ الاتصال...';
-                        startConsuming();
+                        joinBroadcast();
                     } else {
                         messageEl.innerText = 'البث غير متاح حاليًا. في انتظار بدء المعلم للبث...';
-                        // الاستماع لحدث بدء البث
-                        socket.on('newBroadcast', () => {
-                            // إعادة التحقق عند وصول بث جديد
-                            socket.emit('checkBroadcast', broadcastId, ({ isBroadcasting }) => {
-                                if (isBroadcasting) {
-                                    messageEl.innerText = 'بدأ البث! جارٍ الاتصال...';
-                                    startConsuming();
-                                }
-                            });
-                        });
                     }
                 });
             });
+
+            socket.on('newBroadcast', (newBroadcastId) => {
+                if (newBroadcastId === broadcastId && !consumerTransport) {
+                    joinBroadcast();
+                }
+            });
         }
 
-        async function startConsuming() {
-            const routerRtpCapabilities = await new Promise(resolve => socket.emit('getRouterRtpCapabilities', resolve));
-            await device.load({ routerRtpCapabilities });
+        async function joinBroadcast() {
+            try {
+                messageEl.innerText = 'تم العثور على البث! جارٍ الاتصال...';
+                const routerRtpCapabilities = await new Promise(r => socket.emit('getRouterRtpCapabilities', r));
+                await device.load({ routerRtpCapabilities });
 
-            socket.emit('createConsumerTransport', async (transportParams) => {
+                const transportParams = await new Promise(r => socket.emit('createConsumerTransport', r));
+                if (transportParams.error) throw new Error(transportParams.error);
+
                 consumerTransport = device.createRecvTransport(transportParams);
 
                 consumerTransport.on('connect', ({ dtlsParameters }, callback, errback) => {
@@ -65,16 +63,30 @@
                     callback();
                 });
 
-                socket.emit('consume', { transportId: consumerTransport.id, rtpCapabilities: device.rtpCapabilities }, async ({ id, producerId, kind, rtpParameters }) => {
-                    const consumer = await consumerTransport.consume({ id, producerId, kind, rtpParameters });
-                    const stream = new MediaStream();
-                    stream.addTrack(consumer.track);
-                    remoteVideo.srcObject = stream;
-                    messageEl.style.display = 'none'; // إخفاء الرسالة عند بدء الفيديو
+                const stream = new MediaStream();
+                remoteVideo.srcObject = stream;
 
-                    socket.emit('resume', id);
+                const { rtpCapabilities } = device;
+                socket.emit('consume', { rtpCapabilities }, async (params) => {
+                    if (params.error) {
+                        throw new Error(params.error);
+                    }
+                    const consumer = await consumerTransport.consume({
+                        id: params.id,
+                        producerId: params.producerId,
+                        kind: params.kind,
+                        rtpParameters: params.rtpParameters,
+                    });
+                    stream.addTrack(consumer.track);
+                    socket.emit('resume', { consumerId: consumer.id });
                 });
-            });
+                
+                messageEl.style.display = 'none';
+
+            } catch (error) {
+                console.error(error);
+                messageEl.innerText = `فشل الاتصال بالبث: ${error.message}`;
+            }
         }
     </script>
 </body>
