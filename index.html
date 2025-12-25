@@ -1,131 +1,57 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <title>المذيع - لوحة التحكم</title>
+    <title>المعلم - بدء البث</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <style>
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 20px; background: #f4f4f9; color: #333; }
-        h1 { color: #444; }
-        video { width: 100%; max-width: 600px; background: #000; border-radius: 12px; margin: 20px 0; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
-        button { padding: 12px 25px; font-size: 18px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 8px; transition: 0.3s; }
-        button:hover { background: #0056b3; }
-        button:disabled { background: #ccc; cursor: not-allowed; }
-        .status { margin-top: 15px; font-weight: bold; font-size: 1.1em; }
-        #link-area { display: none; margin-top: 20px; padding: 15px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
-        #share-link { color: #007bff; text-decoration: none; word-break: break-all; }
-    </style>
 </head>
 <body>
-    <h1>🎥 المذيع - بدء البث</h1>
-    
-    <video id="localVideo" autoplay muted playsinline></video>
-    
-    <div>
-        <button id="startBtn">▶ بدء البث</button>
-    </div>
+    <h2>بدء بث جديد</h2>
+    <video id="localVideo" autoplay muted playsinline style="width:400px; border:1px solid #ccc;"></video><br>
+    <button id="startBtn">بدء البث</button>
+    <p>الحالة: <span id="status">في انتظار التشغيل...</span></p>
+    <p id="link-container" style="display:none; background:#e9f7ef; padding:10px; border-radius:5px; word-break:break-all;">
+        <strong>🔗 رابط البث للمشاهدين:</strong><br>
+        <a id="share-link" href="#" target="_blank"></a>
+    </p>
 
-    <p class="status">الحالة: <span id="status">جاهز للاتصال</span></p>
-
-    <div id="link-area">
-        <p>✅ تم بدء البث! أرسل هذا الرابط للمشاهدين:</p>
-        <a id="share-link" href="#" target="_blank">جاري التجهيز...</a>
-    </div>
-
-    <!-- مكتبات Socket.io و Mediasoup -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
-
     <script>
-        // ⚠️ هام: تأكد أن هذا الرابط يطابق رابط سيرفرك على Render
         const socket = io("https://new-antik-p2p-20.onrender.com");
-        
         const mediasoupClient = window.mediasoupClient;
         const device = new mediasoupClient.Device();
-        let producerTransport;
-        let videoProducer;
-        let audioProducer;
-
-        const startBtn = document.getElementById('startBtn');
-        const localVideo = document.getElementById('localVideo');
-        const statusEl = document.getElementById('status');
-        const linkArea = document.getElementById('link-area');
-        const shareLink = document.getElementById('share-link');
-
-        // تشغيل الكاميرا محلياً أولاً للتجربة
-        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
-            .then((stream) => {
-                localVideo.srcObject = stream;
-            })
-            .catch((err) => {
-                console.error("خطأ في الوصول للكاميرا:", err);
-                statusEl.innerText = "يرجى السماح للكاميرا والميكروفون";
-            });
+        let producerTransport, videoProducer, audioProducer, broadcastId = "";
+        const startBtn = document.getElementById('startBtn'), localVideo = document.getElementById('localVideo'),
+              statusEl = document.getElementById('status'), linkContainer = document.getElementById('link-container'),
+              shareLink = document.getElementById('share-link');
 
         startBtn.onclick = async () => {
-            startBtn.disabled = true;
-            statusEl.innerText = 'جاري الاتصال بالخادم...';
-
+            startBtn.disabled = true; statusEl.innerText = 'جاري الاتصال...';
             try {
-                const stream = localVideo.srcObject;
-                if (!stream) throw new Error("لا توجد كاميرا");
-
-                // 1. تحميل إعدادات الراوتر
-                const routerRtpCapabilities = await new Promise(resolve => {
-                    socket.emit('getRouterRtpCapabilities', (data) => resolve(data));
-                });
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                localVideo.srcObject = stream; broadcastId = Math.random().toString(36).substring(2, 10);
+                const transportParams = await new Promise(r => socket.emit('createProducerTransport', { roomId: broadcastId }, r));
+                if (transportParams.error) throw new Error(transportParams.error);
+                const routerRtpCapabilities = await new Promise(r => socket.emit('getRouterRtpCapabilities', { roomId: broadcastId }, r));
                 await device.load({ routerRtpCapabilities });
-
-                // 2. إنشاء Transport للإرسال
-                const transportParams = await new Promise((resolve, reject) => {
-                    socket.emit('createProducerTransport', (data) => {
-                        if (data.error) reject(data.error);
-                        else resolve(data);
+                producerTransport = device.createSendTransport(transportParams);
+                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
+                    socket.emit('connectProducerTransport', { transportId: producerTransport.id, dtlsParameters }, (res) => {
+                        res.success ? callback() : errback(new Error(res.error));
                     });
                 });
-
-                producerTransport = device.createSendTransport(transportParams);
-
-                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    socket.emit('connectProducerTransport', { dtlsParameters }, () => callback());
-                });
-
                 producerTransport.on('produce', async (parameters, callback, errback) => {
-                    try {
-                        const { id } = await new Promise(resolve => {
-                            socket.emit('produce', { 
-                                kind: parameters.kind, 
-                                rtpParameters: parameters.rtpParameters 
-                            }, resolve);
-                        });
-                        callback({ id });
-                    } catch (err) {
-                        errback(err);
-                    }
+                    const { id } = await new Promise(r => socket.emit('produce', { transportId: producerTransport.id, kind: parameters.kind, rtpParameters: parameters.rtpParameters }, r));
+                    callback({ id });
                 });
-
-                // 3. بدء البث الفعلي
-                const videoTrack = stream.getVideoTracks()[0];
-                const audioTrack = stream.getAudioTracks()[0];
-
-                if (videoTrack) videoProducer = await producerTransport.produce({ track: videoTrack });
-                if (audioTrack) audioProducer = await producerTransport.produce({ track: audioTrack });
-
-                statusEl.innerText = '🔴 البث مباشر الآن';
-                statusEl.style.color = 'red';
-
-                // إظهار الرابط
-                linkArea.style.display = 'block';
-                // نفترض أن ملف المشاهد اسمه player.html وموجود في نفس المجلد
-                const currentUrl = window.location.href;
-                const viewerUrl = currentUrl.substring(0, currentUrl.lastIndexOf('/')) + '/player.html';
-                shareLink.href = viewerUrl;
-                shareLink.innerText = viewerUrl;
-
+                const videoTrack = stream.getVideoTracks()[0]; if (videoTrack) videoProducer = await producerTransport.produce({ track: videoTrack });
+                const audioTrack = stream.getAudioTracks()[0]; if (audioTrack) audioProducer = await producerTransport.produce({ track: audioTrack });
+                statusEl.innerText = '🔴 البث مباشر الآن!'; statusEl.style.color = 'green';
+                const link = `https://pokiklas123-wq.github.io/new-antik/player.html?id=${broadcastId}`;
+                shareLink.href = link; shareLink.innerText = link; linkContainer.style.display = 'block';
             } catch (err) {
-                console.error("خطأ في البث:", err);
-                statusEl.innerText = 'فشل الاتصال: ' + err.message;
-                startBtn.disabled = false;
+                console.error(err); statusEl.innerText = '❌ فشل البث!'; statusEl.style.color = 'red';
+                startBtn.disabled = false; alert(`خطأ: ${err.message}`);
             }
         };
     </script>
