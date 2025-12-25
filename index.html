@@ -1,59 +1,537 @@
 <!DOCTYPE html>
-<html>
+<html lang="ar" dir="rtl">
 <head>
-    <title>المعلم - بدء البث</title>
+    <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎥 لوحة البث المباشر - المعلم</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        :root {
+            --primary: #4361ee;
+            --success: #06d6a0;
+            --danger: #ef476f;
+            --warning: #ffd166;
+            --dark: #1a1a2e;
+            --light: #f8f9fa;
+        }
+        
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            color: var(--dark);
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        header {
+            background: var(--primary);
+            color: white;
+            padding: 25px;
+            text-align: center;
+        }
+        
+        .logo {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+        
+        .status-bar {
+            display: flex;
+            justify-content: space-between;
+            background: var(--dark);
+            color: white;
+            padding: 15px 25px;
+            font-size: 0.9rem;
+        }
+        
+        .main-content {
+            display: grid;
+            grid-template-columns: 1fr 300px;
+            gap: 20px;
+            padding: 25px;
+        }
+        
+        .video-section {
+            background: black;
+            border-radius: 15px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        video {
+            width: 100%;
+            height: 400px;
+            object-fit: cover;
+        }
+        
+        .video-overlay {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            right: 20px;
+            background: rgba(0,0,0,0.7);
+            padding: 15px;
+            border-radius: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .controls {
+            display: flex;
+            gap: 15px;
+        }
+        
+        .btn {
+            padding: 12px 25px;
+            border: none;
+            border-radius: 50px;
+            font-size: 1rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            transition: all 0.3s ease;
+            font-weight: bold;
+        }
+        
+        .btn-primary {
+            background: var(--primary);
+            color: white;
+        }
+        
+        .btn-success {
+            background: var(--success);
+            color: white;
+        }
+        
+        .btn-danger {
+            background: var(--danger);
+            color: white;
+        }
+        
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        }
+        
+        .sidebar {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 20px;
+        }
+        
+        .stats-card {
+            background: white;
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.05);
+        }
+        
+        .stat-number {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: var(--primary);
+        }
+        
+        .viewers-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .viewer-item {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        .viewer-avatar {
+            width: 40px;
+            height: 40px;
+            background: var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-left: 10px;
+            color: white;
+        }
+        
+        .share-box {
+            background: #e9f7ef;
+            padding: 20px;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        
+        .share-link {
+            background: white;
+            padding: 10px;
+            border-radius: 5px;
+            word-break: break-all;
+            margin: 10px 0;
+            border: 2px dashed #06d6a0;
+        }
+        
+        @media (max-width: 768px) {
+            .main-content {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
 </head>
 <body>
-    <h2>بدء بث جديد</h2>
-    <video id="localVideo" autoplay muted playsinline style="width:400px; border:1px solid #ccc;"></video><br>
-    <button id="startBtn">بدء البث</button>
-    <p>الحالة: <span id="status">في انتظار التشغيل...</span></p>
-    <p id="link-container" style="display:none; background:#e9f7ef; padding:10px; border-radius:5px; word-break:break-all;">
-        <strong>🔗 رابط البث للمشاهدين:</strong><br>
-        <a id="share-link" href="#" target="_blank"></a>
-    </p>
-
+    <div class="container">
+        <header>
+            <div class="logo">
+                <i class="fas fa-broadcast-tower"></i>
+            </div>
+            <h1>لوحة البث المباشر - المعلم</h1>
+            <p>نظام البث المتقدم - يدعم حتى 20 مشاهد</p>
+        </header>
+        
+        <div class="status-bar" id="statusBar">
+            <div id="connectionStatus">🔴 غير متصل</div>
+            <div id="roomStatus">لم يتم إنشاء غرفة</div>
+            <div id="timeDisplay">--:--:--</div>
+        </div>
+        
+        <div class="main-content">
+            <div class="video-section">
+                <video id="localVideo" autoplay muted playsinline></video>
+                
+                <div class="video-overlay">
+                    <div class="broadcast-info">
+                        <h3 id="broadcastTitle">البث المباشر</h3>
+                        <div id="broadcastTimer">⏱️ 00:00:00</div>
+                    </div>
+                    
+                    <div class="controls">
+                        <button id="startBtn" class="btn btn-success">
+                            <i class="fas fa-play"></i> بدء البث
+                        </button>
+                        <button id="stopBtn" class="btn btn-danger" disabled>
+                            <i class="fas fa-stop"></i> إيقاف
+                        </button>
+                        <button id="toggleVideo" class="btn">
+                            <i class="fas fa-video"></i> كاميرا
+                        </button>
+                        <button id="toggleAudio" class="btn">
+                            <i class="fas fa-microphone"></i> ميكروفون
+                        </button>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sidebar">
+                <div class="stats-card">
+                    <h3><i class="fas fa-chart-line"></i> إحصائيات البث</h3>
+                    <div class="stat-number" id="viewerCount">0</div>
+                    <p>مشاهدين مباشرين</p>
+                </div>
+                
+                <div class="stats-card">
+                    <h3><i class="fas fa-users"></i> المشاهدين</h3>
+                    <div class="viewers-list" id="viewersList">
+                        <div class="viewer-item">
+                            <div class="viewer-avatar">
+                                <i class="fas fa-user"></i>
+                            </div>
+                            <div>جاري التحميل...</div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="share-box">
+                    <h3><i class="fas fa-share-alt"></i> مشاركة البث</h3>
+                    <div class="share-link" id="shareLink">
+                        https://your-domain.com/viewer.html?room=class123
+                    </div>
+                    <button onclick="copyShareLink()" class="btn btn-primary">
+                        <i class="fas fa-copy"></i> نسخ الرابط
+                    </button>
+                </div>
+                
+                <div class="stats-card">
+                    <h3><i class="fas fa-info-circle"></i> معلومات</h3>
+                    <p>الإصدار: 2.0.0</p>
+                    <p>السعة: 20 مشاهد</p>
+                    <p>الحالة: <span id="techStatus">جاهز</span></p>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- أحدث إصدار من Socket.io -->
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
     <script>
-        const socket = io("https://new-antik-p2p-20.onrender.com");
-        const mediasoupClient = window.mediasoupClient;
-        const device = new mediasoupClient.Device();
-        let producerTransport, videoProducer, audioProducer, broadcastId = "";
-        const startBtn = document.getElementById('startBtn'), localVideo = document.getElementById('localVideo'),
-              statusEl = document.getElementById('status'), linkContainer = document.getElementById('link-container'),
-              shareLink = document.getElementById('share-link');
-
-        startBtn.onclick = async () => {
-            startBtn.disabled = true; statusEl.innerText = 'جاري الاتصال...';
+        // تكوينات
+        const SERVER_URL = window.location.hostname === 'localhost' 
+            ? 'http://localhost:3000' 
+            : 'https://your-server.com';
+        
+        // متغيرات التطبيق
+        let socket = null;
+        let localStream = null;
+        let roomId = '';
+        let broadcastStartTime = null;
+        let timerInterval = null;
+        let viewers = new Map();
+        
+        // عناصر DOM
+        const elements = {
+            startBtn: document.getElementById('startBtn'),
+            stopBtn: document.getElementById('stopBtn'),
+            localVideo: document.getElementById('localVideo'),
+            viewerCount: document.getElementById('viewerCount'),
+            viewersList: document.getElementById('viewersList'),
+            shareLink: document.getElementById('shareLink'),
+            connectionStatus: document.getElementById('connectionStatus'),
+            roomStatus: document.getElementById('roomStatus'),
+            broadcastTimer: document.getElementById('broadcastTimer'),
+            techStatus: document.getElementById('techStatus')
+        };
+        
+        // تهيئة التطبيق
+        async function init() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                localVideo.srcObject = stream; broadcastId = Math.random().toString(36).substring(2, 10);
-                const transportParams = await new Promise(r => socket.emit('createProducerTransport', { roomId: broadcastId }, r));
-                if (transportParams.error) throw new Error(transportParams.error);
-                const routerRtpCapabilities = await new Promise(r => socket.emit('getRouterRtpCapabilities', { roomId: broadcastId }, r));
-                await device.load({ routerRtpCapabilities });
-                producerTransport = device.createSendTransport(transportParams);
-                producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
-                    socket.emit('connectProducerTransport', { transportId: producerTransport.id, dtlsParameters }, (res) => {
-                        res.success ? callback() : errback(new Error(res.error));
-                    });
+                // الاتصال بالسيرفر
+                socket = io(SERVER_URL);
+                
+                socket.on('connect', () => {
+                    elements.connectionStatus.innerHTML = '🟢 متصل بالسيرفر';
+                    elements.techStatus.textContent = 'متصل بالسيرفر';
+                    console.log('✅ متصل بالسيرفر:', socket.id);
                 });
-                producerTransport.on('produce', async (parameters, callback, errback) => {
-                    const { id } = await new Promise(r => socket.emit('produce', { transportId: producerTransport.id, kind: parameters.kind, rtpParameters: parameters.rtpParameters }, r));
-                    callback({ id });
+                
+                socket.on('disconnect', () => {
+                    elements.connectionStatus.innerHTML = '🔴 انقطع الاتصال';
+                    elements.techStatus.textContent = 'غير متصل';
                 });
-                const videoTrack = stream.getVideoTracks()[0]; if (videoTrack) videoProducer = await producerTransport.produce({ track: videoTrack });
-                const audioTrack = stream.getAudioTracks()[0]; if (audioTrack) audioProducer = await producerTransport.produce({ track: audioTrack });
-                statusEl.innerText = '🔴 البث مباشر الآن!'; statusEl.style.color = 'green';
-                const link = `https://pokiklas123-wq.github.io/new-antik/player.html?id=${broadcastId}`;
-                shareLink.href = link; shareLink.innerText = link; linkContainer.style.display = 'block';
-            } catch (err) {
-                console.error(err); statusEl.innerText = '❌ فشل البث!'; statusEl.style.color = 'red';
-                startBtn.disabled = false; alert(`خطأ: ${err.message}`);
+                
+                socket.on('room-created', (data) => {
+                    if (data.success) {
+                        elements.roomStatus.textContent = `🟢 غرفة: ${roomId}`;
+                        showNotification('تم إنشاء الغرفة بنجاح!', 'success');
+                        
+                        // إنشاء رابط المشاركة
+                        const viewerLink = `${window.location.origin}/viewer.html?room=${roomId}`;
+                        elements.shareLink.textContent = viewerLink;
+                        
+                        // بدء الموقت
+                        startBroadcastTimer();
+                    }
+                });
+                
+                socket.on('user-joined', (data) => {
+                    addViewer(data.userId, data.userName);
+                    updateViewerCount();
+                    showNotification(`${data.userName} انضم إلى البث`, 'info');
+                });
+                
+                socket.on('user-left', (data) => {
+                    removeViewer(data.userId);
+                    updateViewerCount();
+                });
+                
+                // تحديث الوقت
+                updateTime();
+                setInterval(updateTime, 1000);
+                
+            } catch (error) {
+                console.error('خطأ في التهيئة:', error);
+                showNotification('خطأ في الاتصال بالسيرفر', 'error');
+            }
+        }
+        
+        // بدء البث
+        elements.startBtn.onclick = async () => {
+            try {
+                roomId = prompt('أدخل اسم الغرفة (مثل: math-class-123):', 
+                    `class-${Date.now().toString().slice(-6)}`);
+                
+                if (!roomId) return;
+                
+                // طلب صلاحيات الكاميرا والميكروفون
+                localStream = await navigator.mediaDevices.getUserMedia({
+                    video: {
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 30 }
+                    },
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true
+                    }
+                });
+                
+                // عرض الفيديو المحلي
+                elements.localVideo.srcObject = localStream;
+                
+                // الانضمام كباث
+                socket.emit('join-room', {
+                    roomId: roomId,
+                    userType: 'broadcaster',
+                    userName: 'المعلم'
+                });
+                
+                // تغيير حالة الأزرار
+                elements.startBtn.disabled = true;
+                elements.stopBtn.disabled = false;
+                elements.startBtn.innerHTML = '<i class="fas fa-sync-alt"></i> بث نشط';
+                
+                showNotification('بدأ البث المباشر!', 'success');
+                
+            } catch (error) {
+                console.error('خطأ في بدء البث:', error);
+                showNotification(`خطأ: ${error.message}`, 'error');
             }
         };
+        
+        // إيقاف البث
+        elements.stopBtn.onclick = () => {
+            if (localStream) {
+                localStream.getTracks().forEach(track => track.stop());
+                elements.localVideo.srcObject = null;
+            }
+            
+            socket.emit('end-broadcast', roomId);
+            
+            // إعادة تعيين الأزرار
+            elements.startBtn.disabled = false;
+            elements.stopBtn.disabled = true;
+            elements.startBtn.innerHTML = '<i class="fas fa-play"></i> بدء البث';
+            
+            // إعادة تعيين العداد
+            stopBroadcastTimer();
+            elements.broadcastTimer.textContent = '⏱️ 00:00:00';
+            
+            // مسح قائمة المشاهدين
+            viewers.clear();
+            updateViewerCount();
+            elements.viewersList.innerHTML = '<div class="viewer-item">لا يوجد مشاهدين</div>';
+            
+            showNotification('تم إيقاف البث', 'info');
+        };
+        
+        // إدارة المشاهدين
+        function addViewer(userId, userName) {
+            viewers.set(userId, {
+                id: userId,
+                name: userName,
+                joinedAt: new Date()
+            });
+            
+            updateViewersList();
+        }
+        
+        function removeViewer(userId) {
+            viewers.delete(userId);
+            updateViewersList();
+        }
+        
+        function updateViewerCount() {
+            elements.viewerCount.textContent = viewers.size;
+        }
+        
+        function updateViewersList() {
+            elements.viewersList.innerHTML = '';
+            
+            if (viewers.size === 0) {
+                elements.viewersList.innerHTML = '<div class="viewer-item">لا يوجد مشاهدين</div>';
+                return;
+            }
+            
+            viewers.forEach(viewer => {
+                const viewerElement = document.createElement('div');
+                viewerElement.className = 'viewer-item';
+                viewerElement.innerHTML = `
+                    <div class="viewer-avatar">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <div>
+                        <strong>${viewer.name}</strong>
+                        <small style="display:block;color:#666">منذ ${getTimeSince(viewer.joinedAt)}</small>
+                    </div>
+                `;
+                elements.viewersList.appendChild(viewerElement);
+            });
+        }
+        
+        // الموقت
+        function startBroadcastTimer() {
+            broadcastStartTime = new Date();
+            stopBroadcastTimer();
+            
+            timerInterval = setInterval(() => {
+                const now = new Date();
+                const diff = Math.floor((now - broadcastStartTime) / 1000);
+                
+                const hours = Math.floor(diff / 3600).toString().padStart(2, '0');
+                const minutes = Math.floor((diff % 3600) / 60).toString().padStart(2, '0');
+                const seconds = (diff % 60).toString().padStart(2, '0');
+                
+                elements.broadcastTimer.textContent = `⏱️ ${hours}:${minutes}:${seconds}`;
+            }, 1000);
+        }
+        
+        function stopBroadcastTimer() {
+            if (timerInterval) {
+                clearInterval(timerInterval);
+                timerInterval = null;
+            }
+        }
+        
+        // أدوات مساعدة
+        function updateTime() {
+            const now = new Date();
+            const timeStr = now.toLocaleTimeString('ar-SA');
+            document.getElementById('timeDisplay').textContent = `🕐 ${timeStr}`;
+        }
+        
+        function getTimeSince(date) {
+            const seconds = Math.floor((new Date() - date) / 1000);
+            
+            if (seconds < 60) return `${seconds} ثانية`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} دقيقة`;
+            return `${Math.floor(seconds / 3600)} ساعة`;
+        }
+        
+        function copyShareLink() {
+            navigator.clipboard.writeText(elements.shareLink.textContent)
+                .then(() => showNotification('تم نسخ الرابط!', 'success'))
+                .catch(err => showNotification('خطأ في النسخ', 'error'));
+        }
+        
+        function showNotification(message, type = 'info') {
+            // يمكنك إضافة مكتبة Noty هنا
+            console.log(`[${type.toUpperCase()}] ${message}`);
+            
+            // تنبيه بسيط
+            alert(message);
+        }
+        
+        // بدء التطبيق
+        document.addEventListener('DOMContentLoaded', init);
     </script>
 </body>
 </html>
