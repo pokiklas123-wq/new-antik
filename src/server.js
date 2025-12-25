@@ -1,199 +1,327 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const cors = require('cors');
+const path = require('path');
+
 const app = express();
 const server = http.createServer(app);
-
-// أحدث إصدار من Socket.io
 const io = new Server(server, {
-  cors: {
-    origin: "*",
-    credentials: true
-  },
-  transports: ['websocket', 'polling']
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
 });
 
 const PORT = process.env.PORT || 3000;
 
+// === تخزين البيانات الحقيقية ===
+const rooms = new Map(); // roomId -> {broadcaster, viewers, streamData}
+const users = new Map(); // socketId -> {roomId, type, userName}
+const activeStreams = new Map(); // roomId -> streamStatus
+
 // Middleware
-app.use(cors());
+app.use(express.static('public'));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
-// تخزين الغرف والمستخدمين
-const rooms = new Map();
-const users = new Map();
+// API للإحصائيات الحقيقية
+app.get('/api/stats', (req, res) => {
+    const stats = {
+        timestamp: new Date().toLocaleString('ar-SA'),
+        totalRooms: rooms.size,
+        totalUsers: users.size,
+        activeBroadcasts: Array.from(rooms.values()).filter(room => room.isLive).length,
+        rooms: []
+    };
 
-// مسارات API
-app.get('/api/rooms/:id/status', (req, res) => {
-  const room = rooms.get(req.params.id);
-  res.json({ 
-    exists: !!room,
-    participants: room ? room.participants.size : 0
-  });
-});
-
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'active', 
-    rooms: rooms.size,
-    users: users.size 
-  });
-});
-
-// Socket.io Events
-io.on('connection', (socket) => {
-  console.log('🔗 مستخدم جديد:', socket.id);
-  
-  socket.on('join-room', async (data) => {
-    const { roomId, userType, userName = 'مستخدم' } = data;
-    
-    // إنشاء غرفة جديدة إذا لم تكن موجودة
-    if (!rooms.has(roomId)) {
-      rooms.set(roomId, {
-        broadcaster: null,
-        participants: new Map(),
-        createdAt: new Date()
-      });
-    }
-    
-    const room = rooms.get(roomId);
-    
-    if (userType === 'broadcaster') {
-      // المعلم/الباث
-      room.broadcaster = socket.id;
-      socket.join(roomId);
-      
-      socket.emit('room-created', { 
-        roomId, 
-        success: true,
-        message: '✅ تم إنشاء الغرفة بنجاح'
-      });
-      
-      console.log(`🎥 باث جديد في غرفة ${roomId}: ${socket.id}`);
-      
-    } else {
-      // المشاهد
-      if (!room.broadcaster) {
-        socket.emit('error', { message: '⚠️ لا يوجد بث نشط في هذه الغرفة' });
-        return;
-      }
-      
-      // التحقق من عدد المشاهدين (20 كحد أقصى)
-      if (room.participants.size >= 20) {
-        socket.emit('error', { message: '🚫 الغرفة ممتلئة (20/20)' });
-        return;
-      }
-      
-      socket.join(roomId);
-      room.participants.set(socket.id, { userName, joinedAt: new Date() });
-      
-      // إعلام الجميع بمشاهد جديد
-      io.to(roomId).emit('user-joined', {
-        userId: socket.id,
-        userName,
-        totalViewers: room.participants.size
-      });
-      
-      console.log(`👁️ مشاهد جديد في ${roomId}: ${userName}`);
-    }
-    
-    // تخزين بيانات المستخدم
-    users.set(socket.id, { roomId, userType, userName });
-  });
-  
-  // نقل إشارات WebRTC
-  socket.on('signal', (data) => {
-    const { to, signal, type } = data;
-    socket.to(to).emit('signal', {
-      from: socket.id,
-      signal,
-      type
+    // تفاصيل كل غرفة
+    rooms.forEach((room, roomId) => {
+        stats.rooms.push({
+            roomId,
+            broadcaster: room.broadcasterName || 'غير معروف',
+            viewersCount: room.viewers ? room.viewers.size : 0,
+            viewersList: room.viewers ? Array.from(room.viewers).slice(0, 10) : [],
+            isLive: room.isLive || false,
+            createdAt: room.createdAt,
+            uptime: room.createdAt ? 
+                Math.floor((new Date() - new Date(room.createdAt)) / 1000) + ' ثانية' : 'غير معروف'
+        });
     });
-  });
-  
-  // رسائل الدردشة
-  socket.on('send-message', (data) => {
-    const user = users.get(socket.id);
-    if (user) {
-      socket.to(user.roomId).emit('new-message', {
-        from: socket.id,
-        userName: user.userName,
-        message: data.message,
-        timestamp: new Date()
-      });
-    }
-  });
-  
-  // إغلاق البث
-  socket.on('end-broadcast', (roomId) => {
-    const room = rooms.get(roomId);
-    if (room && room.broadcaster === socket.id) {
-      io.to(roomId).emit('broadcast-ended');
-      rooms.delete(roomId);
-      console.log(`❌ البث انتهى في غرفة ${roomId}`);
-    }
-  });
-  
-  // عند انفصال مستخدم
-  socket.on('disconnect', () => {
-    const user = users.get(socket.id);
-    if (user) {
-      const room = rooms.get(user.roomId);
-      
-      if (room) {
-        if (user.userType === 'broadcaster') {
-          // إذا كان باث يغادر، ننهي البث للجميع
-          io.to(user.roomId).emit('broadcast-ended');
-          rooms.delete(user.roomId);
-          console.log(`❌ الباث غادر، تم إغلاق غرفة ${user.roomId}`);
-        } else {
-          // إذا كان مشاهد
-          room.participants.delete(socket.id);
-          io.to(user.roomId).emit('user-left', {
-            userId: socket.id,
-            totalViewers: room.participants.size
-          });
-        }
-      }
-      
-      users.delete(socket.id);
-    }
+
+    res.json(stats);
+});
+
+// صفحة عرض الإحصائيات الحية
+app.get('/admin', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'admin.html'));
+});
+
+// Socket.io Handlers
+io.on('connection', (socket) => {
+    console.log(`🔗 [${new Date().toLocaleTimeString('ar-SA')}] اتصال جديد: ${socket.id}`);
     
-    console.log('❌ انقطع:', socket.id);
-  });
+    // 1. إنشاء غرفة جديدة (المعلم)
+    socket.on('create-room', async (data) => {
+        const { roomId, userName } = data;
+        
+        console.log(`🎬 محاولة إنشاء غرفة: ${roomId} بواسطة ${userName}`);
+        
+        // التحقق من وجود الغرفة
+        if (rooms.has(roomId)) {
+            socket.emit('room-error', { 
+                message: '⚠️ اسم الغرفة مستخدم بالفعل، اختر اسم آخر' 
+            });
+            return;
+        }
+        
+        try {
+            // إنشاء الغرفة
+            rooms.set(roomId, {
+                broadcaster: socket.id,
+                broadcasterName: userName,
+                viewers: new Set(),
+                isLive: true,
+                createdAt: new Date().toISOString(),
+                lastActivity: new Date()
+            });
+            
+            // تسجيل المستخدم
+            users.set(socket.id, {
+                roomId,
+                userName,
+                type: 'broadcaster',
+                joinedAt: new Date(),
+                socketId: socket.id
+            });
+            
+            socket.join(roomId);
+            
+            // إرسال تأكيد للمعلم
+            socket.emit('room-created', {
+                success: true,
+                roomId,
+                message: '✅ تم إنشاء الغرفة بنجاح',
+                viewerLink: `http://${req.headers.host}/viewer.html?room=${roomId}`,
+                adminLink: `http://${req.headers.host}/admin`
+            });
+            
+            console.log(`✅ تم إنشاء غرفة ${roomId} بواسطة ${userName}`);
+            
+            // بث حدث تحديث الإحصائيات لجميع المتصلين
+            broadcastStats();
+            
+        } catch (error) {
+            console.error('❌ خطأ في إنشاء الغرفة:', error);
+            socket.emit('room-error', { message: 'خطأ في إنشاء الغرفة' });
+        }
+    });
+    
+    // 2. انضمام مشاهد
+    socket.on('join-room', (data) => {
+        const { roomId, userName } = data;
+        
+        console.log(`👁️ محاولة انضمام ${userName} إلى ${roomId}`);
+        
+        const room = rooms.get(roomId);
+        
+        if (!room) {
+            socket.emit('room-error', { 
+                message: '🚫 الغرفة غير موجودة أو انتهى البث' 
+            });
+            return;
+        }
+        
+        if (!room.isLive) {
+            socket.emit('room-error', { 
+                message: '⏸️ البث متوقف حالياً' 
+            });
+            return;
+        }
+        
+        // التحقق من عدد المشاهدين (20 كحد أقصى)
+        if (room.viewers.size >= 20) {
+            socket.emit('room-error', { 
+                message: '🚫 الغرفة ممتلئة (20/20 مشاهد)' 
+            });
+            return;
+        }
+        
+        // الانضمام للغرفة
+        room.viewers.add(socket.id);
+        room.lastActivity = new Date();
+        
+        users.set(socket.id, {
+            roomId,
+            userName,
+            type: 'viewer',
+            joinedAt: new Date(),
+            socketId: socket.id
+        });
+        
+        socket.join(roomId);
+        
+        // إعلام المشاهد
+        socket.emit('joined-room', {
+            success: true,
+            roomId,
+            broadcasterName: room.broadcasterName,
+            viewersCount: room.viewers.size,
+            message: `✅ انضممت إلى بث ${room.broadcasterName}`
+        });
+        
+        // إعلام المعلم بمشاهد جديد
+        socket.to(room.broadcaster).emit('viewer-joined', {
+            viewerId: socket.id,
+            viewerName: userName,
+            viewersCount: room.viewers.size,
+            timestamp: new Date()
+        });
+        
+        console.log(`✅ ${userName} انضم إلى ${roomId} (المشاهدين: ${room.viewers.size})`);
+        
+        // تحديث الإحصائيات
+        broadcastStats();
+    });
+    
+    // 3. إرسال إشارات WebRTC
+    socket.on('webrtc-signal', (data) => {
+        const { to, signal, type, roomId } = data;
+        
+        // التحقق من صلاحية الإشارة
+        const sender = users.get(socket.id);
+        const receiver = users.get(to);
+        
+        if (sender && receiver && sender.roomId === receiver.roomId) {
+            socket.to(to).emit('webrtc-signal', {
+                from: socket.id,
+                signal: signal,
+                type: type,
+                roomId: roomId
+            });
+        }
+    });
+    
+    // 4. رسائل الدردشة
+    socket.on('chat-message', (data) => {
+        const user = users.get(socket.id);
+        if (user && rooms.has(user.roomId)) {
+            const room = rooms.get(user.roomId);
+            
+            const messageData = {
+                from: socket.id,
+                userName: user.userName,
+                message: data.message,
+                type: user.type,
+                timestamp: new Date().toLocaleTimeString('ar-SA'),
+                roomId: user.roomId
+            };
+            
+            // إرسال الرسالة لجميع أعضاء الغرفة
+            io.to(user.roomId).emit('chat-message', messageData);
+        }
+    });
+    
+    // 5. إغلاق البث
+    socket.on('end-broadcast', (roomId) => {
+        const room = rooms.get(roomId);
+        
+        if (room && room.broadcaster === socket.id) {
+            // إعلام جميع المشاهدين
+            io.to(roomId).emit('broadcast-ended', {
+                message: '📢 انتهى البث من قبل المعلم',
+                broadcaster: room.broadcasterName
+            });
+            
+            // حذف الغرفة
+            rooms.delete(roomId);
+            
+            // حذف المستخدمين المرتبطين
+            users.forEach((user, userId) => {
+                if (user.roomId === roomId) {
+                    users.delete(userId);
+                }
+            });
+            
+            console.log(`❌ تم إغلاق غرفة ${roomId}`);
+            
+            // تحديث الإحصائيات
+            broadcastStats();
+        }
+    });
+    
+    // 6. عند انفصال مستخدم
+    socket.on('disconnect', () => {
+        const user = users.get(socket.id);
+        
+        if (user) {
+            const room = rooms.get(user.roomId);
+            
+            if (room) {
+                if (user.type === 'broadcaster') {
+                    // إذا كان المعلم يغادر
+                    io.to(user.roomId).emit('broadcast-ended', {
+                        message: '📢 انقطع اتصال المعلم',
+                        broadcaster: user.userName
+                    });
+                    
+                    // حذف الغرفة
+                    rooms.delete(user.roomId);
+                    
+                    console.log(`❌ المعلم ${user.userName} غادر، تم إغلاق ${user.roomId}`);
+                    
+                } else {
+                    // إذا كان مشاهد يغادر
+                    room.viewers.delete(socket.id);
+                    
+                    // إعلام المعلم
+                    socket.to(room.broadcaster).emit('viewer-left', {
+                        viewerId: socket.id,
+                        viewerName: user.userName,
+                        viewersCount: room.viewers.size
+                    });
+                    
+                    console.log(`👋 ${user.userName} غادر ${user.roomId}`);
+                }
+                
+                // تحديث الإحصائيات
+                broadcastStats();
+            }
+            
+            // حذف المستخدم
+            users.delete(socket.id);
+        }
+        
+        console.log(`❌ انقطع اتصال: ${socket.id}`);
+    });
 });
 
-// صفحة الاختبار
-app.get('/', (req, res) => {
-  res.send(`
-    <!DOCTYPE html>
-    <html>
-    <head><title>خادم البث المباشر</title></head>
-    <body style="text-align:center;padding:50px;font-family:Arial">
-      <h1>🚀 خادم البث المباشر يعمل!</h1>
-      <p>الإصدار: 2.0.0 | التاريخ: ${new Date().toLocaleString('ar-SA')}</p>
-      <div style="margin-top:30px">
-        <a href="/api/health" style="margin:10px;padding:10px;background:#4CAF50;color:white;text-decoration:none">الحالة</a>
-        <a href="/test" style="margin:10px;padding:10px;background:#2196F3;color:white;text-decoration:none">صفحة الاختبار</a>
-      </div>
-    </body>
-    </html>
-  `);
-});
+// دالة بث الإحصائيات
+function broadcastStats() {
+    const stats = {
+        totalRooms: rooms.size,
+        totalUsers: users.size,
+        activeBroadcasts: Array.from(rooms.values()).filter(r => r.isLive).length,
+        timestamp: new Date().toLocaleString('ar-SA')
+    };
+    
+    io.emit('stats-update', stats);
+}
 
-// صفحة اختبار WebSocket
-app.get('/test', (req, res) => {
-  res.sendFile(__dirname + '/test.html');
-});
-
+// تشغيل الخادم
 server.listen(PORT, () => {
-  console.log(`
-  ===========================================
-  🚀 خادم البث المباشر يعمل!
-  📍 المنفذ: ${PORT}
-  ⏰ الوقت: ${new Date().toLocaleString('ar-SA')}
-  📊 الإصدار: 2.0.0
-  ===========================================
-  `);
+    console.log(`
+    ╔══════════════════════════════════════╗
+    ║     🚀 خادم البث المباشر الحقيقي     ║
+    ║     الإصدار: 3.0 (كامل)             ║
+    ║     المنفذ: ${PORT}                 ║
+    ║     الوقت: ${new Date().toLocaleString('ar-SA')} ║
+    ╚══════════════════════════════════════╝
+    
+    📊 روابط الوصول:
+    👨‍🏫 صفحة المعلم: http://localhost:${PORT}/broadcaster.html
+    👁️ صفحة المشاهد: http://localhost:${PORT}/viewer.html
+    📈 لوحة التحكم: http://localhost:${PORT}/admin
+    
+    ✅ جاهز للبث الحقيقي!
+    `);
 });
