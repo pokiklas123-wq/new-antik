@@ -6,22 +6,23 @@ const mediasoup = require('mediasoup');
 const app = express();
 const server = http.createServer(app);
 
-// إعدادات CORS للسماح بالاتصال من أي مكان
+// إعداد CORS للسماح بالاتصال من GitHub Pages
 const io = new Server(server, {
   cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
+    origin: "https://pokiklas123-wq.github.io",
+    methods: ["GET", "POST"],
+    credentials: true
   }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// متغيرات Mediasoup
+// ####################################################
+//           متغيرات النظام
+// ####################################################
 let worker;
 let router;
-let producer; // سنحتفظ بمنتج واحد للبث المباشر (للبساطة)
-let producerTransport;
-
+const rooms = new Map(); // تخزين جميع الغرف
 const mediaCodecs = [
   {
     kind: 'audio',
@@ -32,176 +33,285 @@ const mediaCodecs = [
   {
     kind: 'video',
     mimeType: 'video/VP8',
-    clockRate: 90000,
-    parameters: {
-      'x-google-start-bitrate': 1000
-    }
+    clockRate: 90000
   }
 ];
 
-// تشغيل Worker الخاص بـ Mediasoup
+// ####################################################
+//           تهيئة Mediasoup Worker
+// ####################################################
 const createWorker = async () => {
   worker = await mediasoup.createWorker({
     logLevel: 'warn',
+    rtcMinPort: 10000,
+    rtcMaxPort: 10100,
   });
 
   worker.on('died', () => {
-    console.error('mediasoup worker has died');
+    console.error('❌ Mediasoup Worker توقف!');
     setTimeout(() => process.exit(1), 2000);
   });
 
-  router = await worker.createRouter({ mediaCodecs });
-  console.log('Mediasoup Router created');
+  console.log('✅ Mediasoup Worker جاهز');
 };
 
 createWorker();
 
-// إدارة الاتصالات
-io.on('connection', (socket) => {
-  console.log('مستخدم جديد متصل:', socket.id);
-
-  socket.on('getRouterRtpCapabilities', (callback) => {
-    callback(router.rtpCapabilities);
-  });
-
-  // --- الجزء الخاص بالمذيع (Broadcaster) ---
+// ####################################################
+//           دوال مساعدة للغرف
+// ####################################################
+const createRoom = async (roomId) => {
+  // إنشاء Router جديد لهذه الغرفة
+  const roomRouter = await worker.createRouter({ mediaCodecs });
   
-  // 1. إنشاء وسيلة نقل للإرسال
-  socket.on('createProducerTransport', async (callback) => {
+  const room = {
+    id: roomId,
+    router: roomRouter,
+    broadcaster: null, // Socket.id للمعلم
+    producer: null,    // Producer الخاص بالمعلم
+    consumers: new Map(), // جميع المشاهدين
+    transports: new Map() // جميع الـ Transports
+  };
+  
+  rooms.set(roomId, room);
+  console.log(`✅ غرفة جديدة تم إنشاؤها: ${roomId}`);
+  return room;
+};
+
+const getOrCreateRoom = async (roomId) => {
+  let room = rooms.get(roomId);
+  if (!room) {
+    room = await createRoom(roomId);
+  }
+  return room;
+};
+
+// ####################################################
+//           إدارة اتصالات Socket.io
+// ####################################################
+io.on('connection', (socket) => {
+  console.log(`👤 مستخدم متصل: ${socket.id}`);
+
+  // --- حدث لإنشاء Producer Transport (للمعلم) ---
+  socket.on('createProducerTransport', async ({ roomId }, callback) => {
     try {
-      producerTransport = await router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: null }], // Render قد يحتاج announcedIp لاحقاً إذا فشل الاتصال الخارجي
-        enableUdp: true,
-        enableTcp: true,
-        preferUdp: true,
-      });
-
-      producerTransport.on('dtlsstatechange', (dtlsState) => {
-        if (dtlsState === 'closed') {
-          producerTransport.close();
-        }
-      });
-
-      callback({
-        id: producerTransport.id,
-        iceParameters: producerTransport.iceParameters,
-        iceCandidates: producerTransport.iceCandidates,
-        dtlsParameters: producerTransport.dtlsParameters,
-      });
-    } catch (error) {
-      console.error(error);
-      callback({ error: error.message });
-    }
-  });
-
-  // 2. ربط وسيلة النقل
-  socket.on('connectProducerTransport', async ({ dtlsParameters }, callback) => {
-    await producerTransport.connect({ dtlsParameters });
-    callback();
-  });
-
-  // 3. بدء إنتاج الفيديو/الصوت
-  socket.on('produce', async ({ kind, rtpParameters }, callback) => {
-    producer = await producerTransport.produce({ kind, rtpParameters });
-    
-    console.log(`New producer created: ${producer.id}`);
-    
-    // إبلاغ جميع المشاهدين بوجود بث جديد
-    socket.broadcast.emit('new-producer', producer.id);
-
-    producer.on('transportclose', () => {
-      producer.close();
-    });
-
-    callback({ id: producer.id });
-  });
-
-  // --- الجزء الخاص بالمشاهد (Viewer) ---
-
-  // 1. إنشاء وسيلة نقل للاستقبال
-  socket.on('createConsumerTransport', async (callback) => {
-    try {
-      const consumerTransport = await router.createWebRtcTransport({
+      console.log(`🚀 طلب إنشاء Producer Transport للغرفة: ${roomId}`);
+      
+      const room = await getOrCreateRoom(roomId);
+      
+      // تحقق إذا كان هناك معلم بالفعل في الغرفة
+      if (room.broadcaster && room.broadcaster !== socket.id) {
+        return callback({ error: 'هناك معلم آخر يبث في هذه الغرفة بالفعل' });
+      }
+      
+      room.broadcaster = socket.id;
+      
+      // إنشاء WebRtcTransport للمعلم
+      const transport = await room.router.createWebRtcTransport({
         listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
       });
-
-      // حفظ الـ Transport في الذاكرة تلقائياً بواسطة Mediasoup Router
       
+      // حفظ الـ Transport في الغرفة
+      room.transports.set(transport.id, transport);
+      
+      // إرسال بيانات الـ Transport للمعلم
       callback({
-        id: consumerTransport.id,
-        iceParameters: consumerTransport.iceParameters,
-        iceCandidates: consumerTransport.iceCandidates,
-        dtlsParameters: consumerTransport.dtlsParameters,
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
       });
+      
     } catch (error) {
-      console.error(error);
+      console.error('❌ خطأ في createProducerTransport:', error);
       callback({ error: error.message });
     }
   });
 
-  // 2. ربط وسيلة النقل للمشاهد
-  socket.on('connectConsumerTransport', async ({ transportId, dtlsParameters }, callback) => {
-    // نبحث عن الـ Transport الصحيح باستخدام ID
-    const transport = Array.from(router.transports.values()).find(t => t.id === transportId);
-    if (transport) {
-      await transport.connect({ dtlsParameters });
-      callback();
-    } else {
-        callback({ error: "Transport not found" });
+  // --- حدث لربط Producer Transport ---
+  socket.on('connectProducerTransport', async ({ transportId, dtlsParameters }, callback) => {
+    try {
+      // البحث عن الغرفة التي تحتوي على هذا الـ Transport
+      for (const [roomId, room] of rooms) {
+        const transport = room.transports.get(transportId);
+        if (transport) {
+          await transport.connect({ dtlsParameters });
+          console.log(`✅ Producer Transport متصل: ${transportId}`);
+          callback({ success: true });
+          return;
+        }
+      }
+      callback({ error: 'Transport غير موجود' });
+    } catch (error) {
+      console.error('❌ خطأ في connectProducerTransport:', error);
+      callback({ error: error.message });
     }
   });
 
-  // 3. استهلاك البث
+  // --- حدث لإنتاج الفيديو (Producer) ---
+  socket.on('produce', async ({ transportId, kind, rtpParameters }, callback) => {
+    try {
+      // البحث عن الغرفة والـ Transport
+      for (const [roomId, room] of rooms) {
+        const transport = room.transports.get(transportId);
+        if (transport && room.broadcaster === socket.id) {
+          // إنشاء Producer
+          const producer = await transport.produce({ kind, rtpParameters });
+          room.producer = producer;
+          
+          console.log(`🎥 تم إنشاء Producer: ${producer.id} للغرفة: ${roomId}`);
+          
+          // إعلام جميع المشاهدين بوجود بث جديد
+          io.emit('newBroadcast', { roomId });
+          
+          callback({ id: producer.id });
+          return;
+        }
+      }
+      callback({ error: 'لم يتم العثور على Transport أو ليس لديك صلاحية' });
+    } catch (error) {
+      console.error('❌ خطأ في produce:', error);
+      callback({ error: error.message });
+    }
+  });
+
+  // --- حدث للحصول على قدرات الـ Router (للمشاهدين) ---
+  socket.on('getRouterRtpCapabilities', async ({ roomId }, callback) => {
+    try {
+      const room = rooms.get(roomId);
+      if (!room) {
+        return callback({ error: 'الغرفة غير موجودة' });
+      }
+      
+      callback(room.router.rtpCapabilities);
+    } catch (error) {
+      console.error('❌ خطأ في getRouterRtpCapabilities:', error);
+      callback({ error: error.message });
+    }
+  });
+
+  // --- حدث لإنشاء Consumer Transport (للمشاهدين) ---
+  socket.on('createConsumerTransport', async ({ roomId }, callback) => {
+    try {
+      const room = rooms.get(roomId);
+      if (!room || !room.producer) {
+        return callback({ error: 'لا يوجد بث نشط في هذه الغرفة' });
+      }
+      
+      // إنشاء WebRtcTransport للمشاهد
+      const transport = await room.router.createWebRtcTransport({
+        listenIps: [{ ip: '0.0.0.0', announcedIp: null }],
+        enableUdp: true,
+        enableTcp: true,
+        preferUdp: true,
+      });
+      
+      // حفظ الـ Transport في الغرفة
+      room.transports.set(transport.id, transport);
+      
+      callback({
+        id: transport.id,
+        iceParameters: transport.iceParameters,
+        iceCandidates: transport.iceCandidates,
+        dtlsParameters: transport.dtlsParameters,
+      });
+      
+    } catch (error) {
+      console.error('❌ خطأ في createConsumerTransport:', error);
+      callback({ error: error.message });
+    }
+  });
+
+  // --- حدث لربط Consumer Transport ---
+  socket.on('connectConsumerTransport', async ({ transportId, dtlsParameters }, callback) => {
+    try {
+      for (const [roomId, room] of rooms) {
+        const transport = room.transports.get(transportId);
+        if (transport) {
+          await transport.connect({ dtlsParameters });
+          console.log(`✅ Consumer Transport متصل: ${transportId}`);
+          callback({ success: true });
+          return;
+        }
+      }
+      callback({ error: 'Transport غير موجود' });
+    } catch (error) {
+      console.error('❌ خطأ في connectConsumerTransport:', error);
+      callback({ error: error.message });
+    }
+  });
+
+  // --- حدث لاستهلاك الفيديو (Consumer) ---
   socket.on('consume', async ({ transportId, rtpCapabilities }, callback) => {
     try {
-      if (!producer) {
-        return callback({ error: 'لا يوجد بث حالياً' });
+      for (const [roomId, room] of rooms) {
+        const transport = room.transports.get(transportId);
+        if (transport && room.producer) {
+          // التحقق من إمكانية الاستهلاك
+          if (!room.router.canConsume({ 
+            producerId: room.producer.id, 
+            rtpCapabilities 
+          })) {
+            return callback({ error: 'لا يمكن استهلاك هذا البث' });
+          }
+          
+          // إنشاء Consumer
+          const consumer = await transport.consume({
+            producerId: room.producer.id,
+            rtpCapabilities,
+            paused: true,
+          });
+          
+          // حفظ Consumer
+          room.consumers.set(consumer.id, consumer);
+          
+          callback({
+            id: consumer.id,
+            producerId: consumer.producerId,
+            kind: consumer.kind,
+            rtpParameters: consumer.rtpParameters,
+          });
+          
+          // استئناف التشغيل
+          await consumer.resume();
+          console.log(`👁️ تم إنشاء Consumer جديد: ${consumer.id}`);
+          return;
+        }
       }
-
-      if (!router.canConsume({ producerId: producer.id, rtpCapabilities })) {
-        return callback({ error: 'لا يمكن استهلاك هذا البث' });
-      }
-
-      const transport = Array.from(router.transports.values()).find(t => t.id === transportId);
-      
-      if (!transport) {
-        return callback({ error: 'Transport not found' });
-      }
-
-      const consumer = await transport.consume({
-        producerId: producer.id,
-        rtpCapabilities,
-        paused: true, // نبدأ متوقفاً ثم نشغله بحدث resume
-      });
-
-      callback({
-        id: consumer.id,
-        producerId: producer.id,
-        kind: consumer.kind,
-        rtpParameters: consumer.rtpParameters,
-      });
+      callback({ error: 'لم يتم العثور على Transport أو Producer' });
     } catch (error) {
-      console.error('Consume error:', error);
+      console.error('❌ خطأ في consume:', error);
       callback({ error: error.message });
     }
   });
 
-  // 4. تشغيل الفيديو للمشاهد
-  socket.on('resume', async ({ consumerId }, callback) => {
-    for (const transport of router.transports.values()) {
-        const consumer = transport.consumers.get(consumerId);
-        if (consumer) {
-            await consumer.resume();
-            callback();
-            return;
-        }
+  // --- حدث للتحقق من وجود بث ---
+  socket.on('checkBroadcast', ({ roomId }, callback) => {
+    const room = rooms.get(roomId);
+    callback({ 
+      isBroadcasting: !!(room && room.producer),
+      roomExists: !!room
+    });
+  });
+
+  // --- حدث قطع الاتصال ---
+  socket.on('disconnect', () => {
+    console.log(`❌ مستخدم قطع الاتصال: ${socket.id}`);
+    
+    // تنظيف الغرف عند قطع اتصال المعلم
+    for (const [roomId, room] of rooms) {
+      if (room.broadcaster === socket.id) {
+        console.log(`🗑️ تنظيف الغرفة: ${roomId} بعد قطع اتصال المعلم`);
+        rooms.delete(roomId);
+      }
     }
   });
 });
 
 server.listen(PORT, () => {
-  console.log(`الخادم يعمل على المنفذ ${PORT}`);
+  console.log(`🚀 الخادم يعمل على المنفذ ${PORT}`);
+  console.log(`🌐 عنوان الخادم: https://new-antik-p2p-20.onrender.com`);
 });
