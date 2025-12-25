@@ -34,6 +34,8 @@
     <script>
         const socket = io();
         let peerConnection;
+        let currentRoomId = null;
+        let currentUserName = null;
         
         const rtcConfig = {
             iceServers: [
@@ -62,9 +64,17 @@
             const { roomId, userName } = extractParamsFromURL();
             
             if (roomId) {
+                // حفظ معلومات الغرفة الحالية
+                currentRoomId = roomId;
+                currentUserName = userName;
+                
                 // إخفاء واجهة الإدخال وإظهار قسم الفيديو مباشرة
                 document.getElementById('joinSection').style.display = 'none';
                 document.getElementById('videoSection').style.display = 'block';
+                
+                // تعبئة الحقول في حالة العودة لواجهة الإدخال
+                document.getElementById('roomInput').value = roomId;
+                document.getElementById('nameInput').value = userName;
                 
                 // الدخول إلى الغرفة مباشرة مع المعلومات المستخرجة
                 socket.emit('join-room', { roomId, userName });
@@ -79,10 +89,42 @@
             
             if (!roomId) return alert("الرجاء إدخال اسم الغرفة");
 
+            // حفظ معلومات الغرفة الحالية
+            currentRoomId = roomId;
+            currentUserName = userName;
+            
             document.getElementById('joinSection').style.display = 'none';
             document.getElementById('videoSection').style.display = 'block';
 
             socket.emit('join-room', { roomId, userName });
+        }
+
+        // دالة للعودة لواجهة الإدخال الرئيسية
+        function returnToJoinScreen() {
+            // قطع اتصال WebRTC إذا كان موجوداً
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
+            }
+            
+            // قطع اتصال السوكيت بالغرفة
+            if (currentRoomId) {
+                socket.emit('leave-room', { roomId: currentRoomId });
+            }
+            
+            // إيقاف الفيديو
+            const videoEl = document.getElementById('remoteVideo');
+            if (videoEl.srcObject) {
+                videoEl.srcObject.getTracks().forEach(track => track.stop());
+                videoEl.srcObject = null;
+            }
+            
+            // إعادة عرض واجهة الإدخال وإخفاء قسم الفيديو
+            document.getElementById('joinSection').style.display = 'block';
+            document.getElementById('videoSection').style.display = 'none';
+            
+            // إعادة تعيين الحالة
+            document.getElementById('status').innerText = "جاري الاتصال...";
         }
 
         // --- استمع لأحداث السيرفر كما هي ---
@@ -126,13 +168,22 @@
             };
         }
 
+        // حدث انتهاء البث من المعلم
         socket.on('broadcast-ended', () => {
             alert("انتهى البث من قبل المعلم");
-            location.reload();
+            returnToJoinScreen(); // العودة لواجهة الإدخال بدلاً من إعادة التحميل
         });
+        
+        // حدث خطأ من السيرفر
         socket.on('error', (data) => {
             alert(data.message);
-            location.reload();
+            returnToJoinScreen(); // العودة لواجهة الإدخال بدلاً من إعادة التحميل
+        });
+        
+        // حدث طرد من الغرفة (إذا كان السيرفر يدعمه)
+        socket.on('kicked', (data) => {
+            alert("تم طردك من الغرفة: " + (data.reason || ""));
+            returnToJoinScreen();
         });
         // --- نهاية أحداث السيرفر ---
 
