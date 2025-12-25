@@ -1,6 +1,3 @@
-// ####################################################
-//           إعدادات الخادم الأساسية
-// ####################################################
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
@@ -9,22 +6,20 @@ const mediasoup = require('mediasoup');
 const app = express();
 const server = http.createServer(app);
 
-// إعداد CORS للسماح بالاتصال من GitHub Pages
+// إعدادات CORS للسماح بالاتصال من أي مكان
 const io = new Server(server, {
   cors: {
-    origin: "*", // للسماح بالتجربة، يفضل تغييره لرابط موقعك لاحقاً
+    origin: "*",
     methods: ["GET", "POST"]
   }
 });
 
 const PORT = process.env.PORT || 3000;
 
-// ####################################################
-//           منطق Mediasoup
-// ####################################################
+// متغيرات Mediasoup
 let worker;
 let router;
-let producer; // سنحتفظ بمنتج واحد للبث المباشر
+let producer; // سنحتفظ بمنتج واحد للبث المباشر (للبساطة)
 let producerTransport;
 
 const mediaCodecs = [
@@ -44,6 +39,7 @@ const mediaCodecs = [
   }
 ];
 
+// تشغيل Worker الخاص بـ Mediasoup
 const createWorker = async () => {
   worker = await mediasoup.createWorker({
     logLevel: 'warn',
@@ -60,9 +56,7 @@ const createWorker = async () => {
 
 createWorker();
 
-// ####################################################
-//           إدارة الاتصالات (Socket.io)
-// ####################################################
+// إدارة الاتصالات
 io.on('connection', (socket) => {
   console.log('مستخدم جديد متصل:', socket.id);
 
@@ -70,11 +64,13 @@ io.on('connection', (socket) => {
     callback(router.rtpCapabilities);
   });
 
-  // --- للمعلم (Broadcaster) ---
+  // --- الجزء الخاص بالمذيع (Broadcaster) ---
+  
+  // 1. إنشاء وسيلة نقل للإرسال
   socket.on('createProducerTransport', async (callback) => {
     try {
       producerTransport = await router.createWebRtcTransport({
-        listenIps: [{ ip: '0.0.0.0', announcedIp: null }], // Render سيحتاج announcedIp أحياناً، لكن جرب هذا أولاً
+        listenIps: [{ ip: '0.0.0.0', announcedIp: null }], // Render قد يحتاج announcedIp لاحقاً إذا فشل الاتصال الخارجي
         enableUdp: true,
         enableTcp: true,
         preferUdp: true,
@@ -98,17 +94,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 2. ربط وسيلة النقل
   socket.on('connectProducerTransport', async ({ dtlsParameters }, callback) => {
     await producerTransport.connect({ dtlsParameters });
     callback();
   });
 
+  // 3. بدء إنتاج الفيديو/الصوت
   socket.on('produce', async ({ kind, rtpParameters }, callback) => {
     producer = await producerTransport.produce({ kind, rtpParameters });
     
     console.log(`New producer created: ${producer.id}`);
     
-    // إعلام جميع المشاهدين بوجود بث جديد
+    // إبلاغ جميع المشاهدين بوجود بث جديد
     socket.broadcast.emit('new-producer', producer.id);
 
     producer.on('transportclose', () => {
@@ -118,7 +116,9 @@ io.on('connection', (socket) => {
     callback({ id: producer.id });
   });
 
-  // --- للمشاهد (Viewer) ---
+  // --- الجزء الخاص بالمشاهد (Viewer) ---
+
+  // 1. إنشاء وسيلة نقل للاستقبال
   socket.on('createConsumerTransport', async (callback) => {
     try {
       const consumerTransport = await router.createWebRtcTransport({
@@ -128,8 +128,8 @@ io.on('connection', (socket) => {
         preferUdp: true,
       });
 
-      // حفظ النقل في مصفوفة النقل الخاصة بالراوتر تلقائياً
-
+      // حفظ الـ Transport في الذاكرة تلقائياً بواسطة Mediasoup Router
+      
       callback({
         id: consumerTransport.id,
         iceParameters: consumerTransport.iceParameters,
@@ -142,17 +142,19 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 2. ربط وسيلة النقل للمشاهد
   socket.on('connectConsumerTransport', async ({ transportId, dtlsParameters }, callback) => {
-    // البحث عن النقل الصحيح
-    // ملاحظة: في التطبيقات الكبيرة يجب تخزين النقل في Map مرتبط بـ socket.id
-    // هنا سنبحث عنه في قائمة transport الخاصة بالراوتر
+    // نبحث عن الـ Transport الصحيح باستخدام ID
     const transport = Array.from(router.transports.values()).find(t => t.id === transportId);
     if (transport) {
       await transport.connect({ dtlsParameters });
       callback();
+    } else {
+        callback({ error: "Transport not found" });
     }
   });
 
+  // 3. استهلاك البث
   socket.on('consume', async ({ transportId, rtpCapabilities }, callback) => {
     try {
       if (!producer) {
@@ -172,7 +174,7 @@ io.on('connection', (socket) => {
       const consumer = await transport.consume({
         producerId: producer.id,
         rtpCapabilities,
-        paused: true, // نبدأ متوقفاً ثم نشغله
+        paused: true, // نبدأ متوقفاً ثم نشغله بحدث resume
       });
 
       callback({
@@ -187,8 +189,8 @@ io.on('connection', (socket) => {
     }
   });
 
+  // 4. تشغيل الفيديو للمشاهد
   socket.on('resume', async ({ consumerId }, callback) => {
-    // البحث عن المستهلك في جميع وسائل النقل
     for (const transport of router.transports.values()) {
         const consumer = transport.consumers.get(consumerId);
         if (consumer) {
