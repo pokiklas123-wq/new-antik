@@ -2,19 +2,22 @@
 <html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
-    <title>المديع - بث مباشر</title>
+    <title>المذيع - لوحة التحكم</title>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 20px; background: #f0f0f0; }
-        video { width: 100%; max-width: 600px; background: #000; border-radius: 8px; margin: 10px 0; }
-        button { padding: 10px 20px; font-size: 16px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 5px; margin: 5px; }
-        button:disabled { background: #ccc; }
-        .status { margin-top: 10px; font-weight: bold; }
-        #link-area { display: none; margin-top: 15px; padding: 10px; background: #fff; border: 1px solid #ddd; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; text-align: center; padding: 20px; background: #f4f4f9; color: #333; }
+        h1 { color: #444; }
+        video { width: 100%; max-width: 600px; background: #000; border-radius: 12px; margin: 20px 0; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
+        button { padding: 12px 25px; font-size: 18px; cursor: pointer; background: #007bff; color: white; border: none; border-radius: 8px; transition: 0.3s; }
+        button:hover { background: #0056b3; }
+        button:disabled { background: #ccc; cursor: not-allowed; }
+        .status { margin-top: 15px; font-weight: bold; font-size: 1.1em; }
+        #link-area { display: none; margin-top: 20px; padding: 15px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
+        #share-link { color: #007bff; text-decoration: none; word-break: break-all; }
     </style>
 </head>
 <body>
-    <h1>🎥 المديع - بث مباشر</h1>
+    <h1>🎥 المذيع - بدء البث</h1>
     
     <video id="localVideo" autoplay muted playsinline></video>
     
@@ -22,10 +25,10 @@
         <button id="startBtn">▶ بدء البث</button>
     </div>
 
-    <p class="status">الحالة: <span id="status">غير متصل</span></p>
+    <p class="status">الحالة: <span id="status">جاهز للاتصال</span></p>
 
     <div id="link-area">
-        <p>رابط المشاهدين:</p>
+        <p>✅ تم بدء البث! أرسل هذا الرابط للمشاهدين:</p>
         <a id="share-link" href="#" target="_blank">جاري التجهيز...</a>
     </div>
 
@@ -34,7 +37,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
 
     <script>
-        // هام: استبدل الرابط أدناه برابط الخادم الخاص بك على Render
+        // ⚠️ هام: تأكد أن هذا الرابط يطابق رابط سيرفرك على Render
         const socket = io("https://new-antik-p2p-20.onrender.com");
         
         const mediasoupClient = window.mediasoupClient;
@@ -49,22 +52,31 @@
         const linkArea = document.getElementById('link-area');
         const shareLink = document.getElementById('share-link');
 
+        // تشغيل الكاميرا محلياً أولاً للتجربة
+        navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+            .then((stream) => {
+                localVideo.srcObject = stream;
+            })
+            .catch((err) => {
+                console.error("خطأ في الوصول للكاميرا:", err);
+                statusEl.innerText = "يرجى السماح للكاميرا والميكروفون";
+            });
+
         startBtn.onclick = async () => {
             startBtn.disabled = true;
-            statusEl.innerText = 'جاري الاتصال...';
+            statusEl.innerText = 'جاري الاتصال بالخادم...';
 
             try {
-                // 1. الحصول على الميديا (كاميرا وميكروفون)
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-                localVideo.srcObject = stream;
+                const stream = localVideo.srcObject;
+                if (!stream) throw new Error("لا توجد كاميرا");
 
-                // 2. تحميل إعدادات الراوتر
+                // 1. تحميل إعدادات الراوتر
                 const routerRtpCapabilities = await new Promise(resolve => {
                     socket.emit('getRouterRtpCapabilities', (data) => resolve(data));
                 });
                 await device.load({ routerRtpCapabilities });
 
-                // 3. إنشاء Transport للإرسال
+                // 2. إنشاء Transport للإرسال
                 const transportParams = await new Promise((resolve, reject) => {
                     socket.emit('createProducerTransport', (data) => {
                         if (data.error) reject(data.error);
@@ -74,7 +86,6 @@
 
                 producerTransport = device.createSendTransport(transportParams);
 
-                // 4. إعداد أحداث Transport
                 producerTransport.on('connect', async ({ dtlsParameters }, callback, errback) => {
                     socket.emit('connectProducerTransport', { dtlsParameters }, () => callback());
                 });
@@ -93,23 +104,21 @@
                     }
                 });
 
-                // 5. بدء البث (الفيديو والصوت)
+                // 3. بدء البث الفعلي
                 const videoTrack = stream.getVideoTracks()[0];
                 const audioTrack = stream.getAudioTracks()[0];
 
-                if (videoTrack) {
-                    videoProducer = await producerTransport.produce({ track: videoTrack });
-                }
-                if (audioTrack) {
-                    audioProducer = await producerTransport.produce({ track: audioTrack });
-                }
+                if (videoTrack) videoProducer = await producerTransport.produce({ track: videoTrack });
+                if (audioTrack) audioProducer = await producerTransport.produce({ track: audioTrack });
 
                 statusEl.innerText = '🔴 البث مباشر الآن';
                 statusEl.style.color = 'red';
 
-                // إظهار رابط المشاهدة (يفترض أن ملف المشاهد اسمه player.html)
+                // إظهار الرابط
                 linkArea.style.display = 'block';
-                const viewerUrl = `https://pokiklas123-wq.github.io/new-antik/player.html`; 
+                // نفترض أن ملف المشاهد اسمه player.html وموجود في نفس المجلد
+                const currentUrl = window.location.href;
+                const viewerUrl = currentUrl.substring(0, currentUrl.lastIndexOf('/')) + '/player.html';
                 shareLink.href = viewerUrl;
                 shareLink.innerText = viewerUrl;
 
