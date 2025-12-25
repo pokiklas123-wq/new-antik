@@ -11,6 +11,7 @@
         input { padding: 12px; width: 60%; border-radius: 8px; border: none; margin-bottom: 10px; }
         button { padding: 12px 25px; background: #4361ee; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; }
         .status { margin-top: 15px; font-size: 14px; color: #aaa; }
+        .info { background: #2d2d4d; padding: 10px; border-radius: 8px; margin: 15px 0; font-size: 14px; color: #4cc9f0; }
     </style>
 </head>
 <body>
@@ -22,6 +23,10 @@
             <input type="text" id="nameInput" placeholder="اسمك">
             <br>
             <button onclick="joinRoom()">🚀 دخول البث</button>
+            
+            <div id="urlInfo" class="info" style="display:none;">
+                <p>🚦 <span id="infoText"></span></p>
+            </div>
         </div>
 
         <div id="videoSection" style="display:none;">
@@ -42,11 +47,85 @@
             ]
         };
 
-        function joinRoom() {
-            const roomId = document.getElementById('roomInput').value;
-            const userName = document.getElementById('nameInput').value || 'مشاهد';
+        // دالة لاستخراج المعلمات من الرابط
+        function getUrlParameters() {
+            const params = {};
+            const url = window.location.href;
             
-            if (!roomId) return alert("الرجاء إدخال اسم الغرفة");
+            // استخراج الجزء بعد علامة الاستفهام إذا وجد
+            const queryString = url.split('?')[1];
+            if (queryString) {
+                // إزالة أي مسارات إضافية بعد اسم المستخدم إذا وجدت
+                const baseUrl = url.split('?')[0];
+                const fullPath = url.split('?')[1];
+                
+                // البحث عن room= في query string
+                if (fullPath.includes('room=')) {
+                    const roomPart = fullPath.split('room=')[1];
+                    
+                    // فصل اسم الغرفة عن اسم المستخدم إذا كان هناك /
+                    if (roomPart.includes('/')) {
+                        const parts = roomPart.split('/');
+                        params.room = parts[0]; // الجزء الأول هو اسم الغرفة
+                        
+                        // إذا كان هناك جزء ثاني، فهو اسم المستخدم
+                        if (parts.length > 1 && parts[1].trim() !== '') {
+                            params.userName = decodeURIComponent(parts[1]);
+                        }
+                    } else {
+                        // إذا لم يكن هناك /، فكل النص هو اسم الغرفة
+                        params.room = roomPart.split('&')[0]; // أخذ الجزء قبل أي معلمات إضافية
+                    }
+                }
+            }
+            
+            return params;
+        }
+
+        // محاولة الدخول تلقائياً عند تحميل الصفحة إذا كان هناك room في الرابط
+        function tryAutoJoin() {
+            const params = getUrlParameters();
+            
+            if (params.room) {
+                const roomInput = document.getElementById('roomInput');
+                const nameInput = document.getElementById('nameInput');
+                const infoDiv = document.getElementById('urlInfo');
+                const infoText = document.getElementById('infoText');
+                
+                roomInput.value = params.room;
+                
+                if (params.userName) {
+                    nameInput.value = params.userName;
+                    infoText.textContent = `تم اكتشاف اسم الغرفة "${params.room}" واسم المستخدم "${params.userName}" من الرابط. انقر على "دخول البث" للبدء.`;
+                } else {
+                    infoText.textContent = `تم اكتشاف اسم الغرفة "${params.room}" من الرابط. أدخل اسمك وانقر على "دخول البث" للبدء.`;
+                }
+                
+                infoDiv.style.display = 'block';
+            }
+        }
+
+        function joinRoom() {
+            const roomInput = document.getElementById('roomInput');
+            const nameInput = document.getElementById('nameInput');
+            
+            // أخذ قيمة الغرفة من الحقل، أو استخدام القيمة من الرابط
+            let roomId = roomInput.value;
+            const userName = nameInput.value || 'مشاهد';
+            
+            // إذا لم يكن هناك قيمة في الحقل، تحقق من الرابط
+            if (!roomId) {
+                const params = getUrlParameters();
+                if (params.room) {
+                    roomId = params.room;
+                } else {
+                    alert("الرجاء إدخال اسم الغرفة");
+                    return;
+                }
+            }
+            
+            // تنظيف اسم الغرفة من أي مسارات إضافية
+            roomId = roomId.split('/')[0];
 
             document.getElementById('joinSection').style.display = 'none';
             document.getElementById('videoSection').style.display = 'block';
@@ -116,6 +195,9 @@
             alert(data.message);
             location.reload();
         });
+
+        // عند تحميل الصفحة، حاول الدخول تلقائياً إذا كان هناك room في الرابط
+        window.onload = tryAutoJoin;
     </script>
 </body>
 </html>
