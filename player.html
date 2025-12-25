@@ -8,7 +8,7 @@
         body { font-family: sans-serif; text-align: center; padding: 20px; background: #222; color: #fff; }
         video { width: 100%; max-width: 800px; background: #000; border: 1px solid #444; border-radius: 8px; }
         #status { margin-top: 10px; color: #aaa; }
-        button { padding: 10px 20px; cursor: pointer; background: #28a745; color: white; border: none; margin-top: 10px; display: none; }
+        button { padding: 10px 20px; cursor: pointer; background: #28a745; color: white; border: none; margin-top: 10px; display: none; border-radius: 5px;}
     </style>
 </head>
 <body>
@@ -21,6 +21,7 @@
     <script src="https://cdn.jsdelivr.net/npm/mediasoup-client@3/dist/mediasoup-client.min.js"></script>
 
     <script>
+        // ⚠️ هام: نفس رابط السيرفر
         const socket = io("https://new-antik-p2p-20.onrender.com");
         const mediasoupClient = window.mediasoupClient;
         const device = new mediasoupClient.Device();
@@ -30,17 +31,16 @@
         const statusEl = document.getElementById('status');
         const playBtn = document.getElementById('playBtn');
 
-        // دالة للانضمام للبث
         const joinBroadcast = async () => {
             statusEl.innerText = 'تم العثور على بث، جاري الاتصال...';
             try {
-                // 1. تحميل إعدادات الجهاز
+                // 1. تحميل الإعدادات
                 const routerRtpCapabilities = await new Promise(resolve => {
                     socket.emit('getRouterRtpCapabilities', resolve);
                 });
                 await device.load({ routerRtpCapabilities });
 
-                // 2. إنشاء Transport للاستقبال
+                // 2. إنشاء Transport
                 const transportParams = await new Promise((resolve, reject) => {
                     socket.emit('createConsumerTransport', (data) => {
                         if (data.error) reject(data.error);
@@ -57,7 +57,7 @@
                     }, () => callback());
                 });
 
-                // 3. استهلاك البث (Consume)
+                // 3. استهلاك البث
                 const { rtpCapabilities } = device;
                 const consumerParams = await new Promise((resolve, reject) => {
                     socket.emit('consume', { 
@@ -76,14 +76,14 @@
                 stream.addTrack(consumer.track);
                 remoteVideo.srcObject = stream;
 
-                // 5. استئناف البث (Resume)
+                // 5. استئناف
                 await new Promise(resolve => {
                     socket.emit('resume', { consumerId: consumer.id }, resolve);
                 });
 
                 statusEl.innerText = 'تم الاتصال!';
                 
-                // تشغيل الفيديو في حال توقفه بسبب سياسات المتصفح
+                // التعامل مع سياسة التشغيل التلقائي للمتصفحات
                 try {
                     await remoteVideo.play();
                 } catch (e) {
@@ -102,13 +102,11 @@
 
         // الاستماع لحدث بدء بث جديد
         socket.on('new-producer', () => {
-            console.log("New producer detected");
             joinBroadcast();
         });
 
         // المحاولة عند فتح الصفحة
         socket.on('connect', () => {
-            // نحاول الانضمام مباشرة، إذا فشل (لعدم وجود بث) سيظهر الخطأ في الكونسول
             joinBroadcast();
         });
     </script>
