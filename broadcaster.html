@@ -3,348 +3,152 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>👨‍🏫 المعلم - نظام البث المباشر</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <title>👨‍🏫 المعلم - البث المباشر</title>
     <style>
-        :root {
-            --primary: #4361ee;
-            --success: #06d6a0;
-            --danger: #ef476f;
-            --dark: #1a1a2e;
-        }
-        
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        }
-        
-        body {
-            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
-            color: white;
-            min-height: 100vh;
-            padding: 20px;
-        }
-        
-        .container {
-            max-width: 1400px;
-            margin: 0 auto;
-            display: grid;
-            grid-template-columns: 1fr 350px;
-            gap: 20px;
-        }
-        
-        .video-section {
-            background: #000;
-            border-radius: 15px;
-            overflow: hidden;
-            height: 500px;
-            position: relative;
-        }
-        
-        video {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-        
-        .controls {
-            background: rgba(0,0,0,0.8);
-            padding: 20px;
-            border-radius: 10px;
-            margin-top: 20px;
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-        
-        .btn {
-            padding: 12px 25px;
-            border: none;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            font-weight: bold;
-            transition: all 0.3s;
-        }
-        
-        .btn-success {
-            background: var(--success);
-            color: white;
-        }
-        
-        .btn-danger {
-            background: var(--danger);
-            color: white;
-        }
-        
-        .btn-primary {
-            background: var(--primary);
-            color: white;
-        }
-        
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-        
-        .sidebar {
-            background: rgba(255,255,255,0.05);
-            border-radius: 15px;
-            padding: 20px;
-            height: fit-content;
-        }
-        
-        .status-box {
-            background: rgba(67, 97, 238, 0.2);
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 20px;
-            border: 1px solid rgba(67, 97, 238, 0.5);
-        }
-        
-        .viewers-list {
-            max-height: 200px;
-            overflow-y: auto;
-            margin: 15px 0;
-        }
-        
-        .viewer-item {
-            display: flex;
-            align-items: center;
-            padding: 10px;
-            border-bottom: 1px solid rgba(255,255,255,0.1);
-        }
-        
-        .share-link {
-            background: rgba(6, 214, 160, 0.2);
-            padding: 15px;
-            border-radius: 10px;
-            margin: 15px 0;
-            word-break: break-all;
-            border: 1px dashed #06d6a0;
-        }
-        
-        .live-badge {
-            background: #ef476f;
-            color: white;
-            padding: 5px 10px;
-            border-radius: 20px;
-            font-size: 12px;
-            display: inline-block;
-            margin-left: 10px;
-            animation: pulse 2s infinite;
-        }
-        
-        @keyframes pulse {
-            0% { opacity: 1; }
-            50% { opacity: 0.5; }
-            100% { opacity: 1; }
-        }
-        
-        .chat-box {
-            background: rgba(255,255,255,0.05);
-            border-radius: 10px;
-            padding: 15px;
-            margin-top: 20px;
-            display: flex;
-            flex-direction: column;
-            height: 200px;
-        }
-        
-        .chat-messages {
-            flex: 1;
-            overflow-y: auto;
-            margin-bottom: 10px;
-        }
-        
-        .message {
-            background: rgba(255,255,255,0.1);
-            padding: 8px 12px;
-            border-radius: 8px;
-            margin-bottom: 8px;
-            font-size: 14px;
-        }
-        
-        .chat-input {
-            display: flex;
-            gap: 10px;
-        }
-        
-        .chat-input input {
-            flex: 1;
-            padding: 10px;
-            border: none;
-            border-radius: 5px;
-            background: rgba(255,255,255,0.1);
-            color: white;
-        }
-        
-        @media (max-width: 768px) {
-            .container {
-                grid-template-columns: 1fr;
-            }
-        }
+        * { margin: 0; padding: 0; box-sizing: border-box; font-family: Arial, sans-serif; }
+        body { background: #1a1a2e; color: white; padding: 20px; text-align: center; }
+        .container { max-width: 800px; margin: 0 auto; }
+        h1 { margin: 20px 0; color: #4cc9f0; }
+        video { width: 100%; max-width: 600px; background: black; border-radius: 10px; margin: 20px 0; }
+        .controls { margin: 20px 0; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+        button { padding: 12px 25px; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        .btn-start { background: #06d6a0; color: white; }
+        .btn-stop { background: #ef476f; color: white; }
+        .btn-copy { background: #4361ee; color: white; }
+        .status { padding: 15px; margin: 15px 0; border-radius: 10px; background: rgba(255,255,255,0.1); }
+        .viewers { margin: 20px 0; }
+        .viewer-item { padding: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+        .link-box { background: rgba(6, 214, 160, 0.2); padding: 15px; border-radius: 10px; margin: 20px 0; word-break: break-all; }
     </style>
 </head>
 <body>
     <div class="container">
-        <div>
-            <h1><i class="fas fa-broadcast-tower"></i> لوحة المعلم - البث المباشر</h1>
-            <p>السيرفر: <strong>https://new-antik-p2p-20.onrender.com</strong></p>
-            
-            <div class="video-section">
-                <video id="localVideo" autoplay muted playsinline></video>
-                <div style="position: absolute; bottom: 20px; left: 20px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 5px;">
-                    <span id="timer">⏱️ 00:00:00</span>
-                    <span class="live-badge" id="liveStatus">● غير نشط</span>
-                </div>
-            </div>
-            
-            <div class="controls">
-                <button id="startBtn" class="btn btn-success">
-                    <i class="fas fa-play"></i> بدء البث
-                </button>
-                <button id="stopBtn" class="btn btn-danger" disabled>
-                    <i class="fas fa-stop"></i> إيقاف البث
-                </button>
-                <button id="toggleVideo" class="btn">
-                    <i class="fas fa-video"></i> كاميرا
-                </button>
-                <button id="toggleAudio" class="btn">
-                    <i class="fas fa-microphone"></i> ميكروفون
-                </button>
-                <button onclick="copyLink()" class="btn btn-primary">
-                    <i class="fas fa-share"></i> مشاركة الرابط
-                </button>
-            </div>
+        <h1>👨‍🏫 لوحة المعلم - البث المباشر</h1>
+        <p>السيرفر: <strong>https://new-antik-p2p-20.onrender.com</strong></p>
+        
+        <video id="localVideo" autoplay muted playsinline></video>
+        
+        <div class="controls">
+            <button id="startBtn" class="btn-start">▶️ بدء البث</button>
+            <button id="stopBtn" class="btn-stop" disabled>⏹️ إيقاف البث</button>
+            <button id="copyBtn" class="btn-copy" disabled>📋 نسخ الرابط</button>
         </div>
         
-        <div class="sidebar">
-            <div class="status-box">
-                <h3><i class="fas fa-info-circle"></i> حالة البث</h3>
-                <p id="roomInfo">لم يتم إنشاء غرفة</p>
-                <p>المشاهدين: <span id="viewerCount">0</span>/20</p>
-            </div>
-            
-            <div class="share-link">
-                <h4><i class="fas fa-link"></i> رابط المشاركة</h4>
-                <p id="shareLink">https://new-antik-p2p-20.onrender.com/viewer.html</p>
-            </div>
-            
-            <div>
-                <h4><i class="fas fa-users"></i> المشاهدين (<span id="viewersCount">0</span>)</h4>
-                <div class="viewers-list" id="viewersList">
-                    <div class="viewer-item">
-                        <i class="fas fa-user" style="margin-left: 10px;"></i>
-                        <span>لا يوجد مشاهدين</span>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="chat-box">
-                <h4><i class="fas fa-comments"></i> الدردشة</h4>
-                <div class="chat-messages" id="chatMessages">
-                    <div class="message">مرحباً! ابدأ البث لإرسال رسائل</div>
-                </div>
-                <div class="chat-input">
-                    <input type="text" id="messageInput" placeholder="اكتب رسالة..." onkeypress="if(event.key=='Enter') sendMessage()">
-                    <button onclick="sendMessage()" class="btn" style="padding: 10px;"><i class="fas fa-paper-plane"></i></button>
-                </div>
-            </div>
+        <div class="status">
+            <p id="roomStatus">🔴 غير نشط</p>
+            <p id="timer">⏱️ 00:00:00</p>
+        </div>
+        
+        <div class="link-box">
+            <p id="shareLink">قم ببدء البث أولاً لعرض رابط المشاركة</p>
+        </div>
+        
+        <div class="viewers">
+            <h3>👥 المشاهدين (<span id="viewerCount">0</span>)</h3>
+            <div id="viewersList">لا يوجد مشاهدين</div>
         </div>
     </div>
-    
+
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        // ============ الإعدادات ============
+        // 🔧 الإعدادات
         const SERVER_URL = window.location.origin;
         let socket = null;
         let localStream = null;
         let roomId = '';
-        let viewers = new Map();
+        let peerConnections = new Map();
         let broadcastStartTime = null;
         let timerInterval = null;
         
-        // ============ العناصر ============
-        const elements = {
-            localVideo: document.getElementById('localVideo'),
-            startBtn: document.getElementById('startBtn'),
-            stopBtn: document.getElementById('stopBtn'),
-            toggleVideo: document.getElementById('toggleVideo'),
-            toggleAudio: document.getElementById('toggleAudio'),
-            roomInfo: document.getElementById('roomInfo'),
-            viewerCount: document.getElementById('viewerCount'),
-            viewersCount: document.getElementById('viewersCount'),
-            viewersList: document.getElementById('viewersList'),
-            shareLink: document.getElementById('shareLink'),
-            chatMessages: document.getElementById('chatMessages'),
-            messageInput: document.getElementById('messageInput'),
-            timer: document.getElementById('timer'),
-            liveStatus: document.getElementById('liveStatus')
-        };
-        
-        // ============ التهيئة ============
+        // 🔗 تهيئة الاتصال
         function init() {
-            socket = io();
-            
-            // أحداث السيرفر
-            socket.on('connect', () => {
-                console.log('✅ متصل بالسيرفر:', SERVER_URL);
+            console.log('🚀 تهيئة صفحة المعلم...');
+            socket = io(SERVER_URL, {
+                transports: ['websocket', 'polling'],
+                reconnectionAttempts: 5
             });
             
-            socket.on('room-created', (data) => {
-                if (data.success) {
-                    roomId = data.roomId;
-                    elements.roomInfo.innerHTML = `<strong>الغرفة:</strong> ${roomId}`;
-                    elements.shareLink.textContent = data.viewerLink;
-                    elements.liveStatus.textContent = '● مباشر';
-                    elements.liveStatus.style.background = '#06d6a0';
-                    startTimer();
-                    addChatMessage('النظام', '✅ بدأ البث المباشر');
+            socket.on('connect', () => {
+                console.log('✅ متصل بالسيرفر:', socket.id);
+                updateStatus('🟢 متصل بالسيرفر', '#06d6a0');
+            });
+            
+            socket.on('connect_error', (err) => {
+                console.error('❌ خطأ في الاتصال:', err);
+                updateStatus('🔴 فشل الاتصال', '#ef476f');
+            });
+            
+            // عندما ينضم مشاهد جديد
+            socket.on('viewer-joined', async (data) => {
+                console.log('👤 مشاهد جديد:', data.viewerId);
+                addViewer(data.viewerId);
+                await createPeerConnection(data.viewerId);
+            });
+            
+            // إشارات WebRTC من المشاهدين
+            socket.on('webrtc-signal', async (data) => {
+                console.log('📡 إشارة من المشاهد:', data.type, data.from);
+                
+                if (!peerConnections.has(data.from)) {
+                    await createPeerConnection(data.from);
+                }
+                
+                const pc = peerConnections.get(data.from);
+                
+                try {
+                    if (data.type === 'offer') {
+                        await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+                        const answer = await pc.createAnswer();
+                        await pc.setLocalDescription(answer);
+                        
+                        socket.emit('webrtc-signal', {
+                            to: data.from,
+                            signal: answer,
+                            type: 'answer'
+                        });
+                        
+                        console.log('✅ تم إرسال إجابة إلى:', data.from);
+                        
+                    } else if (data.type === 'candidate') {
+                        await pc.addIceCandidate(new RTCIceCandidate(data.signal));
+                        console.log('✅ تم إضافة ICE Candidate');
+                    }
+                } catch (error) {
+                    console.error('❌ خطأ في معالجة الإشارة:', error);
                 }
             });
             
-            socket.on('viewer-joined', (data) => {
-                addViewer(data.viewerId, data.viewerName);
-                updateViewerCount();
-                addChatMessage('النظام', `👋 ${data.viewerName} انضم إلى البث`);
-            });
-            
+            // عندما يغادر مشاهد
             socket.on('viewer-left', (data) => {
+                console.log('👋 مشاهد غادر:', data.viewerId);
                 removeViewer(data.viewerId);
-                updateViewerCount();
-            });
-            
-            socket.on('chat-message', (data) => {
-                addChatMessage(data.userName, data.message);
-            });
-            
-            socket.on('error', (data) => {
-                alert(data.message);
+                if (peerConnections.has(data.viewerId)) {
+                    peerConnections.get(data.viewerId).close();
+                    peerConnections.delete(data.viewerId);
+                }
             });
         }
         
-        // ============ بدء البث ============
-        elements.startBtn.onclick = async () => {
-            const userName = prompt('أدخل اسمك:', `المعلم ${Math.floor(Math.random() * 1000)}`);
-            if (!userName) return;
-            
-            roomId = prompt('أدخل اسم الغرفة:', `class-${Date.now().toString().slice(-6)}`);
-            if (!roomId) return;
-            
+        // 🎬 بدء البث
+        document.getElementById('startBtn').onclick = async () => {
             try {
-                // طلب الكاميرا والميكروفون
+                const userName = prompt('أدخل اسمك:', `المعلم_${Date.now().toString().slice(-4)}`);
+                if (!userName) return;
+                
+                roomId = prompt('أدخل اسم الغرفة:', `room_${Date.now().toString().slice(-6)}`);
+                if (!roomId) return;
+                
+                // الحصول على الكاميرا والميكروفون
                 localStream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
+                    video: {
+                        width: { ideal: 640 },
+                        height: { ideal: 480 },
+                        facingMode: 'user'
+                    },
                     audio: true
                 });
                 
-                elements.localVideo.srcObject = localStream;
+                document.getElementById('localVideo').srcObject = localStream;
                 
                 // إنشاء الغرفة على السيرفر
                 socket.emit('create-room', {
@@ -352,71 +156,106 @@
                     userName: userName
                 });
                 
-                elements.startBtn.disabled = true;
-                elements.stopBtn.disabled = false;
+                document.getElementById('startBtn').disabled = true;
+                document.getElementById('stopBtn').disabled = false;
+                document.getElementById('copyBtn').disabled = false;
                 
-            } catch (err) {
-                alert('❌ خطأ: ' + err.message);
+                updateStatus('🔴 بث مباشر - ' + roomId, '#ef476f');
+                startTimer();
+                
+                // إنشاء رابط المشاركة
+                const shareLink = `${SERVER_URL}/viewer.html?room=${roomId}`;
+                document.getElementById('shareLink').textContent = shareLink;
+                
+                console.log('🎥 بدأ البث بنجاح في غرفة:', roomId);
+                
+            } catch (error) {
+                console.error('❌ خطأ في بدء البث:', error);
+                alert('خطأ: ' + error.message);
             }
         };
         
-        // ============ إيقاف البث ============
-        elements.stopBtn.onclick = () => {
+        // ⏹️ إيقاف البث
+        document.getElementById('stopBtn').onclick = () => {
             if (confirm('هل تريد إيقاف البث؟')) {
                 if (localStream) {
                     localStream.getTracks().forEach(track => track.stop());
-                    elements.localVideo.srcObject = null;
+                    document.getElementById('localVideo').srcObject = null;
                 }
                 
                 socket.emit('end-broadcast', roomId);
-                
                 resetBroadcast();
-                addChatMessage('النظام', '⏹️ تم إيقاف البث');
+                
+                console.log('⏹️ تم إيقاف البث');
             }
         };
         
-        // ============ إدارة المشاهدين ============
-        function addViewer(id, name) {
-            viewers.set(id, { id, name });
-            updateViewersList();
-        }
-        
-        function removeViewer(id) {
-            viewers.delete(id);
-            updateViewersList();
-        }
-        
-        function updateViewersList() {
-            elements.viewersList.innerHTML = '';
-            
-            if (viewers.size === 0) {
-                elements.viewersList.innerHTML = `
-                    <div class="viewer-item">
-                        <i class="fas fa-user" style="margin-left: 10px;"></i>
-                        <span>لا يوجد مشاهدين</span>
-                    </div>
-                `;
-                return;
+        // 📋 نسخ الرابط
+        document.getElementById('copyBtn').onclick = () => {
+            const link = document.getElementById('shareLink').textContent;
+            if (link && link !== 'قم ببدء البث أولاً لعرض رابط المشاركة') {
+                navigator.clipboard.writeText(link);
+                alert('✅ تم نسخ الرابط');
             }
+        };
+        
+        // 🔗 إنشاء اتصال WebRTC مع مشاهد
+        async function createPeerConnection(viewerId) {
+            console.log('🔗 إنشاء اتصال WebRTC مع:', viewerId);
             
-            viewers.forEach(viewer => {
-                const div = document.createElement('div');
-                div.className = 'viewer-item';
-                div.innerHTML = `
-                    <i class="fas fa-user" style="margin-left: 10px;"></i>
-                    <span>${viewer.name}</span>
-                `;
-                elements.viewersList.appendChild(div);
-            });
+            try {
+                const pc = new RTCPeerConnection({
+                    iceServers: [
+                        { urls: 'stun:stun.l.google.com:19302' },
+                        { urls: 'stun:stun1.l.google.com:19302' },
+                        { urls: 'stun:stun2.l.google.com:19302' },
+                        { urls: 'stun:stun3.l.google.com:19302' },
+                        { urls: 'stun:stun4.l.google.com:19302' }
+                    ],
+                    iceCandidatePoolSize: 10
+                });
+                
+                // إضافة التدفق المحلي
+                if (localStream) {
+                    localStream.getTracks().forEach(track => {
+                        pc.addTrack(track, localStream);
+                    });
+                }
+                
+                // إرسال ICE Candidates
+                pc.onicecandidate = (event) => {
+                    if (event.candidate) {
+                        socket.emit('webrtc-signal', {
+                            to: viewerId,
+                            signal: event.candidate,
+                            type: 'candidate'
+                        });
+                    }
+                };
+                
+                // مراقبة حالة الاتصال
+                pc.onconnectionstatechange = () => {
+                    console.log(`🔌 حالة الاتصال مع ${viewerId}:`, pc.connectionState);
+                    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+                        pc.close();
+                        peerConnections.delete(viewerId);
+                        removeViewer(viewerId);
+                    }
+                };
+                
+                pc.onsignalingstatechange = () => {
+                    console.log(`📶 حالة الإشارة مع ${viewerId}:`, pc.signalingState);
+                };
+                
+                peerConnections.set(viewerId, pc);
+                console.log('✅ تم إنشاء اتصال WebRTC مع:', viewerId);
+                
+            } catch (error) {
+                console.error('❌ خطأ في إنشاء اتصال WebRTC:', error);
+            }
         }
         
-        function updateViewerCount() {
-            const count = viewers.size;
-            elements.viewerCount.textContent = count;
-            elements.viewersCount.textContent = count;
-        }
-        
-        // ============ الموقت ============
+        // ⏱️ الموقت
         function startTimer() {
             broadcastStartTime = new Date();
             clearInterval(timerInterval);
@@ -429,78 +268,67 @@
                 const minutes = Math.floor((diff % 3600) / 60).toString().padStart(2, '0');
                 const seconds = (diff % 60).toString().padStart(2, '0');
                 
-                elements.timer.textContent = `⏱️ ${hours}:${minutes}:${seconds}`;
+                document.getElementById('timer').textContent = `⏱️ ${hours}:${minutes}:${seconds}`;
             }, 1000);
         }
         
+        // 👥 إدارة المشاهدين
+        function addViewer(viewerId) {
+            const viewersList = document.getElementById('viewersList');
+            const viewerCount = document.getElementById('viewerCount');
+            
+            if (viewersList.textContent === 'لا يوجد مشاهدين') {
+                viewersList.innerHTML = '';
+            }
+            
+            const viewerDiv = document.createElement('div');
+            viewerDiv.className = 'viewer-item';
+            viewerDiv.id = 'viewer-' + viewerId;
+            viewerDiv.textContent = `👤 ${viewerId.slice(0, 8)}...`;
+            viewersList.appendChild(viewerDiv);
+            
+            viewerCount.textContent = parseInt(viewerCount.textContent) + 1;
+        }
+        
+        function removeViewer(viewerId) {
+            const viewerElement = document.getElementById('viewer-' + viewerId);
+            const viewerCount = document.getElementById('viewerCount');
+            
+            if (viewerElement) {
+                viewerElement.remove();
+            }
+            
+            const count = parseInt(viewerCount.textContent) - 1;
+            viewerCount.textContent = count > 0 ? count : 0;
+            
+            if (count === 0) {
+                document.getElementById('viewersList').innerHTML = 'لا يوجد مشاهدين';
+            }
+        }
+        
+        // 🔄 إعادة تعيين البث
         function resetBroadcast() {
-            elements.startBtn.disabled = false;
-            elements.stopBtn.disabled = true;
-            elements.roomInfo.textContent = 'لم يتم إنشاء غرفة';
-            elements.viewerCount.textContent = '0';
-            elements.viewersCount.textContent = '0';
-            elements.shareLink.textContent = 'https://new-antik-p2p-20.onrender.com/viewer.html';
-            elements.liveStatus.textContent = '● غير نشط';
-            elements.liveStatus.style.background = '#ef476f';
-            elements.timer.textContent = '⏱️ 00:00:00';
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+            document.getElementById('copyBtn').disabled = true;
+            
+            updateStatus('🔴 غير نشط', '#4361ee');
+            document.getElementById('shareLink').textContent = 'قم ببدء البث أولاً لعرض رابط المشاركة';
+            document.getElementById('timer').textContent = '⏱️ 00:00:00';
+            document.getElementById('viewerCount').textContent = '0';
+            document.getElementById('viewersList').innerHTML = 'لا يوجد مشاهدين';
             
             clearInterval(timerInterval);
-            viewers.clear();
-            updateViewersList();
+            peerConnections.forEach(pc => pc.close());
+            peerConnections.clear();
             roomId = '';
         }
         
-        // ============ الدردشة ============
-        function addChatMessage(sender, message) {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = 'message';
-            msgDiv.innerHTML = `<strong>${sender}:</strong> ${message}`;
-            elements.chatMessages.appendChild(msgDiv);
-            elements.chatMessages.scrollTop = elements.chatMessages.scrollHeight;
+        function updateStatus(text, color) {
+            const statusEl = document.getElementById('roomStatus');
+            statusEl.textContent = text;
+            statusEl.style.color = color;
         }
-        
-        function sendMessage() {
-            const message = elements.messageInput.value.trim();
-            if (message && roomId) {
-                socket.emit('chat-message', { message: message });
-                addChatMessage('أنت', message);
-                elements.messageInput.value = '';
-            }
-        }
-        
-        // ============ أدوات مساعدة ============
-        function copyLink() {
-            const link = elements.shareLink.textContent;
-            if (link && link !== 'https://new-antik-p2p-20.onrender.com/viewer.html') {
-                navigator.clipboard.writeText(link);
-                alert('✅ تم نسخ الرابط');
-            }
-        }
-        
-        // التحكم في الكاميرا والميكروفون
-        elements.toggleVideo.onclick = () => {
-            if (localStream) {
-                const videoTrack = localStream.getVideoTracks()[0];
-                if (videoTrack) {
-                    videoTrack.enabled = !videoTrack.enabled;
-                    elements.toggleVideo.innerHTML = videoTrack.enabled ? 
-                        '<i class="fas fa-video"></i> كاميرا' : 
-                        '<i class="fas fa-video-slash"></i> كاميرا';
-                }
-            }
-        };
-        
-        elements.toggleAudio.onclick = () => {
-            if (localStream) {
-                const audioTrack = localStream.getAudioTracks()[0];
-                if (audioTrack) {
-                    audioTrack.enabled = !audioTrack.enabled;
-                    elements.toggleAudio.innerHTML = audioTrack.enabled ? 
-                        '<i class="fas fa-microphone"></i> ميكروفون' : 
-                        '<i class="fas fa-microphone-slash"></i> ميكروفون';
-                }
-            }
-        };
         
         // بدء التطبيق
         document.addEventListener('DOMContentLoaded', init);
