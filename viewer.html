@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-   <!-- <title>👁️ مشاهدة البث</title>-->
+    <title>👁️ مشاهدة البث</title>
     <style>
         body { background: #1a1a2e; color: white; font-family: 'Segoe UI', sans-serif; text-align: center; padding: 20px; }
         .container { max-width: 800px; margin: 0 auto; }
@@ -21,7 +21,7 @@
             <input type="text" id="roomInput" placeholder="اسم الغرفة (مثال: room1)">
             <input type="text" id="nameInput" placeholder="اسمك">
             <br>
-            <button onclick="joinRoom()">🚀 دخول البث</button>
+            <button onclick="joinRoomManually()">🚀 دخول البث</button>
         </div>
 
         <div id="videoSection" style="display:none;">
@@ -34,7 +34,6 @@
     <script>
         const socket = io();
         let peerConnection;
-        let autoJoined = false;
         
         const rtcConfig = {
             iceServers: [
@@ -43,61 +42,38 @@
             ]
         };
 
-        // دالة لاستخراج المعلمات من الرابط
-        function getUrlParameters() {
-            const params = {};
-            const url = window.location.href;
-            
-            // استخراج الجزء بعد علامة الاستفهام إذا وجد
-            const queryString = url.split('?')[1];
-            if (queryString && queryString.includes('room=')) {
-                const roomPart = queryString.split('room=')[1];
-                
-                // فصل اسم الغرفة عن اسم المستخدم إذا كان هناك /
-                if (roomPart.includes('/')) {
-                    const parts = roomPart.split('/');
-                    params.room = parts[0]; // الجزء الأول هو اسم الغرفة
-                    
-                    // إذا كان هناك جزء ثاني، فهو اسم المستخدم
-                    if (parts.length > 1 && parts[1].trim() !== '') {
-                        params.userName = decodeURIComponent(parts[1].split('&')[0]);
-                    }
-                } else {
-                    // إذا لم يكن هناك /، فكل النص هو اسم الغرفة
-                    params.room = roomPart.split('&')[0];
-                }
-            }
-            
-            return params;
+        // دالة مبسطة لاستخراج معرف الغرفة واسم المستخدم من الرابط
+        function extractParamsFromURL() {
+            const url = new URL(window.location.href);
+            const roomParam = url.searchParams.get('room'); // تأخذ قيمة `room1` أو `room1/Amin`
+
+            if (!roomParam) return { roomId: null, userName: null };
+
+            // فصل معرف الغرفة عن اسم المستخدم إذا كان هناك '/'
+            const parts = roomParam.split('/');
+            const roomId = parts[0]; // الجزء الأول هو معرف الغرفة
+            const userName = parts.length > 1 && parts[1].trim() !== '' ? parts[1] : 'مشاهد';
+
+            return { roomId, userName };
         }
 
-        // الدخول التلقائي عند تحميل الصفحة
-        function autoJoinFromUrl() {
-            const params = getUrlParameters();
+        // دالة للدخول التلقائي عند تحميل الصفحة إذا كان الرابط يحتوي على معرف غرفة
+        function tryAutoJoin() {
+            const { roomId, userName } = extractParamsFromURL();
             
-            if (params.room) {
-                autoJoined = true;
-                const roomInput = document.getElementById('roomInput');
-                const nameInput = document.getElementById('nameInput');
-                
-                roomInput.value = params.room;
-                if (params.userName) {
-                    nameInput.value = params.userName;
-                }
-                
-                // إخفاء قسم الدخول وإظهار قسم الفيديو مباشرة
+            if (roomId) {
+                // إخفاء واجهة الإدخال وإظهار قسم الفيديو مباشرة
                 document.getElementById('joinSection').style.display = 'none';
                 document.getElementById('videoSection').style.display = 'block';
                 
-                // الدخول إلى الغرفة مباشرة
-                const roomId = params.room;
-                const userName = params.userName || 'مشاهد';
-                
+                // الدخول إلى الغرفة مباشرة مع المعلومات المستخرجة
                 socket.emit('join-room', { roomId, userName });
             }
+            // إذا لم يكن هناك roomId في الرابط، تبقى واجهة الإدخال ظاهرة للمستخدم
         }
 
-        function joinRoom() {
+        // الدالة الأصلية للدخول اليدوي (عند استخدام واجهة الإدخال)
+        function joinRoomManually() {
             const roomId = document.getElementById('roomInput').value;
             const userName = document.getElementById('nameInput').value || 'مشاهد';
             
@@ -106,29 +82,23 @@
             document.getElementById('joinSection').style.display = 'none';
             document.getElementById('videoSection').style.display = 'block';
 
-            // طلب الانضمام
             socket.emit('join-room', { roomId, userName });
         }
 
+        // --- استمع لأحداث السيرفر كما هي ---
         socket.on('joined-room', (data) => {
             document.getElementById('status').innerText = `✅ متصل بالغرفة. بانتظار بث المعلم...`;
         });
 
-        // استقبال الإشارة من المعلم
         socket.on('webrtc-signal', async (data) => {
             if (!peerConnection) createPeerConnection(data.from);
 
             try {
                 if (data.type === 'offer') {
-                    console.log("📩 وصل عرض (Offer) من المعلم");
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
-                    
-                    // إنشاء إجابة (Answer)
                     const answer = await peerConnection.createAnswer();
                     await peerConnection.setLocalDescription(answer);
-                    
                     socket.emit('webrtc-signal', { to: data.from, type: 'answer', signal: answer });
-                    
                 } else if (data.type === 'candidate') {
                     await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
                 }
@@ -139,22 +109,16 @@
 
         function createPeerConnection(broadcasterId) {
             peerConnection = new RTCPeerConnection(rtcConfig);
-
-            // عند وصول الفيديو من المعلم
             peerConnection.ontrack = (event) => {
-                console.log("🎬 وصل الفيديو!");
                 const videoEl = document.getElementById('remoteVideo');
                 videoEl.srcObject = event.streams[0];
                 document.getElementById('status').innerText = "✅ تشغيل البث المباشر";
             };
-
-            // إرسال ICE Candidates للمعلم
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
                     socket.emit('webrtc-signal', { to: broadcasterId, type: 'candidate', signal: event.candidate });
                 }
             };
-
             peerConnection.onconnectionstatechange = () => {
                 if (peerConnection.connectionState === 'disconnected') {
                     document.getElementById('status').innerText = "🔴 انقطع الاتصال بالمعلم";
@@ -166,14 +130,14 @@
             alert("انتهى البث من قبل المعلم");
             location.reload();
         });
-
         socket.on('error', (data) => {
             alert(data.message);
             location.reload();
         });
+        // --- نهاية أحداث السيرفر ---
 
-        // عند تحميل الصفحة، حاول الدخول تلقائياً إذا كان هناك room في الرابط
-        window.onload = autoJoinFromUrl;
+        // حاول الدخول تلقائياً عند تحميل الصفحة
+        window.onload = tryAutoJoin;
     </script>
 </body>
 </html>
