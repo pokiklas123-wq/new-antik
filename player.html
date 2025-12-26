@@ -44,11 +44,38 @@
             font-size: 18px;
             z-index: 10;
         }
+        
+        .error-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #f05454;
+            font-size: 20px;
+            z-index: 20;
+            text-align: center;
+            padding: 20px;
+        }
     </style>
 </head>
 <body>
     <div id="videoContainer">
         <div class="loading" id="loadingText">📡 جاري الاتصال بالبث...</div>
+        <div class="error-overlay" id="errorOverlay" style="display:none;">
+            <div>
+                <div style="font-size: 3em; margin-bottom: 20px;">⚠️</div>
+                <div id="errorMessage">حدث خطأ</div>
+                <div style="margin-top: 20px;">
+                    <button onclick="retryConnection()" style="padding: 10px 20px; background: #4361ee; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 5px;">🔄 إعادة المحاولة</button>
+                    <button onclick="goToViewer()" style="padding: 10px 20px; background: #f05454; color: white; border: none; border-radius: 5px; cursor: pointer; margin: 5px;">🏠 العودة</button>
+                </div>
+            </div>
+        </div>
         <video id="remoteVideo" autoplay playsinline></video>
     </div>
 
@@ -58,6 +85,7 @@
         let peerConnection;
         let currentRoomId = null;
         let currentUserName = null;
+        let connectionTimeout = null;
         
         const rtcConfig = {
             iceServers: [
@@ -66,13 +94,13 @@
             ]
         };
 
-        // دالة لاستخراج المعلمات من الرابط - شرط: يجب أن يكون المعرف والاسم في الرابط
+        // دالة لاستخراج المعلمات من الرابط
         function extractParamsFromURL() {
             const url = new URL(window.location.href);
             const roomParam = url.searchParams.get('room'); // يجب أن يكون مثل 'room1/mohamed'
             
             if (!roomParam) {
-                redirectToError('no-room');
+                showError('الرابط لا يحتوي على معرف الغرفة. يجب أن يكون الرابط بالشكل: player.html?room=معرف_الغرفة/اسم_المستخدم');
                 return { roomId: null, userName: null };
             }
             
@@ -81,7 +109,7 @@
             
             // يجب أن يحتوي الرابط على المعرف والاسم
             if (parts.length < 2 || !parts[0] || !parts[1]) {
-                redirectToError('invalid-format');
+                showError('تنسيق الرابط غير صحيح. يجب أن يكون بالشكل: player.html?room=معرف_الغرفة/اسم_المستخدم');
                 return { roomId: null, userName: null };
             }
             
@@ -89,29 +117,44 @@
             const userName = decodeURIComponent(parts[1]);
             
             if (!roomId || !userName) {
-                redirectToError('invalid-data');
+                showError('بيانات غير صالحة في الرابط');
                 return { roomId: null, userName: null };
             }
             
             return { roomId, userName };
         }
 
-        // دالة لإعادة التوجيه إلى صفحة الخطأ
-        function redirectToError(errorType, roomParam = null) {
-            let errorUrl = 'https://new-antik-p2p-20.onrender.com/error.html';
-            
-            if (roomParam) {
-                errorUrl += `?room=${roomParam}`;
-            } else {
-                const url = new URL(window.location.href);
-                const param = url.searchParams.get('room');
-                if (param) {
-                    errorUrl += `?room=${param}`;
+        // دالة لإظهار الخطأ مباشرة في الصفحة
+        function showError(message) {
+            document.getElementById('loadingText').style.display = 'none';
+            document.getElementById('errorMessage').textContent = message;
+            document.getElementById('errorOverlay').style.display = 'flex';
+        }
+
+        // دالة للتحقق من اتصال الفيديو
+        function checkVideoConnection() {
+            const videoEl = document.getElementById('remoteVideo');
+            setTimeout(() => {
+                if (!videoEl.srcObject || videoEl.srcObject.getTracks().length === 0) {
+                    showError('لم يتم استقبال أي بث. قد تكون الغرفة غير موجودة أو البث لم يبدأ بعد.');
                 }
+            }, 10000); // بعد 10 ثواني
+        }
+
+        // دالة إعادة المحاولة
+        function retryConnection() {
+            document.getElementById('errorOverlay').style.display = 'none';
+            document.getElementById('loadingText').style.display = 'block';
+            autoJoin();
+        }
+
+        // دالة للعودة إلى viewer.html
+        function goToViewer() {
+            if (currentRoomId && currentUserName) {
+                window.location.href = `https://new-antik-p2p-20.onrender.com/viewer.html?room=${currentRoomId}/${encodeURIComponent(currentUserName)}`;
+            } else {
+                window.location.href = 'https://new-antik-p2p-20.onrender.com/viewer.html';
             }
-            
-            errorUrl += `&error=${errorType}`;
-            window.location.href = errorUrl;
         }
 
         // الدخول التلقائي عند تحميل الصفحة
@@ -124,6 +167,9 @@
                 
                 // تحديث نص التحميل
                 document.getElementById('loadingText').textContent = `📡 جاري الاتصال بالغرفة: ${roomId}...`;
+                
+                // بدء التحقق من اتصال الفيديو
+                checkVideoConnection();
                 
                 // الدخول إلى الغرفة مباشرة
                 socket.emit('join-room', { roomId, userName });
@@ -150,7 +196,7 @@
                 }
             } catch (error) {
                 console.error("Error handling signal:", error);
-                redirectToError('connection-failed', `${currentRoomId}/${currentUserName}`);
+                showError('حدث خطأ في الاتصال بالبث. تحقق من اتصالك بالإنترنت وحاول مرة أخرى.');
             }
         });
 
@@ -173,35 +219,35 @@
             peerConnection.onconnectionstatechange = () => {
                 if (peerConnection.connectionState === 'disconnected' || 
                     peerConnection.connectionState === 'failed') {
-                    redirectToError('stream-ended', `${currentRoomId}/${currentUserName}`);
+                    showError('انقطع الاتصال بالبث. قد يكون البث قد انتهى.');
                 }
             };
         }
 
         // حدث انتهاء البث من المعلم
         socket.on('broadcast-ended', () => {
-            redirectToError('stream-ended', `${currentRoomId}/${currentUserName}`);
+            showError('انتهى البث المباشر من قبل المُذيع.');
         });
         
         // حدث خطأ من السيرفر
         socket.on('error', (data) => {
-            if (data.message && data.message.includes('غير موجود') || 
-                data.message && data.message.includes('not found')) {
-                redirectToError('room-not-found', `${currentRoomId}/${currentUserName}`);
+            if (data.message && (data.message.includes('غير موجود') || 
+                data.message && data.message.includes('not found'))) {
+                showError('عذراً، الغرفة المطلوبة غير موجودة أو تم إغلاقها.');
             } else {
-                redirectToError('server-error', `${currentRoomId}/${currentUserName}`);
+                showError('حدث خطأ في الخادم: ' + (data.message || 'خطأ غير معروف'));
             }
         });
 
         // حدث طرد من الغرفة
         socket.on('kicked', (data) => {
-            redirectToError('kicked', `${currentRoomId}/${currentUserName}`);
+            showError('تم طردك من الغرفة من قبل المُذيع.');
         });
 
-        // استمع لأخطاء الاتصال[citation:4][citation:7]
+        // استمع لأخطاء الاتصال
         socket.on("connect_error", (err) => {
             console.error("حدث خطأ في الاتصال بالسيرفر:", err.message);
-            redirectToError('server-unreachable', `${currentRoomId}/${currentUserName}`);
+            showError('لا يمكن الوصول إلى خادم البث حالياً. الرجاء المحاولة مرة أخرى لاحقاً.');
         });
 
         // حاول الدخول تلقائياً عند تحميل الصفحة
