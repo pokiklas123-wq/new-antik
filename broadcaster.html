@@ -55,7 +55,7 @@
             try {
                 // تقليل الجودة قليلاً لدعم 20 مشاهد بدون تقطيع
                 localStream = await navigator.mediaDevices.getUserMedia({ 
-                    video: { width: 480, height: 360, frameRate: 24 }, 
+                    video: { width: 1080, height: 720, frameRate: 60 }, 
                     audio: true 
                 });
                 
