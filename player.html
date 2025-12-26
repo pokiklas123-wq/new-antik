@@ -3,285 +3,209 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>👁️ مشاهدة البث المباشر</title>
+    <title>🎬 مشغل البث المباشر</title>
     <style>
-        :root {
-            --primary: #4361ee;
-            --dark: #1a1a2e;
-            --light: #f8f9fa;
-        }
-        
-        body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            min-height: 100vh;
-            padding: 20px;
+        * {
             margin: 0;
+            padding: 0;
+            box-sizing: border-box;
         }
         
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background: rgba(255, 255, 255, 0.95);
-            color: var(--dark);
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        body, html {
+            width: 100%;
+            height: 100%;
             overflow: hidden;
+            background: #000;
+            font-family: 'Segoe UI', sans-serif;
         }
         
-        header {
-            background: var(--primary);
-            color: white;
-            padding: 20px;
-            text-align: center;
+        #videoContainer {
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: #000;
         }
         
-        .join-section {
-            padding: 30px;
-            text-align: center;
-        }
-        
-        .input-group {
-            margin: 20px 0;
-        }
-        
-        input {
-            padding: 15px;
+        #remoteVideo {
             width: 100%;
-            max-width: 400px;
-            border: 2px solid #ddd;
-            border-radius: 50px;
-            font-size: 1rem;
-            margin-bottom: 10px;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
         }
         
-        button {
-            padding: 15px 30px;
-            background: var(--primary);
-            color: white;
-            border: none;
-            border-radius: 50px;
-            font-size: 1rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-        
-        button:hover {
-            background: #3a56d4;
-            transform: translateY(-2px);
-        }
-        
-        .video-section {
-            display: none;
-            padding: 20px;
-        }
-        
-        video {
-            width: 100%;
-            border-radius: 15px;
-            background: black;
-        }
-        
-        .status {
-            padding: 15px;
-            margin: 15px 0;
-            border-radius: 10px;
-            text-align: center;
-        }
-        
-        .connecting {
-            background: #ffd166;
-            color: #333;
-        }
-        
-        .connected {
-            background: #06d6a0;
-            color: white;
-        }
-        
-        .error {
-            background: #ef476f;
-            color: white;
-        }
-        
-        .info-box {
-            background: #f8f9fa;
-            padding: 15px;
-            border-radius: 10px;
-            margin-top: 20px;
-            border-right: 5px solid var(--primary);
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #4cc9f0;
+            font-size: 18px;
+            z-index: 10;
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <header>
-            <h1>👁️ مشاهدة البث المباشر</h1>
-            <p>ادخل كود الغرفة لمشاهدة البث</p>
-        </header>
-        
-        <div class="join-section" id="joinSection">
-            <div class="input-group">
-                <input type="text" id="roomInput" placeholder="أدخل كود الغرفة (مثل: math-class)" 
-                       value="" autocomplete="off">
-                <input type="text" id="userName" placeholder="اسمك (اختياري)" 
-                       value="مشاهد" autocomplete="off">
-            </div>
-            
-            <button onclick="joinBroadcast()" id="joinBtn">
-                <span id="joinText">📺 مشاهدة البث</span>
-                <span id="loadingText" style="display:none">⏳ جاري الاتصال...</span>
-            </button>
-            
-            <div class="info-box">
-                <h3>💡 كيف تعمل؟</h3>
-                <p>1. احصل على كود الغرفة من المعلم</p>
-                <p>2. أدخل الكود واضغط "مشاهدة البث"</p>
-                <p>3. استمتع بمشاهدة الدرس مباشرة</p>
-            </div>
-        </div>
-        
-        <div class="video-section" id="videoSection">
-            <video id="remoteVideo" autoplay playsinline></video>
-            
-            <div class="status" id="connectionStatus">
-                جاري الاتصال بالبث...
-            </div>
-            
-            <div style="text-align:center; margin:20px 0;">
-                <button onclick="leaveBroadcast()" id="leaveBtn" style="background:#ef476f;">
-                    🚪 مغادرة البث
-                </button>
-            </div>
-        </div>
+    <div id="videoContainer">
+        <div class="loading" id="loadingText">📡 جاري الاتصال بالبث...</div>
+        <video id="remoteVideo" autoplay playsinline></video>
     </div>
-    
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    <script src="/socket.io/socket.io.js"></script>
     <script>
-        const SERVER_URL = window.location.hostname === 'localhost' 
-            ? 'http://localhost:3000' 
-            : 'https://your-server.com';
+        const socket = io();
+        let peerConnection;
+        let currentRoomId = null;
+        let currentUserName = null;
         
-        let socket = null;
-        let roomId = '';
-        let peerConnection = null;
-        
-        const elements = {
-            joinSection: document.getElementById('joinSection'),
-            videoSection: document.getElementById('videoSection'),
-            roomInput: document.getElementById('roomInput'),
-            userName: document.getElementById('userName'),
-            joinBtn: document.getElementById('joinBtn'),
-            joinText: document.getElementById('joinText'),
-            loadingText: document.getElementById('loadingText'),
-            remoteVideo: document.getElementById('remoteVideo'),
-            connectionStatus: document.getElementById('connectionStatus'),
-            leaveBtn: document.getElementById('leaveBtn')
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
         };
-        
-        // التحقق من كود الغرفة في الرابط
-        function checkUrlForRoomCode() {
-            const params = new URLSearchParams(window.location.search);
-            const roomFromUrl = params.get('room');
+
+        // دالة لاستخراج المعلمات من الرابط - شرط: يجب أن يكون المعرف والاسم في الرابط
+        function extractParamsFromURL() {
+            const url = new URL(window.location.href);
+            const roomParam = url.searchParams.get('room'); // يجب أن يكون مثل 'room1/mohamed'
             
-            if (roomFromUrl) {
-                elements.roomInput.value = roomFromUrl;
-                setTimeout(() => joinBroadcast(), 500);
+            if (!roomParam) {
+                redirectToError('no-room');
+                return { roomId: null, userName: null };
+            }
+            
+            // فصل معرف الغرفة عن اسم المستخدم
+            const parts = roomParam.split('/');
+            
+            // يجب أن يحتوي الرابط على المعرف والاسم
+            if (parts.length < 2 || !parts[0] || !parts[1]) {
+                redirectToError('invalid-format');
+                return { roomId: null, userName: null };
+            }
+            
+            const roomId = parts[0];
+            const userName = decodeURIComponent(parts[1]);
+            
+            if (!roomId || !userName) {
+                redirectToError('invalid-data');
+                return { roomId: null, userName: null };
+            }
+            
+            return { roomId, userName };
+        }
+
+        // دالة لإعادة التوجيه إلى صفحة الخطأ
+        function redirectToError(errorType, roomParam = null) {
+            let errorUrl = 'https://new-antik-p2p-20.onrender.com/error.html';
+            
+            if (roomParam) {
+                errorUrl += `?room=${roomParam}`;
+            } else {
+                const url = new URL(window.location.href);
+                const param = url.searchParams.get('room');
+                if (param) {
+                    errorUrl += `?room=${param}`;
+                }
+            }
+            
+            errorUrl += `&error=${errorType}`;
+            window.location.href = errorUrl;
+        }
+
+        // الدخول التلقائي عند تحميل الصفحة
+        function autoJoin() {
+            const { roomId, userName } = extractParamsFromURL();
+            
+            if (roomId && userName) {
+                currentRoomId = roomId;
+                currentUserName = userName;
+                
+                // تحديث نص التحميل
+                document.getElementById('loadingText').textContent = `📡 جاري الاتصال بالغرفة: ${roomId}...`;
+                
+                // الدخول إلى الغرفة مباشرة
+                socket.emit('join-room', { roomId, userName });
             }
         }
-        
-        // الانضمام للبث
-        async function joinBroadcast() {
-            roomId = elements.roomInput.value.trim();
-            const userName = elements.userName.value.trim() || 'مشاهد';
-            
-            if (!roomId) {
-                alert('⚠️ الرجاء إدخال كود الغرفة');
-                return;
-            }
-            
-            // عرض حالة التحميل
-            elements.joinText.style.display = 'none';
-            elements.loadingText.style.display = 'inline';
-            elements.joinBtn.disabled = true;
-            
-            try {
-                // الاتصال بالسيرفر
-                socket = io(SERVER_URL);
-                
-                socket.on('connect', () => {
-                    console.log('✅ متصل بالسيرفر:', socket.id);
-                    
-                    // الانضمام للغرفة
-                    socket.emit('join-room', {
-                        roomId: roomId,
-                        userType: 'viewer',
-                        userName: userName
-                    });
-                });
-                
-                socket.on('signal', async (data) => {
-                    // هنا ستتم معالجة إشارات WebRTC
-                    console.log('📡 إشارة واردة:', data.type);
-                });
-                
-                socket.on('broadcast-ended', () => {
-                    alert('📢 انتهى البث من قبل المعلم');
-                    leaveBroadcast();
-                });
-                
-                // تبديل الواجهات
-                elements.joinSection.style.display = 'none';
-                elements.videoSection.style.display = 'block';
-                elements.connectionStatus.className = 'status connected';
-                elements.connectionStatus.textContent = `✅ متصل بالبث - ${roomId}`;
-                
-            } catch (error) {
-                console.error('❌ خطأ في الاتصال:', error);
-                elements.connectionStatus.className = 'status error';
-                elements.connectionStatus.textContent = '❌ فشل الاتصال';
-                
-                elements.joinText.style.display = 'inline';
-                elements.loadingText.style.display = 'none';
-                elements.joinBtn.disabled = false;
-            }
-        }
-        
-        // مغادرة البث
-        function leaveBroadcast() {
-            if (socket) {
-                socket.disconnect();
-            }
-            
-            if (peerConnection) {
-                peerConnection.close();
-            }
-            
-            // إعادة تعيين الواجهة
-            elements.videoSection.style.display = 'none';
-            elements.joinSection.style.display = 'block';
-            elements.joinText.style.display = 'inline';
-            elements.loadingText.style.display = 'none';
-            elements.joinBtn.disabled = false;
-            
-            // مسح الفيديو
-            elements.remoteVideo.srcObject = null;
-        }
-        
-        // بدء التطبيق
-        document.addEventListener('DOMContentLoaded', () => {
-            checkUrlForRoomCode();
-            
-            // السماح بالدخول بالإنتر
-            elements.roomInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') joinBroadcast();
-            });
-            
-            elements.userName.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') joinBroadcast();
-            });
+
+        // --- استمع لأحداث السيرفر ---
+        socket.on('joined-room', (data) => {
+            document.getElementById('loadingText').textContent = `✅ متصل. بانتظار بدء البث...`;
         });
+
+        socket.on('webrtc-signal', async (data) => {
+            if (!peerConnection) createPeerConnection(data.from);
+
+            try {
+                if (data.type === 'offer') {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    socket.emit('webrtc-signal', { to: data.from, type: 'answer', signal: answer });
+                    
+                } else if (data.type === 'candidate') {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
+                }
+            } catch (error) {
+                console.error("Error handling signal:", error);
+                redirectToError('connection-failed', `${currentRoomId}/${currentUserName}`);
+            }
+        });
+
+        function createPeerConnection(broadcasterId) {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            peerConnection.ontrack = (event) => {
+                console.log("🎬 وصل الفيديو!");
+                const videoEl = document.getElementById('remoteVideo');
+                videoEl.srcObject = event.streams[0];
+                document.getElementById('loadingText').style.display = 'none';
+            };
+            
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('webrtc-signal', { to: broadcasterId, type: 'candidate', signal: event.candidate });
+                }
+            };
+            
+            peerConnection.onconnectionstatechange = () => {
+                if (peerConnection.connectionState === 'disconnected' || 
+                    peerConnection.connectionState === 'failed') {
+                    redirectToError('stream-ended', `${currentRoomId}/${currentUserName}`);
+                }
+            };
+        }
+
+        // حدث انتهاء البث من المعلم
+        socket.on('broadcast-ended', () => {
+            redirectToError('stream-ended', `${currentRoomId}/${currentUserName}`);
+        });
+        
+        // حدث خطأ من السيرفر
+        socket.on('error', (data) => {
+            if (data.message && data.message.includes('غير موجود') || 
+                data.message && data.message.includes('not found')) {
+                redirectToError('room-not-found', `${currentRoomId}/${currentUserName}`);
+            } else {
+                redirectToError('server-error', `${currentRoomId}/${currentUserName}`);
+            }
+        });
+
+        // حدث طرد من الغرفة
+        socket.on('kicked', (data) => {
+            redirectToError('kicked', `${currentRoomId}/${currentUserName}`);
+        });
+
+        // استمع لأخطاء الاتصال[citation:4][citation:7]
+        socket.on("connect_error", (err) => {
+            console.error("حدث خطأ في الاتصال بالسيرفر:", err.message);
+            redirectToError('server-unreachable', `${currentRoomId}/${currentUserName}`);
+        });
+
+        // حاول الدخول تلقائياً عند تحميل الصفحة
+        window.onload = autoJoin;
     </script>
 </body>
 </html>
