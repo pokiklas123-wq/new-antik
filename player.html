@@ -34,7 +34,7 @@
 </head>
 <body>
     <div id="videoContainer">
-        <video id="remoteVideo" autoplay playsinline muted></video>
+        <video id="remoteVideo" autoplay playsinline controls></video>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -51,172 +51,246 @@
             ]
         };
 
-        // دالة لاستخراج المعلمات من الرابط
-        function extractParamsFromURL() {
-            const url = new URL(window.location.href);
-            const roomParam = url.searchParams.get('room');
-            
-            if (!roomParam) {
-                redirectToError('no-room');
-                return { roomId: null, userName: null };
+        // استخراج المعلومات من الرابط
+        function getParamsFromURL() {
+            try {
+                const url = new URL(window.location.href);
+                const roomParam = url.searchParams.get('room');
+                
+                if (!roomParam) throw new Error('no-room');
+                
+                const parts = roomParam.split('/');
+                if (parts.length < 2 || !parts[0] || !parts[1]) {
+                    throw new Error('invalid-format');
+                }
+                
+                return {
+                    roomId: parts[0],
+                    userName: decodeURIComponent(parts[1])
+                };
+            } catch (error) {
+                redirectToError(error.message);
+                return null;
             }
-            
-            const parts = roomParam.split('/');
-            
-            if (parts.length < 2 || !parts[0] || !parts[1]) {
-                redirectToError('invalid-format');
-                return { roomId: null, userName: null };
-            }
-            
-            const roomId = parts[0];
-            const userName = decodeURIComponent(parts[1]);
-            
-            if (!roomId || !userName) {
-                redirectToError('invalid-data');
-                return { roomId: null, userName: null };
-            }
-            
-            return { roomId, userName };
         }
 
-        // دالة لإعادة التوجيه إلى صفحة الخطأ
+        // توجيه إلى صفحة الخطأ
         function redirectToError(errorType) {
             const url = new URL(window.location.href);
-            const roomParam = url.searchParams.get('room');
+            const roomParam = url.searchParams.get('room') || '';
             
-            let errorUrl = 'https://new-antik-p2p-20.onrender.com/error.html';
-            
-            if (roomParam) {
-                errorUrl += `?room=${roomParam}`;
-            }
-            
-            errorUrl += `&error=${errorType}`;
-            window.location.href = errorUrl;
+            window.location.href = `https://new-antik-p2p-20.onrender.com/error.html?room=${roomParam}&error=${errorType}`;
         }
 
-        // الدخول التلقائي عند تحميل الصفحة
-        function autoJoin() {
-            const { roomId, userName } = extractParamsFromURL();
+        // الاتصال التلقائي
+        function connectToStream() {
+            const params = getParamsFromURL();
+            if (!params) return;
             
-            if (roomId && userName) {
-                currentRoomId = roomId;
-                currentUserName = userName;
-                
-                socket.emit('join-room', { roomId, userName });
-            }
+            currentRoomId = params.roomId;
+            currentUserName = params.userName;
+            
+            socket.emit('join-room', { 
+                roomId: currentRoomId, 
+                userName: currentUserName 
+            });
         }
 
         // --- استمع لأحداث السيرفر ---
+        
+        // عندما ينضم بنجاح
         socket.on('joined-room', () => {
-            // لا شيء - مجرد اتصال
+            console.log('✅ تم الانضمام للغرفة:', currentRoomId);
         });
 
-        // استمع للعرض (offer) من المعلم
-        socket.on('webrtc-offer', async (data) => {
+        // الحدث الأهم: استقبال عرض WebRTC من المُبث
+        socket.on('offer', async (data) => {
+            console.log('📩 استقبال عرض WebRTC من المُبث:', data.from);
+            
+            if (!peerConnection) {
+                createPeerConnection(data.from);
+            }
+            
             try {
-                if (!peerConnection) {
-                    createPeerConnection(data.from);
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                socket.emit('answer', {
+                    to: data.from,
+                    roomId: currentRoomId,
+                    sdp: answer
+                });
+                
+                console.log('📤 تم إرسال الإجابة إلى المُبث');
+                
+            } catch (error) {
+                console.error('❌ خطأ في معالجة العرض:', error);
+                redirectToError('connection-failed');
+            }
+        });
+
+        // استمع أيضاً لـ 'webrtc-signal' (إذا كان السيرفر يستخدم هذا الاسم)
+        socket.on('webrtc-signal', async (data) => {
+            console.log('📡 استقبال إشارة WebRTC:', data.type);
+            
+            if (!peerConnection && data.type === 'offer') {
+                createPeerConnection(data.from);
+            }
+            
+            try {
+                if (data.type === 'offer') {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
+                    
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    
+                    socket.emit('webrtc-signal', {
+                        to: data.from,
+                        type: 'answer',
+                        signal: answer
+                    });
+                    
+                } else if (data.type === 'candidate' && peerConnection) {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
                 }
                 
+            } catch (error) {
+                console.error('❌ خطأ في معالجة الإشارة:', error);
+                redirectToError('connection-failed');
+            }
+        });
+
+        // استمع لـ 'stream-offer' (اسم ثالث محتمل)
+        socket.on('stream-offer', async (data) => {
+            console.log('🎥 استقبال عرض البث:', data);
+            
+            if (!peerConnection) {
+                createPeerConnection(data.broadcasterId || 'broadcaster');
+            }
+            
+            try {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
                 
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
                 
-                socket.emit('webrtc-answer', { 
-                    to: data.from, 
+                socket.emit('stream-answer', {
                     roomId: currentRoomId,
-                    answer: answer 
+                    answer: answer
                 });
                 
             } catch (error) {
+                console.error('❌ خطأ في معالجة عرض البث:', error);
                 redirectToError('connection-failed');
             }
         });
 
-        // استمع للمرشحين (ICE Candidates)
-        socket.on('webrtc-candidate', async (data) => {
+        // استمع لمرشحات ICE بأسماء مختلفة
+        socket.on('ice-candidate', async (data) => {
             if (peerConnection && data.candidate) {
                 try {
                     await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
                 } catch (error) {
-                    // تجاهل الخطأ
+                    console.error('❌ خطأ في إضافة مرشح ICE:', error);
                 }
             }
         });
 
+        socket.on('candidate', async (data) => {
+            if (peerConnection && data.candidate) {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (error) {
+                    console.error('❌ خطأ في إضافة مرشح ICE:', error);
+                }
+            }
+        });
+
+        // إنشاء اتصال WebRTC
         function createPeerConnection(broadcasterId) {
+            console.log('🔧 إنشاء اتصال WebRTC جديد');
+            
             peerConnection = new RTCPeerConnection(rtcConfig);
             
+            // أهم جزء: عندما يصل الفيديو
             peerConnection.ontrack = (event) => {
+                console.log('🎬 وصل الفيديو!', event.streams[0]);
+                
                 const videoEl = document.getElementById('remoteVideo');
                 videoEl.srcObject = event.streams[0];
                 
-                videoEl.play().catch(() => {
-                    // تجاهل خطأ التشغيل التلقائي
+                videoEl.play().catch(e => {
+                    console.log('⚠️ المتصفح يطلب تفاعلاً لتشغيل الفيديو');
                 });
             };
             
+            // إرسال مرشحات ICE
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
-                    socket.emit('webrtc-candidate', { 
-                        to: broadcasterId, 
+                    socket.emit('ice-candidate', {
                         roomId: currentRoomId,
-                        candidate: event.candidate 
+                        candidate: event.candidate
                     });
                 }
             };
             
+            // مراقبة حالة الاتصال
             peerConnection.onconnectionstatechange = () => {
+                console.log('🔄 حالة الاتصال:', peerConnection.connectionState);
+                
                 if (peerConnection.connectionState === 'disconnected' || 
                     peerConnection.connectionState === 'failed') {
-                    redirectToError('stream-ended');
+                    setTimeout(() => {
+                        redirectToError('stream-ended');
+                    }, 2000);
                 }
             };
         }
 
-        // حدث انتهاء البث من المعلم
+        // أحداث الخطأ
         socket.on('broadcast-ended', () => {
+            console.log('🛑 انتهى البث من المُبث');
             redirectToError('stream-ended');
         });
         
-        // حدث خطأ من السيرفر
+        socket.on('room-not-found', () => {
+            console.log('🔍 الغرفة غير موجودة');
+            redirectToError('room-not-found');
+        });
+        
         socket.on('error', (data) => {
-            if (data.message && (data.message.includes('غير موجود') || data.message.includes('not found'))) {
-                redirectToError('room-not-found');
-            } else {
-                redirectToError('server-error');
-            }
+            console.error('❌ خطأ من السيرفر:', data.message);
+            redirectToError('server-error');
         });
 
-        // استمع لأخطاء الاتصال
-        socket.on("connect_error", () => {
+        socket.on("connect_error", (error) => {
+            console.error('❌ خطأ اتصال بالسيرفر:', error.message);
             redirectToError('server-unreachable');
         });
 
-        // استمع لاستقبال إجابة (answer) من السيرفر
-        socket.on('webrtc-answer', async (data) => {
-            if (peerConnection && data.answer) {
-                try {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
-                } catch (error) {
-                    // تجاهل الخطأ
-                }
-            }
-        });
-
-        // حاول الدخول تلقائياً عند تحميل الصفحة
-        window.onload = autoJoin;
+        // بدء الاتصال عند تحميل الصفحة
+        window.onload = connectToStream;
         
-        // أضف حدث النقر لتشغيل الفيديو يدوياً
+        // النقر لتشغيل الفيديو يدوياً
         document.addEventListener('click', function() {
             const videoEl = document.getElementById('remoteVideo');
             if (videoEl.srcObject) {
-                videoEl.play().catch(() => {
-                    // تجاهل خطأ التشغيل
+                videoEl.play().catch(e => {
+                    console.log('👆 تم النقر، جاري تشغيل الفيديو...');
                 });
             }
         });
+
+        // إعادة المحاولة بعد 30 ثانية إذا لم يصل شيء
+        setTimeout(() => {
+            const videoEl = document.getElementById('remoteVideo');
+            if (!videoEl.srcObject) {
+                console.log('⏰ انتهى الوقت، لا يوجد بث');
+                redirectToError('stream-ended');
+            }
+        }, 30000);
     </script>
 </body>
 </html>
