@@ -119,12 +119,24 @@
         let isVideoPlaying = false;
         
         const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:global.stun.twilio.com:3478' }
-            ],
-            sdpSemantics: 'unified-plan' // ✅ مهم لفيديو WebRTC
-        };
+    iceServers: [
+        // خادم STUN
+        { urls: 'stun:stun.l.google.com:19302' },
+        // خادم TURN الأساسي (UDP)
+        {
+            urls: 'turn:relay1.expressturn.com:3480',
+            username: '000000002082111515',
+            credential: 'HC4BPBxsHVvEIw+TIvW/a44WRFA='
+        },
+        // خادم TURN باستخدام TCP (كبديل إذا تم حظر UDP)
+        {
+            urls: 'turn:relay1.expressturn.com:3480?transport=tcp',
+            username: '000000002082111515',
+            credential: 'HC4BPBxsHVvEIw+TIvW/a44WRFA='
+        }
+    ],
+    sdpSemantics: 'unified-plan' // ✅ مهم لفيديو WebRTC
+};
 
         // === عناصر DOM ===
         const videoContainer = document.getElementById('videoContainer');
