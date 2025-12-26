@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>🎬 مشغل البث المباشر</title>
-    <!-- Font Awesome للأيقونات -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         * {
             margin: 0;
@@ -33,177 +31,183 @@
             height: 100%;
             object-fit: contain;
             background: #000;
+            /* مهم: إزالة controls الافتراضية */
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
         }
         
-        /* زر التشغيل الكبير في المنتصف */
-        #bigPlayBtn {
+        /* إخفاء جميع controls الافتراضية */
+        #remoteVideo::-webkit-media-controls {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-panel {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-play-button {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-volume-slider {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-mute-button {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-timeline {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-current-time-display {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-time-remaining-display {
+            display: none !important;
+        }
+        
+        #remoteVideo::-webkit-media-controls-fullscreen-button {
+            display: none !important;
+        }
+        
+        /* التحكم المخصص في وسط الشاشة */
+        .center-controls {
             position: absolute;
             top: 50%;
             left: 50%;
             transform: translate(-50%, -50%);
-            background: rgba(0, 0, 0, 0.7);
-            border: none;
-            color: white;
-            font-size: 60px;
-            width: 100px;
-            height: 100px;
-            border-radius: 50%;
-            cursor: pointer;
-            display: none;
-            z-index: 10;
-            transition: all 0.3s;
-        }
-        
-        #bigPlayBtn.show {
-            display: block;
-        }
-        
-        #bigPlayBtn:hover {
-            background: rgba(76, 201, 240, 0.8);
-            transform: translate(-50%, -50%) scale(1.1);
-        }
-        
-        /* التحكمات السفلية */
-        #controlsOverlay {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: linear-gradient(to top, rgba(0,0,0,0.8), transparent);
-            padding: 20px;
             display: flex;
-            justify-content: space-between;
+            flex-direction: column;
             align-items: center;
+            gap: 20px;
+            z-index: 10;
             opacity: 0;
             transition: opacity 0.3s;
-            z-index: 5;
+            pointer-events: none;
         }
         
-        #controlsOverlay.show {
+        .center-controls.show {
             opacity: 1;
-        }
-        
-        .controls-left, .controls-right {
-            display: flex;
-            align-items: center;
-            gap: 15px;
+            pointer-events: auto;
         }
         
         .control-btn {
-            background: none;
-            border: none;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid rgba(255, 255, 255, 0.3);
             color: white;
             font-size: 24px;
+            width: 60px;
+            height: 60px;
+            border-radius: 50%;
             cursor: pointer;
-            padding: 8px;
-            transition: transform 0.2s;
-            width: 40px;
-            height: 40px;
             display: flex;
             align-items: center;
             justify-content: center;
+            transition: all 0.3s;
+            backdrop-filter: blur(10px);
         }
         
         .control-btn:hover {
-            transform: scale(1.2);
-            color: #4cc9f0;
+            background: rgba(76, 201, 240, 0.8);
+            border-color: #4cc9f0;
+            transform: scale(1.1);
         }
         
-        /* شريط التقدم */
-        #progressContainer {
-            position: absolute;
-            bottom: 80px;
-            left: 20px;
-            right: 20px;
-            height: 5px;
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 3px;
-            overflow: hidden;
-            cursor: pointer;
+        .control-btn i {
+            font-size: 28px;
         }
         
-        #progressBar {
-            height: 100%;
-            background: #4cc9f0;
-            width: 0%;
-            transition: width 0.1s;
+        /* زر التشغيل الكبير */
+        #bigPlayBtn {
+            width: 100px;
+            height: 100px;
+            font-size: 40px;
+            background: rgba(76, 201, 240, 0.8);
+            border: 3px solid white;
         }
         
-        /* شريط الصوت */
-        .volume-container {
+        /* مجموعة التحكم الصغيرة */
+        .controls-group {
             display: flex;
-            align-items: center;
-            gap: 10px;
-            position: relative;
-        }
-        
-        #volumeSlider {
-            width: 0;
+            gap: 15px;
             opacity: 0;
-            height: 5px;
-            background: rgba(255, 255, 255, 0.3);
-            border-radius: 3px;
-            outline: none;
-            transition: width 0.3s, opacity 0.3s;
+            transition: opacity 0.3s;
         }
         
-        .volume-container:hover #volumeSlider {
-            width: 80px;
+        .center-controls.show .controls-group {
             opacity: 1;
         }
         
-        #volumeSlider::-webkit-slider-thumb {
-            -webkit-appearance: none;
-            width: 15px;
-            height: 15px;
-            border-radius: 50%;
-            background: white;
-            cursor: pointer;
+        /* مؤشر التحميل */
+        .loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: #4cc9f0;
+            font-size: 18px;
+            text-align: center;
+            z-index: 5;
         }
         
-        /* الوقت */
-        #timeDisplay {
+        .loading-spinner {
+            border: 4px solid rgba(76, 201, 240, 0.3);
+            border-top: 4px solid #4cc9f0;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 15px;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        /* معلومات الغرفة */
+        .room-info {
+            position: absolute;
+            top: 20px;
+            left: 20px;
             color: white;
+            background: rgba(0, 0, 0, 0.5);
+            padding: 10px 15px;
+            border-radius: 10px;
             font-size: 14px;
-            font-family: monospace;
-            min-width: 120px;
-            text-align: center;
+            z-index: 5;
         }
     </style>
 </head>
 <body>
     <div id="videoContainer">
-        <!-- الفيديو بدون controls -->
+        <!-- الفيديو بدون controls إطلاقاً -->
         <video id="remoteVideo" autoplay playsinline></video>
         
-        <!-- زر التشغيل الكبير في المنتصف -->
-        <button id="bigPlayBtn" class="show">
-            <i class="fas fa-play"></i>
-        </button>
-        
-        <!-- شريط التقدم -->
-        <div id="progressContainer">
-            <div id="progressBar"></div>
+        <!-- مؤشر التحميل -->
+        <div class="loading" id="loading">
+            <div class="loading-spinner"></div>
+            <div>جاري الاتصال بالبث...</div>
         </div>
         
-        <!-- التحكمات السفلية -->
-        <div id="controlsOverlay">
-            <div class="controls-left">
-                <button id="playBtn" class="control-btn">
-                    <i class="fas fa-play"></i>
-                </button>
-                
-                <div class="volume-container">
-                    <button id="muteBtn" class="control-btn">
-                        <i class="fas fa-volume-up"></i>
-                    </button>
-                    <input type="range" id="volumeSlider" min="0" max="1" step="0.1" value="1">
-                </div>
-                
-                <span id="timeDisplay">00:00 / 00:00</span>
-            </div>
+        <!-- معلومات الغرفة -->
+        <div class="room-info" id="roomInfo"></div>
+        
+        <!-- التحكم المخصص في وسط الشاشة -->
+        <div class="center-controls" id="centerControls">
+            <button id="bigPlayBtn" class="control-btn">
+                <i class="fas fa-play"></i>
+            </button>
             
-            <div class="controls-right">
+            <div class="controls-group">
+                <button id="volumeBtn" class="control-btn">
+                    <i class="fas fa-volume-up"></i>
+                </button>
                 <button id="fullscreenBtn" class="control-btn">
                     <i class="fas fa-expand"></i>
                 </button>
@@ -211,71 +215,80 @@
         </div>
     </div>
 
+    <!-- Font Awesome -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/js/all.min.js"></script>
+    <!-- Socket.io -->
     <script src="/socket.io/socket.io.js"></script>
+    
     <script>
+        // ===== إعدادات أساسية =====
         const socket = io();
-        let peerConnection;
+        let peerConnection = null;
         let currentRoomId = null;
         let currentUserName = null;
-        let controlsTimeout;
+        let isStreamActive = false;
+        let controlsVisible = false;
         
-        const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:global.stun.twilio.com:3478' }
-            ]
-        };
-
-        // === عناصر DOM ===
+        // ===== عناصر DOM =====
         const video = document.getElementById('remoteVideo');
+        const loading = document.getElementById('loading');
+        const roomInfo = document.getElementById('roomInfo');
+        const centerControls = document.getElementById('centerControls');
         const bigPlayBtn = document.getElementById('bigPlayBtn');
-        const playBtn = document.getElementById('playBtn');
-        const muteBtn = document.getElementById('muteBtn');
-        const volumeSlider = document.getElementById('volumeSlider');
+        const volumeBtn = document.getElementById('volumeBtn');
         const fullscreenBtn = document.getElementById('fullscreenBtn');
-        const controlsOverlay = document.getElementById('controlsOverlay');
-        const progressBar = document.getElementById('progressBar');
-        const progressContainer = document.getElementById('progressContainer');
-        const timeDisplay = document.getElementById('timeDisplay');
-
-        // === وظائف التحكم بالفيديو ===
+        
+        // ===== تحضير الفيديو (إخفاء controls نهائياً) =====
+        function prepareVideoElement() {
+            // 1. إزالة controls
+            video.removeAttribute('controls');
+            
+            // 2. منع السياق
+            video.oncontextmenu = (e) => e.preventDefault();
+            
+            // 3. إضافة muted للتشغيل التلقائي
+            video.muted = true;
+            
+            // 4. CSS إضافي
+            video.style.pointerEvents = 'auto';
+            
+            console.log('✅ تم تحضير عنصر الفيديو (بدون controls)');
+        }
+        
+        // ===== وظائف التحكم =====
         function showControls() {
-            controlsOverlay.classList.add('show');
-            clearTimeout(controlsTimeout);
-            controlsTimeout = setTimeout(hideControls, 3000);
+            if (!controlsVisible && isStreamActive) {
+                centerControls.classList.add('show');
+                controlsVisible = true;
+                
+                setTimeout(() => {
+                    if (controlsVisible) {
+                        centerControls.classList.remove('show');
+                        controlsVisible = false;
+                    }
+                }, 3000);
+            }
         }
         
         function hideControls() {
-            controlsOverlay.classList.remove('show');
+            centerControls.classList.remove('show');
+            controlsVisible = false;
         }
         
         function togglePlay() {
             if (video.paused) {
                 video.play();
-                playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                bigPlayBtn.classList.remove('show');
+                bigPlayBtn.innerHTML = '<i class="fas fa-pause"></i>';
+                video.muted = false; // تفعيل الصوت عند التشغيل
             } else {
                 video.pause();
-                playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                bigPlayBtn.classList.add('show');
+                bigPlayBtn.innerHTML = '<i class="fas fa-play"></i>';
             }
         }
         
-        function toggleMute() {
+        function toggleVolume() {
             video.muted = !video.muted;
-            if (video.muted) {
-                muteBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
-                volumeSlider.value = 0;
-            } else {
-                muteBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
-                volumeSlider.value = video.volume;
-            }
-        }
-        
-        function updateVolume() {
-            video.volume = volumeSlider.value;
-            video.muted = volumeSlider.value == 0;
-            muteBtn.innerHTML = video.muted ? 
+            volumeBtn.innerHTML = video.muted ? 
                 '<i class="fas fa-volume-mute"></i>' : 
                 '<i class="fas fa-volume-up"></i>';
         }
@@ -290,63 +303,35 @@
             }
         }
         
-        function updateProgress() {
-            if (video.duration) {
-                const percent = (video.currentTime / video.duration) * 100;
-                progressBar.style.width = percent + '%';
-                
-                const currentTime = formatTime(video.currentTime);
-                const duration = formatTime(video.duration);
-                timeDisplay.textContent = `${currentTime} / ${duration}`;
-            }
-        }
-        
-        function formatTime(seconds) {
-            if (isNaN(seconds)) return "00:00";
-            const mins = Math.floor(seconds / 60);
-            const secs = Math.floor(seconds % 60);
-            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-        }
-        
-        // === أحداث التحكم ===
-        bigPlayBtn.addEventListener('click', togglePlay);
-        playBtn.addEventListener('click', togglePlay);
-        muteBtn.addEventListener('click', toggleMute);
-        volumeSlider.addEventListener('input', updateVolume);
-        fullscreenBtn.addEventListener('click', toggleFullscreen);
-        
-        video.addEventListener('click', () => {
-            if (controlsOverlay.classList.contains('show')) {
-                hideControls();
-            } else {
-                showControls();
-            }
+        // ===== أحداث التحكم =====
+        bigPlayBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            togglePlay();
         });
         
-        video.addEventListener('dblclick', toggleFullscreen);
+        volumeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleVolume();
+        });
+        
+        fullscreenBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            toggleFullscreen();
+        });
+        
+        video.addEventListener('click', () => {
+            showControls();
+        });
         
         video.addEventListener('play', () => {
-            playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-            bigPlayBtn.classList.remove('show');
+            bigPlayBtn.innerHTML = '<i class="fas fa-pause"></i>';
+            loading.style.display = 'none';
+            isStreamActive = true;
+            showControls();
         });
         
         video.addEventListener('pause', () => {
-            playBtn.innerHTML = '<i class="fas fa-play"></i>';
-            bigPlayBtn.classList.add('show');
-        });
-        
-        video.addEventListener('timeupdate', updateProgress);
-        
-        progressContainer.addEventListener('click', (e) => {
-            const rect = progressContainer.getBoundingClientRect();
-            const percent = (e.clientX - rect.left) / rect.width;
-            video.currentTime = percent * video.duration;
-        });
-        
-        document.addEventListener('mousemove', () => {
-            if (!video.paused) {
-                showControls();
-            }
+            bigPlayBtn.innerHTML = '<i class="fas fa-play"></i>';
         });
         
         document.addEventListener('fullscreenchange', () => {
@@ -354,9 +339,16 @@
                 fullscreenBtn.innerHTML = '<i class="fas fa-expand"></i>';
             }
         });
-
-        // === WebRTC Code ===
-        function getParamsFromURL() {
+        
+        // ===== WebRTC Communication =====
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' }
+            ]
+        };
+        
+        // استخراج البيانات من الرابط
+        function extractParamsFromURL() {
             try {
                 const url = new URL(window.location.href);
                 const roomParam = url.searchParams.get('room');
@@ -368,170 +360,237 @@
                     throw new Error('invalid-format');
                 }
                 
-                return {
-                    roomId: parts[0],
-                    userName: decodeURIComponent(parts[1])
-                };
+                const roomId = parts[0];
+                const userName = decodeURIComponent(parts[1]);
+                
+                // تحديث معلومات الغرفة
+                roomInfo.textContent = `📺 ${roomId} | 👤 ${userName}`;
+                
+                return { roomId, userName };
+                
             } catch (error) {
                 redirectToError(error.message);
                 return null;
             }
         }
         
+        // التوجيه لصفحة الخطأ
         function redirectToError(errorType) {
             const url = new URL(window.location.href);
             const roomParam = url.searchParams.get('room') || '';
             window.location.href = `https://new-antik-p2p-20.onrender.com/error.html?room=${roomParam}&error=${errorType}`;
         }
         
-        function connectToStream() {
-            const params = getParamsFromURL();
-            if (!params) return;
+        // الانضمام للغرفة - بطريقة لا تؤثر على المنشئ
+        function joinRoomSafely(roomId, userName) {
+            console.log('🔗 جاري الاتصال الآمن بالغرفة:', roomId);
             
-            currentRoomId = params.roomId;
-            currentUserName = params.userName;
-            
-            socket.emit('join-room', { 
-                roomId: currentRoomId, 
-                userName: currentUserName 
+            // إرسال طلب مشاهدة فقط (وليس انضمام كمشترك نشط)
+            socket.emit('viewer-join', {
+                roomId: roomId,
+                userName: userName,
+                type: 'viewer-only', // نوع خاص للمشاهدين السلبيين
+                timestamp: Date.now()
             });
-            
-            // إظهار التحكمات لمدة 3 ثواني عند البدء
-            showControls();
         }
         
-        socket.on('joined-room', () => {
-            console.log('✅ تم الانضمام للغرفة:', currentRoomId);
-        });
-        
-        socket.on('offer', async (data) => {
-            console.log('📩 استقبال عرض WebRTC من المُبث');
+        // معالجة البث الوارد
+        function handleIncomingStream(stream) {
+            console.log('🎬 تم استقالب تدفق الفيديو');
             
-            if (!peerConnection) {
-                createPeerConnection(data.from);
-            }
+            video.srcObject = stream;
+            isStreamActive = true;
             
-            try {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                
-                socket.emit('answer', {
-                    to: data.from,
-                    roomId: currentRoomId,
-                    sdp: answer
-                });
-                
-            } catch (error) {
-                console.error('❌ خطأ في معالجة العرض:', error);
-                redirectToError('connection-failed');
-            }
-        });
+            // محاولة التشغيل
+            video.play().then(() => {
+                console.log('✅ بدأ تشغيل الفيديو');
+                loading.style.display = 'none';
+                showControls();
+            }).catch((error) => {
+                console.log('⚠️ يحتاج تفاعل المستخدم:', error);
+                loading.innerHTML = '<div>انقر للتشغيل</div>';
+            });
+        }
         
-        socket.on('webrtc-signal', async (data) => {
-            console.log('📡 استقبال إشارة WebRTC:', data.type);
+        // إنشاء اتصال WebRTC
+        function createPeerConnection() {
+            console.log('🔧 إنشاء اتصال WebRTC');
             
-            if (!peerConnection && data.type === 'offer') {
-                createPeerConnection(data.from);
+            if (peerConnection) {
+                peerConnection.close();
             }
-            
-            try {
-                if (data.type === 'offer') {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    
-                    socket.emit('webrtc-signal', {
-                        to: data.from,
-                        type: 'answer',
-                        signal: answer
-                    });
-                    
-                } else if (data.type === 'candidate' && peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
-                }
-                
-            } catch (error) {
-                console.error('❌ خطأ في معالجة الإشارة:', error);
-                redirectToError('connection-failed');
-            }
-        });
-        
-        socket.on('ice-candidate', async (data) => {
-            if (peerConnection && data.candidate) {
-                try {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
-                } catch (error) {
-                    console.error('❌ خطأ في إضافة مرشح ICE:', error);
-                }
-            }
-        });
-        
-        function createPeerConnection(broadcasterId) {
-            console.log('🔧 إنشاء اتصال WebRTC جديد');
             
             peerConnection = new RTCPeerConnection(rtcConfig);
             
             peerConnection.ontrack = (event) => {
-                console.log('🎬 وصل الفيديو!');
-                video.srcObject = event.streams[0];
-                
-                video.play().then(() => {
-                    bigPlayBtn.classList.remove('show');
-                    playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                    showControls();
-                }).catch(() => {
-                    bigPlayBtn.classList.add('show');
-                    playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                });
+                console.log('📹 تدفق وسائط مستلم');
+                handleIncomingStream(event.streams[0]);
             };
             
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
-                    socket.emit('ice-candidate', {
+                    // إرسال مرشح ICE
+                    socket.emit('viewer-ice-candidate', {
                         roomId: currentRoomId,
-                        candidate: event.candidate
+                        candidate: event.candidate,
+                        type: 'viewer'
                     });
                 }
             };
             
             peerConnection.onconnectionstatechange = () => {
-                console.log('🔄 حالة الاتصال:', peerConnection.connectionState);
+                console.log('حالة الاتصال:', peerConnection.connectionState);
                 
-                if (peerConnection.connectionState === 'disconnected' || 
-                    peerConnection.connectionState === 'failed') {
+                if (peerConnection.connectionState === 'disconnected') {
+                    console.log('🔴 انقطع الاتصال');
                     setTimeout(() => {
-                        redirectToError('stream-ended');
-                    }, 2000);
+                        if (peerConnection.connectionState === 'disconnected') {
+                            redirectToError('stream-ended');
+                        }
+                    }, 5000);
                 }
             };
+            
+            return peerConnection;
         }
         
-        socket.on('broadcast-ended', () => {
-            redirectToError('stream-ended');
+        // ===== معالجة أحداث السيرفر =====
+        socket.on('connect', () => {
+            console.log('✅ متصل بالسيرفر:', socket.id);
         });
         
-        socket.on('room-not-found', () => {
-            redirectToError('room-not-found');
+        // استقبال عرض WebRTC من المنشئ
+        socket.on('stream-offer', async (data) => {
+            console.log('📩 استقبال عرض من المنشئ');
+            
+            if (!peerConnection) {
+                createPeerConnection();
+            }
+            
+            try {
+                await peerConnection.setRemoteDescription(
+                    new RTCSessionDescription(data.offer)
+                );
+                
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                // إرسال الإجابة
+                socket.emit('stream-answer', {
+                    roomId: currentRoomId,
+                    answer: answer,
+                    viewerId: socket.id,
+                    type: 'viewer-response'
+                });
+                
+            } catch (error) {
+                console.error('❌ خطأ في معالجة العرض:', error);
+            }
         });
         
-        socket.on('error', (data) => {
-            redirectToError('server-error');
+        // استقبال مرشح ICE من المنشئ
+        socket.on('stream-ice-candidate', async (data) => {
+            if (peerConnection && data.candidate) {
+                try {
+                    await peerConnection.addIceCandidate(
+                        new RTCIceCandidate(data.candidate)
+                    );
+                } catch (error) {
+                    console.error('❌ خطأ في إضافة ICE:', error);
+                }
+            }
         });
         
-        socket.on("connect_error", () => {
+        // استقبال حدث انتهاء البث
+        socket.on('stream-ended', (data) => {
+            console.log('🛑 انتهى البث من المنشئ');
+            if (data.roomId === currentRoomId) {
+                setTimeout(() => {
+                    redirectToError('stream-ended');
+                }, 1000);
+            }
+        });
+        
+        // استقبال خطأ
+        socket.on('stream-error', (data) => {
+            console.error('❌ خطأ من السيرفر:', data.message);
+            
+            if (data.message.includes('غير موجود') || 
+                data.message.includes('not found')) {
+                redirectToError('room-not-found');
+            } else if (data.message.includes('انتهى') || 
+                      data.message.includes('ended')) {
+                redirectToError('stream-ended');
+            } else {
+                redirectToError('server-error');
+            }
+        });
+        
+        socket.on('connect_error', (error) => {
+            console.error('❌ خطأ اتصال:', error.message);
             redirectToError('server-unreachable');
         });
         
-        // مهلة 30 ثانية
-        setTimeout(() => {
-            if (!video.srcObject) {
-                redirectToError('stream-ended');
+        // ===== التنظيف قبل المغادرة =====
+        function cleanupBeforeUnload() {
+            console.log('🧹 تنظيف قبل المغادرة');
+            
+            // قطع اتصال WebRTC
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnection = null;
             }
-        }, 30000);
+            
+            // إيقاف الفيديو
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+                video.srcObject = null;
+            }
+            
+            // إعلام السيرفر أن المشاهد غادر (بدون التأثير على المنشئ)
+            if (currentRoomId) {
+                socket.emit('viewer-left', {
+                    roomId: currentRoomId,
+                    viewerId: socket.id,
+                    type: 'passive-leave'
+                });
+            }
+        }
         
-        // بدء الاتصال عند تحميل الصفحة
-        window.onload = connectToStream;
+        // ===== تهيئة الصفحة =====
+        function initializePlayer() {
+            console.log('🚀 تهيئة المشغل...');
+            
+            // 1. تحضير الفيديو
+            prepareVideoElement();
+            
+            // 2. استخراج البيانات
+            const params = extractParamsFromURL();
+            if (!params) return;
+            
+            currentRoomId = params.roomId;
+            currentUserName = params.userName;
+            
+            // 3. إعداد أحداث التنظيف
+            window.addEventListener('beforeunload', cleanupBeforeUnload);
+            window.addEventListener('pagehide', cleanupBeforeUnload);
+            
+            // 4. الاتصال الآمن بالغرفة
+            setTimeout(() => {
+                joinRoomSafely(currentRoomId, currentUserName);
+            }, 1000);
+            
+            // 5. مهلة انتظار
+            setTimeout(() => {
+                if (!isStreamActive) {
+                    console.log('⏰ انتهى وقت الانتظار');
+                    redirectToError('stream-ended');
+                }
+            }, 30000);
+        }
+        
+        // بدء التشغيل عند تحميل الصفحة
+        window.onload = initializePlayer;
     </script>
 </body>
 </html>
