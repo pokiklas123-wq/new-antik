@@ -35,6 +35,7 @@
             width: 100%;
             height: 100%;
             object-fit: contain;
+            transform: scaleX(-1); /* قلب الفيديو */
         }
         
         /* طبقة التحكمات */
@@ -81,10 +82,22 @@
             background: rgba(255, 255, 255, 0.2);
         }
 
+        /* إشعار التحميل */
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            z-index: 5;
+        }
+
     </style>
 </head>
 <body>
     <div id="videoContainer">
+        <div id="loading">⏳ جاري الاتصال بالبث...</div>
         <video id="remoteVideo" autoplay playsinline></video>
         
         <!-- طبقة التحكمات في الوسط -->
@@ -103,12 +116,14 @@
         let currentRoomId = null;
         let currentUserName = null;
         let controlsTimeout;
+        let isVideoPlaying = false;
         
         const rtcConfig = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:global.stun.twilio.com:3478' }
-            ]
+            ],
+            sdpSemantics: 'unified-plan' // ✅ مهم لفيديو WebRTC
         };
 
         // === عناصر DOM ===
@@ -116,12 +131,12 @@
         const video = document.getElementById('remoteVideo');
         const controlsOverlay = document.getElementById('controlsOverlay');
         const muteBtn = document.getElementById('muteBtn');
+        const loading = document.getElementById('loading');
 
         // === وظائف التحكم ===
         
         // إظهار/إخفاء التحكمات
         function toggleControls(e) {
-            // منع الاختفاء إذا ضغطنا على زر التحكم
             if (e.target.closest('.control-btn')) return;
 
             if (controlsOverlay.classList.contains('show')) {
@@ -143,7 +158,6 @@
 
         function resetHideTimer() {
             clearTimeout(controlsTimeout);
-            // إخفاء تلقائي بعد 3 ثواني
             controlsTimeout = setTimeout(hideControls, 3000);
         }
         
@@ -157,7 +171,7 @@
         function updateMuteIcon() {
             if (video.muted) {
                 muteBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
-                muteBtn.style.color = '#ff4444'; // لون أحمر عند الكتم
+                muteBtn.style.color = '#ff4444';
             } else {
                 muteBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
                 muteBtn.style.color = 'white';
@@ -166,17 +180,133 @@
 
         // === مستمعات الأحداث ===
         
-        // النقر على الشاشة لإظهار/إخفاء التحكمات
         videoContainer.addEventListener('click', toggleControls);
         videoContainer.addEventListener('touchstart', () => {
-             // تحسين الاستجابة للمس
              if (!controlsOverlay.classList.contains('show')) showControls();
         }, {passive: true});
 
-        // زر كتم الصوت فقط
         muteBtn.addEventListener('click', toggleMute);
 
-        // === WebRTC Code (كما هو بدون تغيير) ===
+        // ✅ مستمعات جديدة لفيديو
+        video.addEventListener('loadeddata', () => {
+            console.log('✅ تم تحميل بيانات الفيديو');
+            if (loading) loading.style.display = 'none';
+            isVideoPlaying = true;
+        });
+
+        video.addEventListener('canplay', () => {
+            console.log('🎬 يمكن تشغيل الفيديو');
+            video.play().catch(e => console.log('تشغيل الفيديو:', e));
+        });
+
+        video.addEventListener('error', (e) => {
+            console.error('❌ خطأ في الفيديو:', e);
+            if (loading) loading.innerHTML = '⚠️ مشكلة في تشغيل الفيديو';
+        });
+
+        // ✅ دالة محسنة لإنشاء الاتصال
+        function createPeerConnection(broadcasterId) {
+            console.log('🔗 إنشاء اتصال WebRTC جديد');
+            
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            // ✅ تحسين معالجة تيار الوسائط
+            peerConnection.ontrack = (event) => {
+                console.log('📹 تم استقبال تيار وسائط:', event.track.kind);
+                
+                if (event.track.kind === 'video') {
+                    console.log('🎥 تيار فيديو مستلم');
+                }
+                
+                // ✅ تأكد من تعيين srcObject مرة واحدة فقط
+                if (!video.srcObject && event.streams && event.streams[0]) {
+                    video.srcObject = event.streams[0];
+                    console.log('✅ تم تعيين srcObject للفيديو');
+                    
+                    // ✅ محاولة تشغيل الفيديو بعد تأخير بسيط
+                    setTimeout(() => {
+                        video.play()
+                            .then(() => {
+                                console.log('▶️ تشغيل الفيديو ناجح');
+                                if (loading) loading.style.display = 'none';
+                                isVideoPlaying = true;
+                                showControls();
+                            })
+                            .catch(err => {
+                                console.log('⚠️ خطأ في تشغيل الفيديو:', err.message);
+                                // إعادة المحاولة
+                                video.play().catch(e => console.log('إعادة المحاولة:', e));
+                            });
+                    }, 500);
+                }
+            };
+            
+            // ✅ إضافة معالج لتيارات متعددة
+            peerConnection.addEventListener('track', (event) => {
+                console.log('🎯 Track event:', event.track.kind);
+            });
+            
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('ice-candidate', { 
+                        roomId: currentRoomId, 
+                        candidate: event.candidate 
+                    });
+                }
+            };
+            
+            peerConnection.onconnectionstatechange = () => {
+                console.log('🔄 حالة الاتصال:', peerConnection.connectionState);
+                if (peerConnection.connectionState === 'disconnected' || 
+                    peerConnection.connectionState === 'failed') {
+                    console.log('❌ فشل الاتصال');
+                    setTimeout(() => redirectToError('stream-ended'), 2000);
+                }
+                if (peerConnection.connectionState === 'connected') {
+                    console.log('✅ اتصال WebRTC ناجح');
+                    if (loading) loading.innerHTML = '✅ متصل - جاري تشغيل الفيديو...';
+                }
+            };
+            
+            peerConnection.onsignalingstatechange = () => {
+                console.log('📡 حالة الإشارة:', peerConnection.signalingState);
+            };
+            
+            peerConnection.oniceconnectionstatechange = () => {
+                console.log('❄️ حالة ICE:', peerConnection.iceConnectionState);
+            };
+        }
+
+        // ✅ دالة محسنة لمعالجة العرض
+        async function handleOffer(data) {
+            if (!peerConnection) createPeerConnection(data.from);
+            
+            try {
+                console.log('📨 استلام عرض WebRTC');
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                
+                // ✅ إنشاء إجابة بمتطلبات الفيديو
+                const answer = await peerConnection.createAnswer({
+                    offerToReceiveAudio: true,
+                    offerToReceiveVideo: true
+                });
+                
+                await peerConnection.setLocalDescription(answer);
+                
+                socket.emit('answer', { 
+                    to: data.from, 
+                    roomId: currentRoomId, 
+                    sdp: answer 
+                });
+                
+                console.log('📤 تم إرسال الإجابة');
+            } catch (error) {
+                console.error('❌ خطأ في معالجة العرض:', error);
+                redirectToError('connection-failed');
+            }
+        }
+
+        // === WebRTC Code المعدل ===
         function getParamsFromURL() {
             try {
                 const url = new URL(window.location.href);
@@ -202,76 +332,94 @@
             if (!params) return;
             currentRoomId = params.roomId;
             currentUserName = params.userName;
+            
+            console.log(`🚀 الانضمام للغرفة: ${currentRoomId}, المستخدم: ${currentUserName}`);
+            
             socket.emit('join-room', { roomId: currentRoomId, userName: currentUserName });
-            showControls(); // إظهار التحكمات عند البدء
+            showControls();
         }
         
-        socket.on('joined-room', () => console.log('✅ تم الانضمام للغرفة'));
-        
-        socket.on('offer', async (data) => {
-            if (!peerConnection) createPeerConnection(data.from);
-            try {
-                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-                socket.emit('answer', { to: data.from, roomId: currentRoomId, sdp: answer });
-            } catch (error) {
-                redirectToError('connection-failed');
-            }
+        socket.on('joined-room', () => {
+            console.log('✅ تم الانضمام للغرفة');
+            if (loading) loading.innerHTML = '🔍 جاري الاتصال بالمعلم...';
         });
         
+        // ✅ استخدام الدالة المحسنة
+        socket.on('offer', handleOffer);
+        
         socket.on('webrtc-signal', async (data) => {
+            console.log(`📡 إشارة WebRTC: ${data.type} من ${data.from}`);
+            
             if (!peerConnection && data.type === 'offer') createPeerConnection(data.from);
+            
             try {
                 if (data.type === 'offer') {
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
-                    const answer = await peerConnection.createAnswer();
+                    const answer = await peerConnection.createAnswer({
+                        offerToReceiveAudio: true,
+                        offerToReceiveVideo: true
+                    });
                     await peerConnection.setLocalDescription(answer);
-                    socket.emit('webrtc-signal', { to: data.from, type: 'answer', signal: answer });
+                    socket.emit('webrtc-signal', { 
+                        to: data.from, 
+                        type: 'answer', 
+                        signal: answer 
+                    });
                 } else if (data.type === 'candidate' && peerConnection) {
                     await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
                 }
             } catch (error) {
+                console.error('❌ خطأ في إشارة WebRTC:', error);
                 redirectToError('connection-failed');
             }
         });
         
         socket.on('ice-candidate', async (data) => {
             if (peerConnection && data.candidate) {
-                try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                try { 
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    console.log('✅ تم إضافة ICE candidate');
+                } catch (e) {
+                    console.log('⚠️ خطأ في ICE candidate:', e);
+                }
             }
         });
         
-        function createPeerConnection(broadcasterId) {
-            peerConnection = new RTCPeerConnection(rtcConfig);
-            peerConnection.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-                video.play().then(() => {
-                    showControls();
-                }).catch(() => {
-                    showControls();
-                });
-            };
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
-            };
-            peerConnection.onconnectionstatechange = () => {
-                if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
-                    setTimeout(() => redirectToError('stream-ended'), 2000);
-                }
-            };
-        }
+        socket.on('broadcast-ended', () => {
+            console.log('⏹️ البث انتهى');
+            redirectToError('stream-ended');
+        });
         
-        socket.on('broadcast-ended', () => redirectToError('stream-ended'));
         socket.on('room-not-found', () => redirectToError('room-not-found'));
         socket.on('error', () => redirectToError('server-error'));
         socket.on("connect_error", () => redirectToError('server-unreachable'));
         
+        // ✅ التحقق من الفيديو بشكل دوري
+        const checkVideoInterval = setInterval(() => {
+            if (peerConnection && !isVideoPlaying) {
+                console.log('🔍 التحقق من حالة الفيديو...');
+                
+                // إذا مرت 20 ثانية ولم يظهر الفيديو
+                if (Date.now() - connectionStartTime > 20000) {
+                    console.log('⚠️ مر وقت طويل بدون فيديو، إعادة الاتصال');
+                    // يمكن إضافة إعادة اتصال هنا
+                }
+            }
+        }, 5000);
+        
+        let connectionStartTime = Date.now();
+        
         setTimeout(() => {
-            if (!video.srcObject) redirectToError('stream-ended');
+            if (!video.srcObject || !isVideoPlaying) {
+                console.log('⏰ انتهى الوقت بدون اتصال فيديو');
+                redirectToError('stream-ended');
+            }
         }, 30000);
         
-        window.onload = connectToStream;
+        window.onload = function() {
+            connectionStartTime = Date.now();
+            connectToStream();
+        };
     </script>
 </body>
 </html>
