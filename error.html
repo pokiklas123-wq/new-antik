@@ -156,8 +156,8 @@
                 userNameEl.textContent = params.userName;
                 roomIdEl.textContent = params.roomId;
                 
-                // تعديل زر إعادة المحاولة لينقل إلى نفس الرابط
-                retryBtn.href = `https://new-antik-p2p-20.onnder.com/player.html?room=${params.roomId}/${encodeURIComponent(params.userName)}`;
+                // **التصحيح هنا: استخدام النطاق الصحيح**
+                retryBtn.href = `https://new-antik-p2p-20.onrender.com/player.html?room=${params.roomId}/${encodeURIComponent(params.userName)}`;
             }
             
             // تحديد الرسالة حسب نوع الخطأ
