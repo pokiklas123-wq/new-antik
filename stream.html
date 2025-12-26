@@ -16,6 +16,7 @@
             overflow: hidden;
             font-family: 'Segoe UI', sans-serif;
             height: 100vh;
+            cursor: none; /* إخفاء المؤشر */
         }
         
         /* الفيديو يملأ الشاشة */
@@ -26,7 +27,7 @@
             width: 100vw;
             height: 100vh;
             object-fit: cover;
-            transform: scaleX(-1); /* قلب الصورة لتبدو طبيعية */
+            transform: scaleX(-1);
             background: #000;
         }
         
@@ -51,6 +52,13 @@
             justify-content: center;
             transition: all 0.3s;
             backdrop-filter: blur(5px);
+            opacity: 0; /* مخفي بالبداية */
+            pointer-events: none; /* لا يستقبل نقرات */
+        }
+        
+        #muteBtn.show {
+            opacity: 1;
+            pointer-events: auto; /* يستقبل نقرات عند الظهور */
         }
         
         #muteBtn:hover {
@@ -64,24 +72,24 @@
         }
         
         /* حالة الكتم */
-        .muted {
+        #muteBtn.muted {
             background: rgba(255, 50, 50, 0.7) !important;
             border-color: rgba(255, 255, 255, 0.7) !important;
         }
         
-        /* شريط الحالة في الأسفل */
-        #statusBar {
+        /* مؤشر النقر */
+        body.show-cursor {
+            cursor: default;
+        }
+        
+        /* طبقة النقر على الشاشة */
+        #clickLayer {
             position: fixed;
-            bottom: 0;
+            top: 0;
             left: 0;
-            width: 100%;
-            background: rgba(0, 0, 0, 0.6);
-            color: white;
-            padding: 10px 20px;
-            font-size: 14px;
-            text-align: center;
-            z-index: 50;
-            backdrop-filter: blur(5px);
+            width: 100vw;
+            height: 100vh;
+            z-index: 99;
         }
     </style>
 </head>
@@ -90,14 +98,10 @@
     <video id="teacherVideo" autoplay muted playsinline></video>
     
     <!-- زر كتم الصوت فقط في وسط الشاشة -->
-    <button id="muteBtn" onclick="toggleMute()">🔇</button>
+    <button id="muteBtn" onclick="toggleMute(event)">🔇</button>
     
-    <!-- شريط الحالة في الأسفل -->
-    <div id="statusBar">
-        <span id="statusText">⚪ جاري الإعداد...</span> | 
-        <span id="viewerCount">👥 0</span> | 
-        <span id="roomInfo"></span>
-    </div>
+    <!-- طبقة للنقر على الشاشة -->
+    <div id="clickLayer" onclick="toggleMuteBtn()"></div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
@@ -107,6 +111,8 @@
         let roomId = "";
         let teacherName = "";
         let isMuted = false;
+        let muteBtnVisible = false;
+        let autoHideTimeout;
 
         const rtcConfig = {
             iceServers: [
@@ -149,83 +155,122 @@
                     audio: true 
                 });
                 
+                // ✅ مهم: كتم صوت المعلم محلياً لمنع صدى الصوت
                 document.getElementById('teacherVideo').srcObject = teacherStream;
+                document.getElementById('teacherVideo').muted = true; // كتم محلي
                 
-                // إلغاء كتم الفيديو المحلي ليسمع نفسه (اختياري)
-                document.getElementById('teacherVideo').muted = false;
+                // ✅ كتم صوت التتبع الصوتي من البداية (للمشاهدين)
+                teacherStream.getAudioTracks().forEach(track => {
+                    track.enabled = false; // كتم للمشاهدين
+                });
+                isMuted = true;
+                updateMuteButton();
                 
                 // إنشاء الغرفة على السيرفر
                 socket.emit('create-room', { roomId, userName: teacherName });
                 
-                // تحديث شريط الحالة
-                document.getElementById('statusText').innerHTML = "✅ البث مباشر";
-                document.getElementById('roomInfo').innerHTML = `🎤 ${teacherName} | ${roomId}`;
-                
                 console.log(`📡 بدء البث في الغرفة: ${roomId} بواسطة: ${teacherName}`);
                 
             } catch (err) {
-                document.getElementById('statusText').innerHTML = "❌ فشل الوصول للكاميرا";
-                alert("تعذر الوصول للكاميرا والميكروفون. تأكد من منح الإذن.");
+                alert("❌ تعذر الوصول للكاميرا والميكروفون. تأكد من منح الإذن.");
                 console.error("خطأ في الوصول للوسائط:", err);
             }
         }
 
-        // 3. زر كتم الصوت
-        function toggleMute() {
+        // 3. تبديل إظهار/إخفاء زر كتم الصوت
+        function toggleMuteBtn() {
+            const muteBtn = document.getElementById('muteBtn');
+            const body = document.body;
+            
+            clearTimeout(autoHideTimeout);
+            
+            if (muteBtnVisible) {
+                // إخفاء الزر
+                muteBtn.classList.remove('show');
+                body.classList.remove('show-cursor');
+                muteBtnVisible = false;
+            } else {
+                // إظهار الزر
+                muteBtn.classList.add('show');
+                body.classList.add('show-cursor');
+                muteBtnVisible = true;
+                
+                // إخفاء تلقائي بعد 3 ثوان
+                autoHideTimeout = setTimeout(() => {
+                    muteBtn.classList.remove('show');
+                    body.classList.remove('show-cursor');
+                    muteBtnVisible = false;
+                }, 3000);
+            }
+        }
+
+        // 4. زر كتم الصوت
+        function toggleMute(event) {
             if (!teacherStream) return;
             
+            event.stopPropagation(); // منع ظهور/إخفاء الزر عند النقر عليه
+            
             isMuted = !isMuted;
-            const muteBtn = document.getElementById('muteBtn');
             
             teacherStream.getAudioTracks().forEach(track => {
-                track.enabled = !isMuted;
+                track.enabled = !isMuted; // تفعيل/تعطيل الصوت للمشاهدين
             });
+            
+            updateMuteButton();
+            
+            // إعادة ضبط مؤقت الإخفاء التلقائي
+            clearTimeout(autoHideTimeout);
+            autoHideTimeout = setTimeout(() => {
+                const muteBtn = document.getElementById('muteBtn');
+                const body = document.body;
+                muteBtn.classList.remove('show');
+                body.classList.remove('show-cursor');
+                muteBtnVisible = false;
+            }, 3000);
+        }
+
+        // 5. تحديث حالة زر الكتم
+        function updateMuteButton() {
+            const muteBtn = document.getElementById('muteBtn');
             
             if (isMuted) {
                 muteBtn.innerHTML = "🔇";
                 muteBtn.classList.add("muted");
-                muteBtn.title = "إلغاء كتم الصوت";
+                muteBtn.title = "إلغاء كتم الصوت (الصوت مكتوم للمشاهدين)";
             } else {
                 muteBtn.innerHTML = "🔊";
                 muteBtn.classList.remove("muted");
-                muteBtn.title = "كتم الصوت";
+                muteBtn.title = "كتم الصوت (الصوت مسموع للمشاهدين)";
             }
         }
 
-        // 4. عند انضمام مشاهد جديد
+        // 6. عند انضمام مشاهد جديد
         socket.on('viewer-joined', async (data) => {
             const viewerId = data.viewerId;
             
-            // إنشاء اتصال WebRTC جديد
             const pc = new RTCPeerConnection(rtcConfig);
             peerConnections[viewerId] = pc;
 
-            // إضافة الفيديو والصوت للاتصال
             teacherStream.getTracks().forEach(track => pc.addTrack(track, teacherStream));
 
-            // إرسال ICE Candidates
             pc.onicecandidate = (event) => {
                 if (event.candidate) {
                     socket.emit('webrtc-signal', { to: viewerId, type: 'candidate', signal: event.candidate });
                 }
             };
 
-            // مراقبة حالة الاتصال
             pc.onconnectionstatechange = () => {
                 if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
                     removeViewer(viewerId);
                 }
             };
 
-            // إنشاء العرض وإرساله
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socket.emit('webrtc-signal', { to: viewerId, type: 'offer', signal: offer });
-            
-            updateViewerCount(1);
         });
 
-        // 5. استقبال إشارات WebRTC
+        // 7. استقبال إشارات WebRTC
         socket.on('webrtc-signal', async (data) => {
             const pc = peerConnections[data.from];
             if (!pc) return;
@@ -237,7 +282,7 @@
             }
         });
 
-        // 6. عند مغادرة مشاهد
+        // 8. عند مغادرة مشاهد
         socket.on('viewer-left', (data) => {
             removeViewer(data.viewerId);
         });
@@ -246,21 +291,13 @@
             if (peerConnections[viewerId]) {
                 peerConnections[viewerId].close();
                 delete peerConnections[viewerId];
-                updateViewerCount(-1);
             }
         }
 
-        function updateViewerCount(change) {
-            const el = document.getElementById('viewerCount');
-            let count = parseInt(el.textContent.replace('👥', '')) || 0;
-            count = Math.max(0, count + change);
-            el.textContent = `👥 ${count}`;
-        }
-
-        // 7. بدء البث عند تحميل الصفحة
+        // 9. بدء البث عند تحميل الصفحة
         window.onload = startBroadcast;
         
-        // 8. تنظيف عند إغلاق الصفحة
+        // 10. تنظيف عند إغلاق الصفحة
         window.onbeforeunload = function() {
             socket.emit('end-broadcast', { roomId });
             teacherStream?.getTracks().forEach(track => track.stop());
