@@ -1,352 +1,157 @@
 <!DOCTYPE html>
-<html lang="ar" dir="rtl">
+<html lang="ar">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>🎬 مشغل البث المباشر</title>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>مشغل البث</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-            -webkit-tap-highlight-color: transparent; /* إزالة لون النقر الأزرق في الجوال */
-        }
-        
-        body, html {
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #000;
-            font-family: 'Segoe UI', sans-serif;
-        }
-        
-        #videoContainer {
-            width: 100vw;
-            height: 100vh;
-            background: #000;
-            position: relative;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-        }
-        
-        #remoteVideo {
-            width: 100%;
-            height: 100%;
-            object-fit: contain; /* يضمن ظهور الفيديو بالكامل */
-        }
-        
-        /* طبقة التحكمات */
-        #controlsOverlay {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.4); /* تعتيم خفيف للخلفية */
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            opacity: 0;
-            transition: opacity 0.3s ease;
-            z-index: 10;
-            pointer-events: none; /* يسمح بالنقر على الفيديو عندما تكون مخفية */
-            
-            /* لضمان الترتيب (يسار - وسط - يمين) بغض النظر عن لغة المتصفح */
-            direction: ltr; 
-        }
-        
-        #controlsOverlay.show {
-            opacity: 1;
-            pointer-events: auto; /* تفعيل النقر عند الظهور */
-        }
-        
-        /* حاوية الأزرار الثلاثة */
-        .buttons-container {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 40px; /* مسافة بين الأزرار */
-        }
-        
-        .control-btn {
-            background: rgba(0, 0, 0, 0.6);
-            border: 2px solid rgba(255, 255, 255, 0.2);
-            color: white;
-            border-radius: 50%;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: all 0.2s;
-            backdrop-filter: blur(5px);
-        }
-        
-        .control-btn:active {
-            transform: scale(0.9);
-            background: rgba(255, 255, 255, 0.2);
-        }
-        
-        /* زر التشغيل (الأكبر في الوسط) */
-        #playBtn {
-            width: 80px;
-            height: 80px;
-            font-size: 35px;
-        }
-        
-        /* الأزرار الجانبية (أصغر قليلاً) */
-        .side-btn {
-            width: 60px;
-            height: 60px;
-            font-size: 24px;
-        }
-        
-        /* أيقونة التحميل */
-        #refreshBtn:hover {
-            transform: rotate(180deg);
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body, html { width: 100%; height: 100%; overflow: hidden; background: #000; }
+        #videoContainer { width: 100vw; height: 100vh; background: #000; position: relative; }
+        #remoteVideo { width: 100%; height: 100%; object-fit: contain; background: #000; }
+        /* إخفاء كل التحكمات */
+        #remoteVideo::-webkit-media-controls { display: none !important; }
+        #remoteVideo::-webkit-media-controls-panel { display: none !important; }
+        #remoteVideo::-webkit-media-controls-play-button { display: none !important; }
+        #remoteVideo::-webkit-media-controls-volume-slider { display: none !important; }
+        #remoteVideo::-webkit-media-controls-mute-button { display: none !important; }
+        #remoteVideo::-webkit-media-controls-timeline { display: none !important; }
+        #remoteVideo::-webkit-media-controls-current-time-display { display: none !important; }
+        #remoteVideo::-webkit-media-controls-time-remaining-display { display: none !important; }
+        #remoteVideo::-webkit-media-controls-fullscreen-button { display: none !important; }
     </style>
 </head>
 <body>
     <div id="videoContainer">
         <video id="remoteVideo" autoplay playsinline></video>
-        
-        <!-- طبقة التحكمات في الوسط -->
-        <div id="controlsOverlay">
-            <div class="buttons-container">
-                <!-- اليسار: زر التحديث -->
-                <button id="refreshBtn" class="control-btn side-btn">
-                    <i class="fas fa-redo-alt"></i>
-                </button>
-
-                <!-- الوسط: زر التشغيل -->
-                <button id="playBtn" class="control-btn">
-                    <i class="fas fa-play"></i>
-                </button>
-
-                <!-- اليمين: زر الصوت -->
-                <button id="muteBtn" class="control-btn side-btn">
-                    <i class="fas fa-volume-up"></i>
-                </button>
-            </div>
-        </div>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io();
         let peerConnection;
-        let currentRoomId = null;
-        let currentUserName = null;
-        let controlsTimeout;
         
         const rtcConfig = {
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:global.stun.twilio.com:3478' }
-            ]
+            iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
         };
 
-        // === عناصر DOM ===
-        const videoContainer = document.getElementById('videoContainer');
-        const video = document.getElementById('remoteVideo');
-        const controlsOverlay = document.getElementById('controlsOverlay');
-        const playBtn = document.getElementById('playBtn');
-        const muteBtn = document.getElementById('muteBtn');
-        const refreshBtn = document.getElementById('refreshBtn');
-
-        // === وظائف التحكم ===
-        
-        // إظهار/إخفاء التحكمات
-        function toggleControls(e) {
-            // منع الاختفاء إذا ضغطنا على زر التحكم نفسه
-            if (e.target.closest('.control-btn')) return;
-
-            if (controlsOverlay.classList.contains('show')) {
-                hideControls();
-            } else {
-                showControls();
-            }
+        // 1. استخراج البيانات فقط
+        function getParams() {
+            const url = new URL(window.location.href);
+            const roomParam = url.searchParams.get('room');
+            if (!roomParam) return null;
+            
+            const parts = roomParam.split('/');
+            if (parts.length < 2) return null;
+            
+            return {
+                roomId: parts[0],
+                userName: decodeURIComponent(parts[1])
+            };
         }
 
-        function showControls() {
-            controlsOverlay.classList.add('show');
-            resetHideTimer();
-        }
-
-        function hideControls() {
-            controlsOverlay.classList.remove('show');
-            clearTimeout(controlsTimeout);
-        }
-
-        function resetHideTimer() {
-            clearTimeout(controlsTimeout);
-            // إخفاء تلقائي بعد 3 ثواني
-            controlsTimeout = setTimeout(hideControls, 3000);
-        }
-        
-        // التشغيل والإيقاف
-        function togglePlay() {
-            if (video.paused) {
-                video.play().then(() => {
-                    playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                    resetHideTimer();
-                }).catch(err => console.log("Play error:", err));
-            } else {
-                video.pause();
-                playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                // عند الإيقاف المؤقت، نبقي التحكمات ظاهرة
-                clearTimeout(controlsTimeout); 
-            }
-        }
-        
-        // كتم الصوت
-        function toggleMute() {
-            video.muted = !video.muted;
-            updateMuteIcon();
-            resetHideTimer();
-        }
-
-        function updateMuteIcon() {
-            if (video.muted) {
-                muteBtn.innerHTML = '<i class="fas fa-volume-mute"></i>';
-                muteBtn.style.color = '#ff4444'; // لون أحمر عند الكتم
-            } else {
-                muteBtn.innerHTML = '<i class="fas fa-volume-up"></i>';
-                muteBtn.style.color = 'white';
-            }
-        }
-        
-        // إعادة تحميل الصفحة (زر الرفرش)
-        function refreshStream() {
-            window.location.reload();
-        }
-
-        // === مستمعات الأحداث (Events) ===
-        
-        // النقر على الشاشة لإظهار/إخفاء التحكمات
-        videoContainer.addEventListener('click', toggleControls);
-        videoContainer.addEventListener('touchstart', () => {
-             // تحسين الاستجابة للمس
-             if (!controlsOverlay.classList.contains('show')) showControls();
-        }, {passive: true});
-
-        playBtn.addEventListener('click', togglePlay);
-        muteBtn.addEventListener('click', toggleMute);
-        refreshBtn.addEventListener('click', refreshStream);
-
-        // تحديث حالة الأيقونات عند تغير حالة الفيديو
-        video.addEventListener('play', () => {
-            playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-            resetHideTimer();
-        });
-        
-        video.addEventListener('pause', () => {
-            playBtn.innerHTML = '<i class="fas fa-play"></i>';
-            controlsOverlay.classList.add('show'); // إظهار التحكمات عند التوقف
-            clearTimeout(controlsTimeout);
-        });
-
-        // === WebRTC Code (كما هو بدون تغيير في المنطق) ===
-        function getParamsFromURL() {
-            try {
-                const url = new URL(window.location.href);
-                const roomParam = url.searchParams.get('room');
-                if (!roomParam) throw new Error('no-room');
-                const parts = roomParam.split('/');
-                if (parts.length < 2 || !parts[0] || !parts[1]) throw new Error('invalid-format');
-                return { roomId: parts[0], userName: decodeURIComponent(parts[1]) };
-            } catch (error) {
-                redirectToError(error.message);
-                return null;
-            }
-        }
-        
-        function redirectToError(errorType) {
+        // 2. توجيه للخطأ فقط
+        function goToError(errorType) {
             const url = new URL(window.location.href);
             const roomParam = url.searchParams.get('room') || '';
             window.location.href = `https://new-antik-p2p-20.onrender.com/error.html?room=${roomParam}&error=${errorType}`;
         }
-        
-        function connectToStream() {
-            const params = getParamsFromURL();
-            if (!params) return;
-            currentRoomId = params.roomId;
-            currentUserName = params.userName;
-            socket.emit('join-room', { roomId: currentRoomId, userName: currentUserName });
-            showControls(); // إظهار التحكمات عند البدء
+
+        // 3. الاتصال
+        function connect() {
+            const params = getParams();
+            if (!params) return goToError('no-room');
+            
+            socket.emit('viewer-join', {
+                roomId: params.roomId,
+                userName: params.userName
+            });
         }
-        
-        socket.on('joined-room', () => console.log('✅ تم الانضمام للغرفة'));
-        
+
+        // 4. معالجة الفيديو
+        function handleStream(stream) {
+            const video = document.getElementById('remoteVideo');
+            video.srcObject = stream;
+            video.play().catch(() => {
+                // تجاهل خطأ التشغيل التلقائي
+            });
+        }
+
+        // 5. WebRTC
+        function createPeerConnection() {
+            peerConnection = new RTCPeerConnection(rtcConfig);
+            
+            peerConnection.ontrack = (event) => {
+                handleStream(event.streams[0]);
+            };
+            
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    const params = getParams();
+                    if (params) {
+                        socket.emit('ice-candidate', {
+                            roomId: params.roomId,
+                            candidate: event.candidate
+                        });
+                    }
+                }
+            };
+        }
+
+        // 6. أحداث السيرفر
         socket.on('offer', async (data) => {
-            if (!peerConnection) createPeerConnection(data.from);
+            if (!peerConnection) createPeerConnection();
+            
             try {
                 await peerConnection.setRemoteDescription(new RTCSessionDescription(data.sdp));
                 const answer = await peerConnection.createAnswer();
                 await peerConnection.setLocalDescription(answer);
-                socket.emit('answer', { to: data.from, roomId: currentRoomId, sdp: answer });
-            } catch (error) {
-                redirectToError('connection-failed');
-            }
-        });
-        
-        socket.on('webrtc-signal', async (data) => {
-            if (!peerConnection && data.type === 'offer') createPeerConnection(data.from);
-            try {
-                if (data.type === 'offer') {
-                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.signal));
-                    const answer = await peerConnection.createAnswer();
-                    await peerConnection.setLocalDescription(answer);
-                    socket.emit('webrtc-signal', { to: data.from, type: 'answer', signal: answer });
-                } else if (data.type === 'candidate' && peerConnection) {
-                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.signal));
+                
+                const params = getParams();
+                if (params) {
+                    socket.emit('answer', {
+                        to: data.from,
+                        roomId: params.roomId,
+                        sdp: answer
+                    });
                 }
             } catch (error) {
-                redirectToError('connection-failed');
+                goToError('connection-failed');
             }
         });
-        
+
         socket.on('ice-candidate', async (data) => {
             if (peerConnection && data.candidate) {
-                try { await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (error) {
+                    // تجاهل الخطأ
+                }
             }
         });
+
+        socket.on('broadcast-ended', () => {
+            goToError('stream-ended');
+        });
+
+        socket.on('error', (data) => {
+            goToError('server-error');
+        });
+
+        socket.on("connect_error", () => {
+            goToError('server-unreachable');
+        });
+
+        // 7. بدء التشغيل
+        window.onload = connect;
         
-        function createPeerConnection(broadcasterId) {
-            peerConnection = new RTCPeerConnection(rtcConfig);
-            peerConnection.ontrack = (event) => {
-                video.srcObject = event.streams[0];
-                video.play().then(() => {
-                    playBtn.innerHTML = '<i class="fas fa-pause"></i>';
-                    showControls();
-                }).catch(() => {
-                    playBtn.innerHTML = '<i class="fas fa-play"></i>';
-                    showControls();
-                });
-            };
-            peerConnection.onicecandidate = (event) => {
-                if (event.candidate) socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
-            };
-            peerConnection.onconnectionstatechange = () => {
-                if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
-                    setTimeout(() => redirectToError('stream-ended'), 2000);
-                }
-            };
-        }
-        
-        socket.on('broadcast-ended', () => redirectToError('stream-ended'));
-        socket.on('room-not-found', () => redirectToError('room-not-found'));
-        socket.on('error', () => redirectToError('server-error'));
-        socket.on("connect_error", () => redirectToError('server-unreachable'));
-        
+        // مهلة 30 ثانية
         setTimeout(() => {
-            if (!video.srcObject) redirectToError('stream-ended');
+            const video = document.getElementById('remoteVideo');
+            if (!video.srcObject) {
+                goToError('stream-ended');
+            }
         }, 30000);
-        
-        window.onload = connectToStream;
     </script>
 </body>
 </html>
