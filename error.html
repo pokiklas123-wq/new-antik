@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>⚠️ خطأ في البث</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #1a1a2e;
+            color: white;
+            font-family: 'Segoe UI', sans-serif;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            padding: 20px;
+        }
+        
+        .error-container {
+            max-width: 600px;
+            background: #16213e;
+            padding: 40px;
+            border-radius: 15px;
+            border: 2px solid #4cc9f0;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        }
+        
+        h1 {
+            color: #f05454;
+            margin-bottom: 20px;
+            font-size: 2.5em;
+        }
+        
+        .icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+        
+        .message {
+            font-size: 1.2em;
+            margin-bottom: 25px;
+            line-height: 1.6;
+            color: #e6e6e6;
+        }
+        
+        .room-info {
+            background: #0f3460;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: right;
+        }
+        
+        .room-info span {
+            color: #4cc9f0;
+            font-weight: bold;
+        }
+        
+        .actions {
+            margin-top: 30px;
+        }
+        
+        .btn {
+            display: inline-block;
+            padding: 12px 30px;
+            background: #4361ee;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            margin: 0 10px;
+            font-weight: bold;
+            transition: all 0.3s;
+            border: none;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        
+        .btn:hover {
+            background: #3a56d4;
+            transform: translateY(-2px);
+        }
+        
+        .btn-secondary {
+            background: #f05454;
+        }
+        
+        .btn-secondary:hover {
+            background: #d94343;
+        }
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <div class="icon" id="errorIcon">⚠️</div>
+        <h1 id="errorTitle">حدث خطأ</h1>
+        
+        <div class="message" id="errorMessage">
+            حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى.
+        </div>
+        
+        <div class="room-info" id="roomInfo" style="display:none;">
+            <p>معلومات البث:</p>
+            <p>👤 اسم المشاهد: <span id="userName"></span></p>
+            <p>📺 معرف الغرفة: <span id="roomId"></span></p>
+        </div>
+        
+        <div class="actions">
+            <a href="#" class="btn" id="retryBtn">🔄 إعادة المحاولة</a>
+            <a href="https://new-antik-p2p-20.onrender.com/viewer.html" class="btn btn-secondary">🏠 العودة للرئيسية</a>
+        </div>
+    </div>
+
+    <script>
+        // دالة لاستخراج المعلمات من الرابط
+        function getUrlParameters() {
+            const params = {};
+            const url = new URL(window.location.href);
+            
+            // استخراج room و error من الرابط
+            const roomParam = url.searchParams.get('room');
+            const errorType = url.searchParams.get('error');
+            
+            if (roomParam) {
+                const parts = roomParam.split('/');
+                if (parts.length >= 2) {
+                    params.roomId = parts[0];
+                    params.userName = decodeURIComponent(parts[1]);
+                }
+            }
+            
+            params.errorType = errorType;
+            return params;
+        }
+
+        // عرض الرسالة المناسبة حسب نوع الخطأ
+        function displayError() {
+            const params = getUrlParameters();
+            const errorIcon = document.getElementById('errorIcon');
+            const errorTitle = document.getElementById('errorTitle');
+            const errorMessage = document.getElementById('errorMessage');
+            const roomInfo = document.getElementById('roomInfo');
+            const userNameEl = document.getElementById('userName');
+            const roomIdEl = document.getElementById('roomId');
+            const retryBtn = document.getElementById('retryBtn');
+            
+            // عرض معلومات الغرفة إذا كانت موجودة
+            if (params.roomId && params.userName) {
+                roomInfo.style.display = 'block';
+                userNameEl.textContent = params.userName;
+                roomIdEl.textContent = params.roomId;
+                
+                // تعديل زر إعادة المحاولة لينقل إلى نفس الرابط
+                retryBtn.href = `https://new-antik-p2p-20.onnder.com/player.html?room=${params.roomId}/${encodeURIComponent(params.userName)}`;
+            }
+            
+            // تحديد الرسالة حسب نوع الخطأ
+            switch(params.errorType) {
+                case 'no-room':
+                    errorIcon.textContent = '❌';
+                    errorTitle.textContent = 'رابط غير صالح';
+                    errorMessage.textContent = 'الرابط لا يحتوي على معرف الغرفة. يجب أن يكون الرابط بالشكل: player.html?room=معرف_الغرفة/اسم_المستخدم';
+                    break;
+                    
+                case 'invalid-format':
+                    errorIcon.textContent = '📝';
+                    errorTitle.textContent = 'تنسيق خاطئ';
+                    errorMessage.textContent = 'تنسيق الرابط غير صحيح. يجب أن يكون بالشكل: player.html?room=معرف_الغرفة/اسم_المستخدم';
+                    break;
+                    
+                case 'room-not-found':
+                    errorIcon.textContent = '🔍';
+                    errorTitle.textContent = 'الغرفة غير موجودة';
+                    errorMessage.textContent = 'عذراً، الغرفة المطلوبة غير موجودة أو تم إغلاقها. تأكد من معرف الغرفة وحاول مرة أخرى.';
+                    break;
+                    
+                case 'stream-ended':
+                    errorIcon.textContent = '🛑';
+                    errorTitle.textContent = 'انتهى البث';
+                    errorMessage.textContent = 'انتهى البث المباشر من قبل المُذيع. يمكنك العودة للصفحة الرئيسية أو الانتظار حتى يبدأ بث جديد.';
+                    break;
+                    
+                case 'connection-failed':
+                    errorIcon.textContent = '📡';
+                    errorTitle.textContent = 'فشل الاتصال';
+                    errorMessage.textContent = 'حدث خطأ في الاتصال بالبث. تحقق من اتصالك بالإنترنت وحاول مرة أخرى.';
+                    break;
+                    
+                case 'server-unreachable':
+                    errorIcon.textContent = '🚫';
+                    errorTitle.textContent = 'الخادم غير متاح';
+                    errorMessage.textContent = 'لا يمكن الوصول إلى خادم البث حالياً. الرجاء المحاولة مرة أخرى لاحقاً.';
+                    break;
+                    
+                case 'kicked':
+                    errorIcon.textContent = '👋';
+                    errorTitle.textContent = 'تم طردك';
+                    errorMessage.textContent = 'تم طردك من الغرفة من قبل المُذيع. لا يمكنك متابعة البث.';
+                    break;
+                    
+                default:
+                    errorIcon.textContent = '⚠️';
+                    errorTitle.textContent = 'خطأ غير معروف';
+                    errorMessage.textContent = 'حدث خطأ غير متوقع. الرجاء المحاولة مرة أخرى.';
+            }
+        }
+
+        // تشغيل العرض عند تحميل الصفحة
+        window.onload = displayError;
+    </script>
+</body>
+</html>
