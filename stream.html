@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🎥 بث المعلم المباشر</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Segoe UI', sans-serif;
+            height: 100vh;
+        }
+        
+        /* الفيديو يملأ الشاشة */
+        #teacherVideo {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            object-fit: cover;
+            transform: scaleX(-1); /* قلب الصورة لتبدو طبيعية */
+            background: #000;
+        }
+        
+        /* زر كتم الصوت في وسط الشاشة */
+        #muteBtn {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            
+            width: 80px;
+            height: 80px;
+            border-radius: 50%;
+            background: rgba(0, 0, 0, 0.7);
+            border: 3px solid rgba(255, 255, 255, 0.3);
+            color: white;
+            font-size: 36px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.3s;
+            backdrop-filter: blur(5px);
+        }
+        
+        #muteBtn:hover {
+            background: rgba(0, 0, 0, 0.9);
+            border-color: rgba(255, 255, 255, 0.5);
+            transform: translate(-50%, -50%) scale(1.1);
+        }
+        
+        #muteBtn:active {
+            transform: translate(-50%, -50%) scale(0.95);
+        }
+        
+        /* حالة الكتم */
+        .muted {
+            background: rgba(255, 50, 50, 0.7) !important;
+            border-color: rgba(255, 255, 255, 0.7) !important;
+        }
+        
+        /* شريط الحالة في الأسفل */
+        #statusBar {
+            position: fixed;
+            bottom: 0;
+            left: 0;
+            width: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            color: white;
+            padding: 10px 20px;
+            font-size: 14px;
+            text-align: center;
+            z-index: 50;
+            backdrop-filter: blur(5px);
+        }
+    </style>
+</head>
+<body>
+    <!-- فيديو المعلم يملأ الشاشة -->
+    <video id="teacherVideo" autoplay muted playsinline></video>
+    
+    <!-- زر كتم الصوت فقط في وسط الشاشة -->
+    <button id="muteBtn" onclick="toggleMute()">🔇</button>
+    
+    <!-- شريط الحالة في الأسفل -->
+    <div id="statusBar">
+        <span id="statusText">⚪ جاري الإعداد...</span> | 
+        <span id="viewerCount">👥 0</span> | 
+        <span id="roomInfo"></span>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        let teacherStream;
+        let peerConnections = {};
+        let roomId = "";
+        let teacherName = "";
+        let isMuted = false;
+
+        const rtcConfig = {
+            iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:global.stun.twilio.com:3478' }
+            ]
+        };
+
+        // 1. استخراج بيانات الغرفة من الرابط
+        function getRoomFromURL() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const createParam = urlParams.get('create');
+            
+            if (createParam) {
+                const parts = createParam.split('/');
+                if (parts.length >= 2) {
+                    roomId = parts[0];
+                    teacherName = decodeURIComponent(parts[1]);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        // 2. بدء البث تلقائياً عند فتح الصفحة
+        async function startBroadcast() {
+            if (!getRoomFromURL()) {
+                alert("❌ الرابط غير صحيح. يجب أن يكون: stream.html?create=room1/teacher1");
+                return;
+            }
+
+            try {
+                // استخدام جودة متوسطة للبث
+                teacherStream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { 
+                        width: { ideal: 1280 },
+                        height: { ideal: 720 },
+                        frameRate: { ideal: 24, max: 30 }
+                    }, 
+                    audio: true 
+                });
+                
+                document.getElementById('teacherVideo').srcObject = teacherStream;
+                
+                // إلغاء كتم الفيديو المحلي ليسمع نفسه (اختياري)
+                document.getElementById('teacherVideo').muted = false;
+                
+                // إنشاء الغرفة على السيرفر
+                socket.emit('create-room', { roomId, userName: teacherName });
+                
+                // تحديث شريط الحالة
+                document.getElementById('statusText').innerHTML = "✅ البث مباشر";
+                document.getElementById('roomInfo').innerHTML = `🎤 ${teacherName} | ${roomId}`;
+                
+                console.log(`📡 بدء البث في الغرفة: ${roomId} بواسطة: ${teacherName}`);
+                
+            } catch (err) {
+                document.getElementById('statusText').innerHTML = "❌ فشل الوصول للكاميرا";
+                alert("تعذر الوصول للكاميرا والميكروفون. تأكد من منح الإذن.");
+                console.error("خطأ في الوصول للوسائط:", err);
+            }
+        }
+
+        // 3. زر كتم الصوت
+        function toggleMute() {
+            if (!teacherStream) return;
+            
+            isMuted = !isMuted;
+            const muteBtn = document.getElementById('muteBtn');
+            
+            teacherStream.getAudioTracks().forEach(track => {
+                track.enabled = !isMuted;
+            });
+            
+            if (isMuted) {
+                muteBtn.innerHTML = "🔇";
+                muteBtn.classList.add("muted");
+                muteBtn.title = "إلغاء كتم الصوت";
+            } else {
+                muteBtn.innerHTML = "🔊";
+                muteBtn.classList.remove("muted");
+                muteBtn.title = "كتم الصوت";
+            }
+        }
+
+        // 4. عند انضمام مشاهد جديد
+        socket.on('viewer-joined', async (data) => {
+            const viewerId = data.viewerId;
+            
+            // إنشاء اتصال WebRTC جديد
+            const pc = new RTCPeerConnection(rtcConfig);
+            peerConnections[viewerId] = pc;
+
+            // إضافة الفيديو والصوت للاتصال
+            teacherStream.getTracks().forEach(track => pc.addTrack(track, teacherStream));
+
+            // إرسال ICE Candidates
+            pc.onicecandidate = (event) => {
+                if (event.candidate) {
+                    socket.emit('webrtc-signal', { to: viewerId, type: 'candidate', signal: event.candidate });
+                }
+            };
+
+            // مراقبة حالة الاتصال
+            pc.onconnectionstatechange = () => {
+                if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    removeViewer(viewerId);
+                }
+            };
+
+            // إنشاء العرض وإرساله
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket.emit('webrtc-signal', { to: viewerId, type: 'offer', signal: offer });
+            
+            updateViewerCount(1);
+        });
+
+        // 5. استقبال إشارات WebRTC
+        socket.on('webrtc-signal', async (data) => {
+            const pc = peerConnections[data.from];
+            if (!pc) return;
+
+            if (data.type === 'answer') {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.signal));
+            } else if (data.type === 'candidate') {
+                await pc.addIceCandidate(new RTCIceCandidate(data.signal));
+            }
+        });
+
+        // 6. عند مغادرة مشاهد
+        socket.on('viewer-left', (data) => {
+            removeViewer(data.viewerId);
+        });
+
+        function removeViewer(viewerId) {
+            if (peerConnections[viewerId]) {
+                peerConnections[viewerId].close();
+                delete peerConnections[viewerId];
+                updateViewerCount(-1);
+            }
+        }
+
+        function updateViewerCount(change) {
+            const el = document.getElementById('viewerCount');
+            let count = parseInt(el.textContent.replace('👥', '')) || 0;
+            count = Math.max(0, count + change);
+            el.textContent = `👥 ${count}`;
+        }
+
+        // 7. بدء البث عند تحميل الصفحة
+        window.onload = startBroadcast;
+        
+        // 8. تنظيف عند إغلاق الصفحة
+        window.onbeforeunload = function() {
+            socket.emit('end-broadcast', { roomId });
+            teacherStream?.getTracks().forEach(track => track.stop());
+        };
+    </script>
+</body>
+</html>
