@@ -61,6 +61,18 @@
             text-align: center;
             padding: 20px;
         }
+        
+        .debug-info {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            background: rgba(0, 0, 0, 0.7);
+            color: #4cc9f0;
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            z-index: 30;
+        }
     </style>
 </head>
 <body>
@@ -76,7 +88,8 @@
                 </div>
             </div>
         </div>
-        <video id="remoteVideo" autoplay playsinline></video>
+        <div class="debug-info" id="debugInfo" style="display:none;"></div>
+        <video id="remoteVideo" autoplay playsinline muted></video>
     </div>
 
     <script src="/socket.io/socket.io.js"></script>
@@ -129,14 +142,24 @@
             document.getElementById('loadingText').style.display = 'none';
             document.getElementById('errorMessage').textContent = message;
             document.getElementById('errorOverlay').style.display = 'flex';
+            updateDebugInfo('خطأ: ' + message);
+        }
+
+        // دالة لتحديث معلومات التصحيح
+        function updateDebugInfo(message) {
+            const debugEl = document.getElementById('debugInfo');
+            debugEl.textContent = message;
+            debugEl.style.display = 'block';
         }
 
         // دالة للتحقق من اتصال الفيديو
         function checkVideoConnection() {
-            const videoEl = document.getElementById('remoteVideo');
+            updateDebugInfo('جاري التحقق من اتصال الفيديو...');
             setTimeout(() => {
+                const videoEl = document.getElementById('remoteVideo');
                 if (!videoEl.srcObject || videoEl.srcObject.getTracks().length === 0) {
                     showError('لم يتم استقبال أي بث. قد تكون الغرفة غير موجودة أو البث لم يبدأ بعد.');
+                    updateDebugInfo('لم يتم استقبال تدفق فيديو بعد 10 ثواني');
                 }
             }, 10000); // بعد 10 ثواني
         }
@@ -145,6 +168,7 @@
         function retryConnection() {
             document.getElementById('errorOverlay').style.display = 'none';
             document.getElementById('loadingText').style.display = 'block';
+            document.getElementById('debugInfo').style.display = 'none';
             autoJoin();
         }
 
@@ -155,6 +179,15 @@
             } else {
                 window.location.href = 'https://new-antik-p2p-20.onrender.com/viewer.html';
             }
+        }
+
+        // دالة لطلب عرض (offer) من السيرفر (محاكاة عندما يكون هناك مبث)
+        function requestOfferFromServer() {
+            updateDebugInfo('جاري طلب عرض البث من السيرفر...');
+            socket.emit('request-offer', { 
+                roomId: currentRoomId, 
+                userName: currentUserName 
+            });
         }
 
         // الدخول التلقائي عند تحميل الصفحة
@@ -173,15 +206,65 @@
                 
                 // الدخول إلى الغرفة مباشرة
                 socket.emit('join-room', { roomId, userName });
+                
+                // طلب عرض من السيرفر بعد 2 ثانية
+                setTimeout(requestOfferFromServer, 2000);
             }
         }
 
         // --- استمع لأحداث السيرفر ---
         socket.on('joined-room', (data) => {
-            document.getElementById('loadingText').textContent = `✅ متصل. بانتظار بدء البث...`;
+            updateDebugInfo('تم الانضمام للغرفة بنجاح');
+            document.getElementById('loadingText').textContent = `✅ متصل بالغرفة: ${currentRoomId}. بانتظار بدء البث...`;
         });
 
+        // استمع للعرض (offer) من المعلم
+        socket.on('webrtc-offer', async (data) => {
+            updateDebugInfo('📩 استقبال عرض WebRTC من المعلم');
+            console.log("📩 وصل عرض (Offer) من المعلم:", data);
+            
+            try {
+                if (!peerConnection) {
+                    createPeerConnection(data.from);
+                }
+                
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+                
+                // إنشاء إجابة (Answer)
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
+                
+                // إرسال الإجابة إلى المعلم
+                socket.emit('webrtc-answer', { 
+                    to: data.from, 
+                    roomId: currentRoomId,
+                    answer: answer 
+                });
+                
+                updateDebugInfo('✅ تم إنشاء وإرسال الإجابة للمعلم');
+                
+            } catch (error) {
+                console.error("Error handling offer:", error);
+                showError('حدث خطأ في معالجة عرض البث: ' + error.message);
+            }
+        });
+
+        // استمع للمرشحين (ICE Candidates)
+        socket.on('webrtc-candidate', async (data) => {
+            if (peerConnection && data.candidate) {
+                try {
+                    await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate));
+                    updateDebugInfo('➕ تم إضافة مرشح ICE');
+                } catch (error) {
+                    console.error("Error adding ICE candidate:", error);
+                }
+            }
+        });
+
+        // استمع لأحداث السيرفر الأخرى
         socket.on('webrtc-signal', async (data) => {
+            updateDebugInfo('📡 استقبال إشارة WebRTC: ' + data.type);
+            
             if (!peerConnection) createPeerConnection(data.from);
 
             try {
@@ -196,31 +279,56 @@
                 }
             } catch (error) {
                 console.error("Error handling signal:", error);
-                showError('حدث خطأ في الاتصال بالبث. تحقق من اتصالك بالإنترنت وحاول مرة أخرى.');
+                showError('حدث خطأ في الاتصال بالبث: ' + error.message);
             }
         });
 
         function createPeerConnection(broadcasterId) {
+            updateDebugInfo('🔧 جاري إنشاء اتصال WebRTC...');
             peerConnection = new RTCPeerConnection(rtcConfig);
             
             peerConnection.ontrack = (event) => {
-                console.log("🎬 وصل الفيديو!");
+                console.log("🎬 وصل الفيديو!", event.streams[0]);
+                updateDebugInfo('🎬 تم استقبال تدفق الفيديو!');
                 const videoEl = document.getElementById('remoteVideo');
                 videoEl.srcObject = event.streams[0];
                 document.getElementById('loadingText').style.display = 'none';
+                
+                // تشغيل الفيديو برمجياً
+                videoEl.play().catch(e => {
+                    console.error("Error playing video:", e);
+                    updateDebugInfo('⚠️ فشل تشغيل الفيديو تلقائياً: ' + e.message);
+                });
             };
             
             peerConnection.onicecandidate = (event) => {
                 if (event.candidate) {
-                    socket.emit('webrtc-signal', { to: broadcasterId, type: 'candidate', signal: event.candidate });
+                    socket.emit('webrtc-candidate', { 
+                        to: broadcasterId, 
+                        roomId: currentRoomId,
+                        candidate: event.candidate 
+                    });
+                    updateDebugInfo('📤 إرسال مرشح ICE');
                 }
             };
             
+            peerConnection.onicegatheringstatechange = () => {
+                updateDebugInfo('حالة جمع ICE: ' + peerConnection.iceGatheringState);
+            };
+            
             peerConnection.onconnectionstatechange = () => {
+                updateDebugInfo('حالة الاتصال: ' + peerConnection.connectionState);
                 if (peerConnection.connectionState === 'disconnected' || 
                     peerConnection.connectionState === 'failed') {
                     showError('انقطع الاتصال بالبث. قد يكون البث قد انتهى.');
                 }
+                if (peerConnection.connectionState === 'connected') {
+                    updateDebugInfo('✅ اتصال WebRTC ناجح!');
+                }
+            };
+            
+            peerConnection.onsignalingstatechange = () => {
+                updateDebugInfo('حالة الإشارة: ' + peerConnection.signalingState);
             };
         }
 
@@ -250,8 +358,51 @@
             showError('لا يمكن الوصول إلى خادم البث حالياً. الرجاء المحاولة مرة أخرى لاحقاً.');
         });
 
+        // استمع لطلب عرض (عندما يطلب السيرفر من المشاهد إنشاء عرض)
+        socket.on('request-offer', async (data) => {
+            updateDebugInfo('🔄 استقبال طلب لعرض من السيرفر');
+            if (!peerConnection) {
+                createPeerConnection('server');
+            }
+            
+            try {
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
+                socket.emit('send-offer', { 
+                    roomId: currentRoomId, 
+                    userName: currentUserName,
+                    offer: offer 
+                });
+                updateDebugInfo('📤 تم إرسال عرض إلى السيرفر');
+            } catch (error) {
+                console.error("Error creating offer:", error);
+            }
+        });
+
+        // استمع لاستقبال إجابة (answer) من السيرفر
+        socket.on('webrtc-answer', async (data) => {
+            if (peerConnection && data.answer) {
+                try {
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer));
+                    updateDebugInfo('✅ تم تعيين إجابة WebRTC');
+                } catch (error) {
+                    console.error("Error setting remote description:", error);
+                }
+            }
+        });
+
         // حاول الدخول تلقائياً عند تحميل الصفحة
         window.onload = autoJoin;
+        
+        // أضف حدث النقر لتشغيل الفيديو يدوياً (للتغلب على قيود المتصفح)
+        document.addEventListener('click', function() {
+            const videoEl = document.getElementById('remoteVideo');
+            if (videoEl.srcObject) {
+                videoEl.play().catch(e => {
+                    console.log("تم النقر، محاولة تشغيل الفيديو...");
+                });
+            }
+        });
     </script>
 </body>
 </html>
