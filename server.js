@@ -1,120 +1,409 @@
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
+const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
+const PORT = process.env.PORT || 3000;
+
+// Middleware
+app.use(cors());
+app.use(express.json());
+
+// إخفاء رابط SheetDB الخاص بك في متغير بيئة
+const SHEETDB_URL = process.env.SHEETDB_URL || 'https://sheetdb.io/api/v1/apfdlqhkkqm7m';
+const SHEETDB_API_KEY = process.env.SHEETDB_API_KEY || 'apfdlqhkkqm7m';
+
+// 1. CRUD الرئيسية (بدون مسارات فرعية)
+// =========================================
+
+// القراءة: جلب جميع البيانات (GET)
+app.get('/', async (req, res) => {
+    try {
+        const response = await axios.get(SHEETDB_URL);
+        res.json({
+            success: true,
+            data: response.data,
+            count: response.data.length,
+            timestamp: new Date().toISOString()
+        });
+    } catch (error) {
+        console.error('Error fetching data:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch data from SheetDB',
+            error: error.message
+        });
     }
 });
 
-const PORT = process.env.PORT || 3000;
-
-// تخزين بيانات الغرف والمستخدمين
-const rooms = new Map();
-const users = new Map();
-
-app.use(express.static(__dirname));
-app.use(express.json());
-
-// الصفحة الرئيسية
-app.get('/', (req, res) => {
-    res.send('<h1>🚀 خادم البث يعمل بنجاح</h1>');
-});
-
-io.on('connection', (socket) => {
-    console.log(`➕ اتصال جديد: ${socket.id}`);
-
-    // إنشاء غرفة (للمعلم)
-    socket.on('create-room', ({ roomId, userName }) => {
-        if (rooms.has(roomId)) {
-            socket.emit('error', { message: '⚠️ الغرفة موجودة مسبقاً' });
-            return;
-        }
-
-        rooms.set(roomId, {
-            broadcaster: socket.id,
-            broadcasterName: userName,
-            viewers: new Set()
-        });
-
-        users.set(socket.id, { roomId, type: 'broadcaster' });
-        socket.join(roomId);
+// الإنشاء: إضافة سجل جديد (POST)
+app.post('/', async (req, res) => {
+    try {
+        const data = req.body;
         
-        console.log(`🎥 تم إنشاء الغرفة ${roomId} بواسطة ${userName}`);
-        socket.emit('room-created', { success: true, roomId });
-    });
-
-    // انضمام مشاهد
-    socket.on('join-room', ({ roomId, userName }) => {
-        const room = rooms.get(roomId);
-
-        if (!room) {
-            socket.emit('error', { message: '🚫 الغرفة غير موجودة أو البث لم يبدأ' });
-            return;
+        if (!data || Object.keys(data).length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: 'Request body is required'
+            });
         }
 
-        if (room.viewers.size >= 20) {
-            socket.emit('error', { message: '⚠️ الغرفة ممتلئة (الحد الأقصى 20)' });
-            return;
+        const response = await axios.post(SHEETDB_URL, { data: [data] });
+        
+        res.json({
+            success: true,
+            message: 'Record added successfully',
+            data: response.data,
+            created: data
+        });
+    } catch (error) {
+        console.error('Create error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to create record',
+            error: error.message
+        });
+    }
+});
+
+// التحديث: تحديث سجل (PUT)
+app.put('/', async (req, res) => {
+    try {
+        const { id, column, value, data } = req.body;
+        
+        // الطريقة 1: تحديث باستخدام ID و column
+        if (id && column && value) {
+            const updateUrl = `${SHEETDB_URL}/id/${id}/${column}`;
+            const response = await axios.put(updateUrl, { value });
+            
+            return res.json({
+                success: true,
+                message: 'Record updated successfully',
+                data: response.data
+            });
+        }
+        
+        // الطريقة 2: تحديث كامل السجل
+        if (data && data.id) {
+            const updateUrl = `${SHEETDB_URL}/id/${data.id}`;
+            const response = await axios.put(updateUrl, { data });
+            
+            return res.json({
+                success: true,
+                message: 'Record fully updated',
+                data: response.data
+            });
+        }
+        
+        res.status(400).json({
+            success: false,
+            message: 'Either provide id/column/value or full data object with id'
+        });
+        
+    } catch (error) {
+        console.error('Update error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update record',
+            error: error.message
+        });
+    }
+});
+
+// الحذف: حذف سجل (DELETE)
+app.delete('/', async (req, res) => {
+    try {
+        const { id, column, value } = req.body;
+        
+        if (id) {
+            // الحذف باستخدام ID
+            const deleteUrl = `${SHEETDB_URL}/id/${id}`;
+            await axios.delete(deleteUrl);
+            
+            return res.json({
+                success: true,
+                message: 'Record deleted successfully',
+                deletedId: id
+            });
+        }
+        
+        if (column && value) {
+            // الحذف باستخدام column/value
+            const deleteUrl = `${SHEETDB_URL}/${column}/${encodeURIComponent(value)}`;
+            await axios.delete(deleteUrl);
+            
+            return res.json({
+                success: true,
+                message: 'Records deleted successfully',
+                condition: { column, value }
+            });
+        }
+        
+        res.status(400).json({
+            success: false,
+            message: 'Provide either id or column/value pair'
+        });
+        
+    } catch (error) {
+        console.error('Delete error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to delete record',
+            error: error.message
+        });
+    }
+});
+
+// 2. عمليات خاصة (بدون مسارات فرعية)
+// =====================================
+
+// البحث (POST للبحث المعقد)
+app.post('/search', async (req, res) => {
+    try {
+        const { conditions, logical = 'AND' } = req.body;
+        
+        if (!conditions || !Array.isArray(conditions)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Conditions array is required'
+            });
         }
 
-        room.viewers.add(socket.id);
-        users.set(socket.id, { roomId, type: 'viewer' });
-        socket.join(roomId);
-
-        // إشعار المشاهد بنجاح الانضمام
-        socket.emit('joined-room', { 
-            success: true, 
-            roomId, 
-            broadcasterName: room.broadcasterName 
-        });
-
-        // إشعار المعلم بوجود مشاهد جديد ليبدأ الاتصال معه
-        io.to(room.broadcaster).emit('viewer-joined', { 
-            viewerId: socket.id, 
-            viewerName: userName 
-        });
-
-        console.log(`👁️ انضم ${userName} للغرفة ${roomId}`);
-    });
-
-    // تمرير إشارات WebRTC (Offer, Answer, Candidate)
-    socket.on('webrtc-signal', (data) => {
-        // إرسال الإشارة للطرف الآخر مباشرة
-        io.to(data.to).emit('webrtc-signal', {
-            from: socket.id,
-            type: data.type,
-            signal: data.signal
-        });
-    });
-
-    // عند قطع الاتصال
-    socket.on('disconnect', () => {
-        const user = users.get(socket.id);
-        if (user) {
-            const room = rooms.get(user.roomId);
-            if (room) {
-                if (user.type === 'broadcaster') {
-                    // إذا خرج المعلم، نغلق الغرفة ونطرد الجميع
-                    io.to(user.roomId).emit('broadcast-ended');
-                    rooms.delete(user.roomId);
-                } else {
-                    // إذا خرج مشاهد
-                    room.viewers.delete(socket.id);
-                    io.to(room.broadcaster).emit('viewer-left', { viewerId: socket.id });
-                }
+        // بناء استعلام البحث
+        const searchParams = new URLSearchParams();
+        conditions.forEach(cond => {
+            if (cond.column && cond.value) {
+                searchParams.append(cond.column, cond.value);
             }
-            users.delete(socket.id);
+        });
+        
+        const searchUrl = `${SHEETDB_URL}/search?${searchParams.toString()}`;
+        const response = await axios.get(searchUrl);
+        
+        res.json({
+            success: true,
+            data: response.data,
+            conditions,
+            logical,
+            count: response.data.length
+        });
+    } catch (error) {
+        console.error('Search error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Search failed',
+            error: error.message
+        });
+    }
+});
+
+// الحصول على سجل معين (POST بدلاً من GET مع باراميتر)
+app.post('/getrow', async (req, res) => {
+    try {
+        const { id } = req.body;
+        
+        if (!id) {
+            return res.status(400).json({
+                success: false,
+                message: 'ID is required'
+            });
         }
-        console.log(`➖ انقطع الاتصال: ${socket.id}`);
+
+        const response = await axios.get(`${SHEETDB_URL}/id/${id}`);
+        
+        res.json({
+            success: true,
+            data: response.data,
+            rowId: id
+        });
+    } catch (error) {
+        console.error('Row fetch error:', error.message);
+        res.status(404).json({
+            success: false,
+            message: 'Row not found',
+            error: error.message
+        });
+    }
+});
+
+// إضافة عدة سجلات دفعة واحدة
+app.post('/batch', async (req, res) => {
+    try {
+        const { data } = req.body;
+        
+        if (!data || !Array.isArray(data)) {
+            return res.status(400).json({
+                success: false,
+                message: 'Data array is required'
+            });
+        }
+
+        const response = await axios.post(SHEETDB_URL, { data });
+        
+        res.json({
+            success: true,
+            message: `${data.length} records added successfully`,
+            data: response.data,
+            count: data.length
+        });
+    } catch (error) {
+        console.error('Batch create error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to add batch records',
+            error: error.message
+        });
+    }
+});
+
+// 3. عمليات متقدمة
+// ==================
+
+// تعداد الأعمدة (الحقول)
+app.get('/columns', async (req, res) => {
+    try {
+        const response = await axios.get(SHEETDB_URL);
+        const firstRow = response.data[0];
+        
+        if (!firstRow) {
+            return res.json({
+                success: true,
+                columns: [],
+                count: 0
+            });
+        }
+        
+        const columns = Object.keys(firstRow);
+        
+        res.json({
+            success: true,
+            columns: columns,
+            count: columns.length
+        });
+    } catch (error) {
+        console.error('Columns error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get columns',
+            error: error.message
+        });
+    }
+});
+
+// إحصائيات البيانات
+app.get('/stats', async (req, res) => {
+    try {
+        const response = await axios.get(SHEETDB_URL);
+        const data = response.data;
+        
+        if (data.length === 0) {
+            return res.json({
+                success: true,
+                stats: {
+                    totalRecords: 0,
+                    columns: 0,
+                    message: 'No data available'
+                }
+            });
+        }
+        
+        const firstRow = data[0];
+        const columns = Object.keys(firstRow);
+        
+        // جمع إحصائيات لكل عمود
+        const columnStats = {};
+        columns.forEach(column => {
+            const values = data.map(row => row[column]).filter(val => val !== undefined);
+            columnStats[column] = {
+                count: values.length,
+                sampleValues: values.slice(0, 3),
+                hasValues: values.length > 0
+            };
+        });
+        
+        res.json({
+            success: true,
+            stats: {
+                totalRecords: data.length,
+                totalColumns: columns.length,
+                columnNames: columns,
+                columnStats: columnStats,
+                lastUpdated: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Stats error:', error.message);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to get statistics',
+            error: error.message
+        });
+    }
+});
+
+// 4. نقاط نهاية مساعدة
+// =====================
+
+// التحقق من صحة الخادم
+app.get('/health', (req, res) => {
+    res.json({
+        status: 'healthy',
+        service: 'SheetDB Proxy',
+        version: '1.0.0',
+        timestamp: new Date().toISOString(),
+        features: ['CRUD', 'Search', 'Batch Operations', 'Statistics']
     });
 });
 
-server.listen(PORT, () => {
-    console.log(`🚀 Server running on port ${PORT}`);
+// معلومات عن API
+app.get('/info', (req, res) => {
+    res.json({
+        service: 'SheetDB Proxy API',
+        description: 'Full CRUD operations without slashes in URL',
+        version: '1.0.0',
+        endpoints: {
+            'GET /': 'Get all records',
+            'POST /': 'Create new record',
+            'PUT /': 'Update record',
+            'DELETE /': 'Delete record',
+            'POST /search': 'Search records',
+            'POST /getrow': 'Get specific row',
+            'POST /batch': 'Add multiple records',
+            'GET /columns': 'Get column names',
+            'GET /stats': 'Get data statistics',
+            'GET /health': 'Health check',
+            'GET /info': 'This information'
+        },
+        note: 'All operations use POST/GET/PUT/DELETE on root or with simple paths'
+    });
+});
+
+// 5. معالجة الأخطاء العامة
+// ==========================
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: 'Endpoint not found',
+        availableEndpoints: [
+            'GET    /',
+            'POST   /',
+            'PUT    /',
+            'DELETE /',
+            'POST   /search',
+            'POST   /getrow',
+            'POST   /batch',
+            'GET    /columns',
+            'GET    /stats',
+            'GET    /health',
+            'GET    /info'
+        ]
+    });
+});
+
+// بدء الخادم
+app.listen(PORT, () => {
+    console.log(`🚀 Server is running on port ${PORT}`);
+    console.log(`📊 Proxying to SheetDB: ${SHEETDB_URL}`);
+    console.log(`🌐 API available at: http://localhost:${PORT}`);
+    console.log(`🔧 Ready for CRUD operations without slash paths`);
 });
