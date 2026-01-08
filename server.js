@@ -10,7 +10,7 @@ app.use(cors());
 app.use(express.json());
 
 // رابط SheetDB
-const SHEETDB_URL = process.env.SHEETDB_URL || 'https://sheetdb.io/api/v1/apfdlqhkkqm7m';
+const SHEETDB_URL = process.env.SHEETDB_URL || 'https://sheetdb.io/api/v1/mnzgv5245hdg8';
 
 // 1. القراءة: جلب جميع البيانات (GET) - يرجع البيانات مباشرة
 app.get('/', async (req, res) => {
