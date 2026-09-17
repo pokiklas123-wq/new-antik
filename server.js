@@ -19,13 +19,12 @@ let tdmQueue = [];
 let activeMatches = {};
 let ffaRooms = {};
 
-// ===== Leaderboard cache =====
 let cachedLeaderboard = [];
 let lastLeaderboardFetch = 0;
 const LEADERBOARD_CACHE_MS = 5000;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Ultimate Game Server v8.0 is Live!');
+    res.send('Grand3D Ultimate Game Server v9.0 is Live!');
 });
 
 function randomSpawn() {
@@ -36,7 +35,7 @@ function randomSpawn() {
     };
 }
 
-// ===== Firebase helpers =====
+// ============ Firebase ============
 async function fetchGlobalLeaderboard() {
     const now = Date.now();
     if (now - lastLeaderboardFetch < LEADERBOARD_CACHE_MS && cachedLeaderboard.length > 0) {
@@ -66,34 +65,34 @@ async function sendLeaderboardUpdate(roomId) {
     io.to(roomId).emit('leaderboard_update', top);
 }
 
-async function addKillToFirebase(username, amount) {
-    if (!username) return;
+// حفظ القتلة عبر UID مباشرة
+async function addKillToFirebaseByUid(uid, currentKills) {
+    if (!uid) return;
     try {
-        const res = await fetch(DB_URL + "/users.json");
-        if (!res.ok) return;
-        const users = await res.json();
-        if (!users) return;
-
-        let uid = null;
-        for (const k in users) {
-            if (users[k].username === username) {
-                uid = k;
-                break;
-            }
-        }
-        if (!uid) return;
-
-        const newTotal = (users[uid].total_kills || 0) + amount;
-
-        await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
+        const newTotal = (currentKills || 0) + 1;
+        const res = await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(newTotal)
         });
-
-        lastLeaderboardFetch = 0;
+        if (res.ok) {
+            lastLeaderboardFetch = 0;
+        }
     } catch (e) {
-        console.error("Firebase update failed:", e);
+        console.error("Firebase kill update failed:", e);
+    }
+}
+
+// جلب قيمة total_kills الحالية من Firebase
+async function fetchCurrentKills(uid) {
+    if (!uid) return 0;
+    try {
+        const res = await fetch(DB_URL + "/users/" + uid + "/total_kills.json");
+        if (!res.ok) return 0;
+        const val = await res.json();
+        return (typeof val === 'number') ? val : 0;
+    } catch (e) {
+        return 0;
     }
 }
 
@@ -101,9 +100,10 @@ io.on('connection', (socket) => {
     console.log(`Player Connected: ${socket.id}`);
 
     socket.on('join_match', (data) => {
-        const { mode, skin, username } = data;
+        const { mode, skin, username, uid } = data;
         socket.username = username || "Commander";
         socket.skin = skin || "bt1";
+        socket.uid = uid || "";
         socket.gameMode = mode;
         socket.lastHeartbeat = Date.now();
 
@@ -131,6 +131,7 @@ io.on('connection', (socket) => {
                 id: socket.id,
                 name: socket.username,
                 skin: socket.skin,
+                uid: socket.uid,
                 x: sp.x, y: sp.y, heading: sp.heading,
                 hp: 100,
                 kills: 0
@@ -178,8 +179,8 @@ io.on('connection', (socket) => {
                         id: matchId,
                         roundActive: true,
                         players: {
-                            [p1]: { role: "Red", hp: 100, score: 0, skin: s1.skin, name: s1.username },
-                            [p2]: { role: "Blue", hp: 100, score: 0, skin: s2.skin, name: s2.username }
+                            [p1]: { role: "Red", hp: 100, score: 0, skin: s1.skin, name: s1.username, uid: s1.uid || "" },
+                            [p2]: { role: "Blue", hp: 100, score: 0, skin: s2.skin, name: s2.username, uid: s2.uid || "" }
                         },
                         maxKills: 4
                     };
@@ -244,8 +245,11 @@ io.on('connection', (socket) => {
                 target.hp = 0;
                 if (room.players[socket.id]) room.players[socket.id].kills += 1;
 
-                // حفظ في Firebase
-                await addKillToFirebase(socket.username, 1);
+                // حفظ القتلة في Firebase عبر UID
+                if (socket.uid) {
+                    const currentKills = await fetchCurrentKills(socket.uid);
+                    await addKillToFirebaseByUid(socket.uid, currentKills);
+                }
 
                 io.to(matchId).emit('player_killed_ffa', {
                     killedId: targetId,
@@ -292,8 +296,10 @@ io.on('connection', (socket) => {
                 opponent.hp = 100;
                 match.players[socket.id].score += 1;
 
-                // حفظ في Firebase
-                await addKillToFirebase(socket.username, 1);
+                if (socket.uid) {
+                    const currentKills = await fetchCurrentKills(socket.uid);
+                    await addKillToFirebaseByUid(socket.uid, currentKills);
+                }
 
                 const killerScore = match.players[socket.id].score;
                 const oppScore = opponent.score;
@@ -385,7 +391,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// kick الفارغين بعد 60 ثانية
+// kick اللاعب الوحيد بعد 60 ثانية
 setInterval(() => {
     const now = Date.now();
     for (const roomId in ffaRooms) {
@@ -405,6 +411,13 @@ setInterval(() => {
         }
     }
 }, 5000);
+
+// تحديث المتصدرين كل 15 ثانية لكل غرفة
+setInterval(() => {
+    for (const roomId in ffaRooms) {
+        sendLeaderboardUpdate(roomId);
+    }
+}, 15000);
 
 function leaveCurrentRoom(socket) {
     const room = socket.currentRoom;
