@@ -17,17 +17,15 @@ let matchmakingQueue = [];
 let activeMatches = {};
 
 app.get('/', (req, res) => {
-    res.send('Grand3D TDM Server v2.0 is Running!');
+    res.send('Grand3D TDM Server v3.0 - Smooth Lerp & Role Sync is Active!');
 });
 
 io.on('connection', (socket) => {
     console.log(`Connected: ${socket.id}`);
 
-    // 1. البحث عن مباراة من صفحة الهوم
     socket.on('join_match', () => {
         if (matchmakingQueue.includes(socket.id)) return;
         matchmakingQueue.push(socket.id);
-        console.log(`Queue size: ${matchmakingQueue.length}`);
 
         if (matchmakingQueue.length >= 2) {
             const p1 = matchmakingQueue.shift();
@@ -40,8 +38,10 @@ io.on('connection', (socket) => {
             if (s1 && s2) {
                 activeMatches[matchId] = {
                     id: matchId,
-                    players: {}, // سيتم ملؤها عند دخول MainActivity
-                    scores: { [p1]: 0, [p2]: 0 },
+                    players: {
+                        "Red": { socketId: p1, hp: 100, score: 0 },
+                        "Blue": { socketId: p2, hp: 100, score: 0 }
+                    },
                     maxKills: 4
                 };
 
@@ -50,8 +50,7 @@ io.on('connection', (socket) => {
                     role: "Red",
                     spawnX: 2000,
                     spawnY: 2000,
-                    spawnHeading: 0,
-                    opponentId: p2
+                    spawnHeading: 0
                 });
 
                 s2.emit('match_found', {
@@ -59,41 +58,28 @@ io.on('connection', (socket) => {
                     role: "Blue",
                     spawnX: 4000,
                     spawnY: 4000,
-                    spawnHeading: 180,
-                    opponentId: p1
+                    spawnHeading: 180
                 });
             }
         }
     });
 
-    // 2. تسجيل الدخول الفعلي للعبة (MainActivity) لتحديث الـ Socket ID
     socket.on('join_game', (data) => {
         const { matchId, role } = data;
         socket.join(matchId);
 
-        if (!activeMatches[matchId]) {
-            activeMatches[matchId] = {
-                id: matchId,
-                players: {},
-                scores: {},
-                maxKills: 4
-            };
+        if (activeMatches[matchId] && activeMatches[matchId].players[role]) {
+            // تحديث الـ socketId الجديد للاعب بعد انتقاله لصفحة اللعبة
+            activeMatches[matchId].players[role].socketId = socket.id;
+            console.log(`Player registered in-game: Room ${matchId} as Role ${role}`);
         }
-
-        // تسجيل اللاعب بالـ Socket ID الجديد والنشط داخل اللعبة
-        activeMatches[matchId].players[socket.id] = {
-            role: role,
-            hp: 100,
-            score: 0
-        };
-
-        console.log(`Player ${socket.id} joined room ${matchId} as ${role}`);
     });
 
-    // 3. مزامنة الحركة الفورية
     socket.on('update_movement', (data) => {
-        const { matchId, x, y, heading, speed } = data;
+        const { matchId, role, x, y, heading, speed } = data;
+        // إرسال الحركة للخصم مع تحديد دور المرسل لكي يعرف المستقبل من يتحرك
         socket.to(matchId).emit('opponent_moved', {
+            senderRole: role,
             x: x,
             y: y,
             heading: heading,
@@ -101,136 +87,74 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 4. مزامنة إطلاق النار
     socket.on('fire_torpedo', (data) => {
-        const { matchId, x, y, heading } = data;
+        const { matchId, role, x, y, heading } = data;
         socket.to(matchId).emit('opponent_fired', {
+            senderRole: role,
             x: x,
             y: y,
             heading: heading
         });
     });
 
-    // 5. تسجيل الضرر والقتلات
-    socket.on('register_hit', (data) => {
-        const { matchId, damage } = data;
+    socket.on('sync_self_damage', (data) => {
+        const { matchId, role, hp } = data;
         const match = activeMatches[matchId];
         if (!match) return;
 
-        const opponentId = Object.keys(match.players).find(id => id !== socket.id);
-        if (!opponentId) return;
+        const player = match.players[role];
+        if (!player) return;
 
-        let opponent = match.players[opponentId];
-        opponent.hp -= damage;
+        player.hp = hp;
 
-        if (opponent.hp <= 0) {
-            opponent.hp = 0;
-            match.players[socket.id].score += 1;
+        if (hp <= 0) {
+            player.hp = 100; // إعادة تعيين الصحة للجولة القادمة
+            const opponentRole = role === "Red" ? "Blue" : "Red";
+            match.players[opponentRole].score += 1;
+
+            const currentScores = {
+                "Red": match.players["Red"].score,
+                "Blue": match.players["Blue"].score
+            };
 
             io.to(matchId).emit('player_killed', {
-                killedPlayerId: opponentId,
-                killerId: socket.id,
-                scores: {
-                    [socket.id]: match.players[socket.id].score,
-                    [opponentId]: match.players[opponentId].score
-                }
+                killedRole: role,
+                killerRole: opponentRole,
+                scores: currentScores
             });
 
-            if (match.players[socket.id].score >= match.maxKills) {
+            if (match.players[opponentRole].score >= match.maxKills) {
                 io.to(matchId).emit('game_over', {
-                    winnerId: socket.id,
-                    loserId: opponentId
+                    winnerRole: opponentRole,
+                    loserRole: role
                 });
                 delete activeMatches[matchId];
             } else {
-                // إعادة تعيين الجولة بعد 3 ثوانٍ
                 setTimeout(() => {
                     if (activeMatches[matchId]) {
-                        match.players[socket.id].hp = 100;
-                        match.players[opponentId].hp = 100;
+                        match.players["Red"].hp = 100;
+                        match.players["Blue"].hp = 100;
 
-                        const p1Id = Object.keys(match.players)[0];
-                        const p2Id = Object.keys(match.players)[1];
-
-                        io.to(p1Id).emit('round_start', {
-                            spawnX: 2000, spawnY: 2000, spawnHeading: 0, hp: 100
-                        });
-                        io.to(p2Id).emit('round_start', {
-                            spawnX: 4000, spawnY: 4000, spawnHeading: 180, hp: 100
+                        io.to(matchId).emit('round_start', {
+                            "Red": { spawnX: 2000, spawnY: 2000, spawnHeading: 0 },
+                            "Blue": { spawnX: 4000, spawnY: 4000, spawnHeading: 180 }
                         });
                     }
                 }, 3000);
             }
         } else {
             io.to(matchId).emit('hp_sync', {
-                playerId: opponentId,
-                hp: opponent.hp
+                role: role,
+                hp: hp
             });
-        }
-    });
-
-    // 6. مزامنة الضرر الذاتي (مثل الاصطدام بالجبال)
-    socket.on('sync_self_damage', (data) => {
-        const { matchId, hp } = data;
-        const match = activeMatches[matchId];
-        if (!match) return;
-
-        if (match.players[socket.id]) {
-            match.players[socket.id].hp = hp;
-            
-            if (hp <= 0) {
-                const opponentId = Object.keys(match.players).find(id => id !== socket.id);
-                if (opponentId) {
-                    match.players[opponentId].score += 1;
-                    io.to(matchId).emit('player_killed', {
-                        killedPlayerId: socket.id,
-                        killerId: opponentId,
-                        scores: {
-                            [opponentId]: match.players[opponentId].score,
-                            [socket.id]: match.players[socket.id].score
-                        }
-                    });
-
-                    if (match.players[opponentId].score >= match.maxKills) {
-                        io.to(matchId).emit('game_over', {
-                            winnerId: opponentId,
-                            loserId: socket.id
-                        });
-                        delete activeMatches[matchId];
-                    } else {
-                        setTimeout(() => {
-                            if (activeMatches[matchId]) {
-                                match.players[socket.id].hp = 100;
-                                match.players[opponentId].hp = 100;
-                                io.to(socket.id).emit('round_start', {
-                                    spawnX: socket.id === Object.keys(match.players)[0] ? 2000 : 4000,
-                                    spawnY: socket.id === Object.keys(match.players)[0] ? 2000 : 4000,
-                                    spawnHeading: socket.id === Object.keys(match.players)[0] ? 0 : 180,
-                                    hp: 100
-                                });
-                                io.to(opponentId).emit('round_start', {
-                                    spawnX: opponentId === Object.keys(match.players)[0] ? 2000 : 4000,
-                                    spawnY: opponentId === Object.keys(match.players)[0] ? 2000 : 4000,
-                                    spawnHeading: opponentId === Object.keys(match.players)[0] ? 0 : 180,
-                                    hp: 100
-                                });
-                            }
-                        }, 3000);
-                    }
-                }
-            } else {
-                io.to(matchId).emit('hp_sync', {
-                    playerId: socket.id,
-                    hp: hp
-                });
-            }
         }
     });
 
     socket.on('disconnect', () => {
         matchmakingQueue = matchmakingQueue.filter(id => id !== socket.id);
         for (const matchId in activeMatches) {
-            if (activeMatches[matchId].players[socket.id]) {
+            const match = activeMatches[matchId];
+            if (match.players["Red"].socketId === socket.id || match.players["Blue"].socketId === socket.id) {
                 socket.to(matchId).emit('opponent_disconnected');
                 delete activeMatches[matchId];
                 break;
