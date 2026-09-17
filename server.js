@@ -17,7 +17,7 @@ let matchmakingQueue = [];
 let activeMatches = {};
 
 app.get('/', (req, res) => {
-    res.send('Grand3D TDM Server v3.1 - Matchmaking Fix is Live!');
+    res.send('Grand3D TDM Server v4.0 - Ultra Stable & Synced!');
 });
 
 io.on('connection', (socket) => {
@@ -26,7 +26,6 @@ io.on('connection', (socket) => {
     socket.on('join_match', () => {
         if (matchmakingQueue.includes(socket.id)) return;
         matchmakingQueue.push(socket.id);
-        console.log(`Queue size: ${matchmakingQueue.length}`);
 
         if (matchmakingQueue.length >= 2) {
             const p1 = matchmakingQueue.shift();
@@ -39,6 +38,7 @@ io.on('connection', (socket) => {
             if (s1 && s2) {
                 activeMatches[matchId] = {
                     id: matchId,
+                    roundActive: true, // جولة نشطة لمنع غلتشات الموت المتكرر
                     players: {
                         "Red": { socketId: p1, hp: 100, score: 0 },
                         "Blue": { socketId: p2, hp: 100, score: 0 }
@@ -46,7 +46,6 @@ io.on('connection', (socket) => {
                     maxKills: 4
                 };
 
-                // إرسال حدث العثور على المباراة مع إرجاع opponentId لمنع الـ JSON Error
                 s1.emit('match_found', {
                     matchId: matchId,
                     role: "Red",
@@ -64,8 +63,6 @@ io.on('connection', (socket) => {
                     spawnHeading: 180,
                     opponentId: p1
                 });
-                
-                console.log(`Match started successfully: ${matchId}`);
             }
         }
     });
@@ -76,7 +73,6 @@ io.on('connection', (socket) => {
 
         if (activeMatches[matchId] && activeMatches[matchId].players[role]) {
             activeMatches[matchId].players[role].socketId = socket.id;
-            console.log(`Player registered in-game: Room ${matchId} as Role ${role}`);
         }
     });
 
@@ -104,7 +100,7 @@ io.on('connection', (socket) => {
     socket.on('sync_self_damage', (data) => {
         const { matchId, role, hp } = data;
         const match = activeMatches[matchId];
-        if (!match) return;
+        if (!match || !match.roundActive) return; // تجاهل الضرر إذا كانت الجولة منتهية
 
         const player = match.players[role];
         if (!player) return;
@@ -112,7 +108,9 @@ io.on('connection', (socket) => {
         player.hp = hp;
 
         if (hp <= 0) {
+            match.roundActive = false; // إيقاف الجولة فوراً لمنع تداخل الموت
             player.hp = 100;
+            
             const opponentRole = role === "Red" ? "Blue" : "Red";
             match.players[opponentRole].score += 1;
 
@@ -138,6 +136,7 @@ io.on('connection', (socket) => {
                     if (activeMatches[matchId]) {
                         match.players["Red"].hp = 100;
                         match.players["Blue"].hp = 100;
+                        match.roundActive = true; // إعادة تفعيل الجولة
 
                         io.to(matchId).emit('round_start', {
                             "Red": { spawnX: 2000, spawnY: 2000, spawnHeading: 0 },
@@ -150,6 +149,63 @@ io.on('connection', (socket) => {
             io.to(matchId).emit('hp_sync', {
                 role: role,
                 hp: hp
+            });
+        }
+    });
+
+    socket.on('register_hit', (data) => {
+        const { matchId, damage } = data;
+        const match = activeMatches[matchId];
+        if (!match || !match.roundActive) return;
+
+        const opponentRole = socket.id === match.players["Red"].socketId ? "Blue" : "Red";
+        const opponent = match.players[opponentRole];
+        if (!opponent) return;
+
+        opponent.hp -= damage;
+
+        if (opponent.hp <= 0) {
+            match.roundActive = false;
+            opponent.hp = 100;
+            
+            const myRole = opponentRole === "Red" ? "Blue" : "Red";
+            match.players[myRole].score += 1;
+
+            const currentScores = {
+                "Red": match.players["Red"].score,
+                "Blue": match.players["Blue"].score
+            };
+
+            io.to(matchId).emit('player_killed', {
+                killedRole: opponentRole,
+                killerRole: myRole,
+                scores: currentScores
+            });
+
+            if (match.players[myRole].score >= match.maxKills) {
+                io.to(matchId).emit('game_over', {
+                    winnerRole: myRole,
+                    loserRole: opponentRole
+                });
+                delete activeMatches[matchId];
+            } else {
+                setTimeout(() => {
+                    if (activeMatches[matchId]) {
+                        match.players["Red"].hp = 100;
+                        match.players["Blue"].hp = 100;
+                        match.roundActive = true;
+
+                        io.to(matchId).emit('round_start', {
+                            "Red": { spawnX: 2000, spawnY: 2000, spawnHeading: 0 },
+                            "Blue": { spawnX: 4000, spawnY: 4000, spawnHeading: 180 }
+                        });
+                    }
+                }, 3000);
+            }
+        } else {
+            io.to(matchId).emit('hp_sync', {
+                role: opponentRole,
+                hp: opponent.hp
             });
         }
     });
