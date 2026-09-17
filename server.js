@@ -1,253 +1,194 @@
 const express = require('express');
-const axios = require('axios');
-const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    }
+});
+
 const PORT = process.env.PORT || 3000;
-const SHEETDB_URL = 'https://sheetdb.io/api/v1/apfdlqhkkqm7m';
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// قائمة الانتظار للاعبين الذين يبحثون عن مباراة
+let matchmakingQueue = [];
 
-// ============================================
-// 1. جلب جميع القصص (Firebase Realtime Style)
-// ============================================
-app.get('/.json', async (req, res) => {
-    try {
-        console.log('📖 جلب جميع القصص...');
-        const response = await axios.get(SHEETDB_URL);
-        const stories = response.data || [];
-        
-        // تحويل إلى هيكل Firebase: { "story_id": {data} }
-        const firebaseData = {};
-        stories.forEach(story => {
-            if (story.id) {
-                firebaseData[story.id] = {
-                    cover: story.cover || '',
-                    title: story.title || '',
-                    likes: parseInt(story.likes) || 0,
-                    comments: parseInt(story.comments) || 0,
-                    url: story.url || '',
-                    latestChapter: story.latestChapter || '',
-                    status: story.status || 'active',
-                    lastUpdated: Date.now()
+// غرف المباريات النشطة
+let activeMatches = {};
+
+app.get('/', (req, res) => {
+    res.send('Grand3D TDM Game Server is Running smoothly!');
+});
+
+io.on('connection', (socket) => {
+    console.log(`Player connected: ${socket.id}`);
+
+    // 1. عند طلب الدخول في مباراة (Matchmaking)
+    socket.on('join_match', (data) => {
+        // التحقق من عدم تكرار اللاعب في قائمة الانتظار
+        if (matchmakingQueue.includes(socket.id)) return;
+
+        matchmakingQueue.push(socket.id);
+        console.log(`Player ${socket.id} joined queue. Queue size: ${matchmakingQueue.length}`);
+
+        // إذا توفر لاعبان في قائمة الانتظار، يتم بدء المباراة فوراً
+        if (matchmakingQueue.length >= 2) {
+            const player1Id = matchmakingQueue.shift();
+            const player2Id = matchmakingQueue.shift();
+
+            const matchId = `match_${player1Id}_${player2Id}`;
+
+            const player1Socket = io.sockets.sockets.get(player1Id);
+            const player2Socket = io.sockets.sockets.get(player2Id);
+
+            if (player1Socket && player2Socket) {
+                // إدخال اللاعبين في غرفة خاصة بالمباراة
+                player1Socket.join(matchId);
+                player2Socket.join(matchId);
+
+                // إنشاء بيانات المباراة الافتراضية
+                activeMatches[matchId] = {
+                    id: matchId,
+                    players: {
+                        [player1Id]: { x: 2000, y: 2000, heading: 0, hp: 100, score: 0, role: "Red" },
+                        [player2Id]: { x: 4000, y: 4000, heading: 180, hp: 100, score: 0, role: "Blue" }
+                    },
+                    maxKills: 4
                 };
+
+                // إرسال حدث مطابقة الخصم وبدء اللعبة
+                player1Socket.emit('match_found', {
+                    matchId: matchId,
+                    role: "Red",
+                    spawnX: 2000,
+                    spawnY: 2000,
+                    spawnHeading: 0,
+                    opponentId: player2Id
+                });
+
+                player2Socket.emit('match_found', {
+                    matchId: matchId,
+                    role: "Blue",
+                    spawnX: 4000,
+                    spawnY: 4000,
+                    spawnHeading: 180,
+                    opponentId: player1Id
+                });
+
+                console.log(`Match created: ${matchId}`);
             }
-        });
-        
-        res.json(firebaseData);
-    } catch (error) {
-        console.error('❌ خطأ في جلب القصص:', error.message);
-        res.json({});
-    }
-});
-
-// ============================================
-// 2. جلب قصة محددة
-// ============================================
-app.get('/:storyId.json', async (req, res) => {
-    try {
-        const { storyId } = req.params;
-        console.log(`📖 جلب قصة: ${storyId}`);
-        
-        const response = await axios.get(SHEETDB_URL);
-        const stories = response.data || [];
-        
-        const story = stories.find(s => s.id === storyId);
-        
-        if (story) {
-            res.json({
-                cover: story.cover || '',
-                title: story.title || '',
-                likes: parseInt(story.likes) || 0,
-                comments: parseInt(story.comments) || 0,
-                url: story.url || '',
-                latestChapter: story.latestChapter || '',
-                status: story.status || 'active'
-            });
-        } else {
-            res.status(404).json(null);
         }
-    } catch (error) {
-        console.error('❌ خطأ في جلب القصة:', error.message);
-        res.json(null);
-    }
-});
+    });
 
-// ============================================
-// 3. زيادة الإعجابات (Like)
-// ============================================
-app.post('/:storyId/like', async (req, res) => {
-    try {
-        const { storyId } = req.params;
-        console.log(`👍 زيادة إعجاب لقصة: ${storyId}`);
-        
-        // جلب القصة الحالية
-        const response = await axios.get(SHEETDB_URL);
-        const stories = response.data || [];
-        const storyIndex = stories.findIndex(s => s.id === storyId);
-        
-        if (storyIndex !== -1) {
-            // زيادة الإعجابات
-            const currentLikes = parseInt(stories[storyIndex].likes) || 0;
-            stories[storyIndex].likes = (currentLikes + 1).toString();
-            
-            // هنا يمكنك تحديث Google Sheets
-            // للتبسيط: نرجع النجاح فقط
-            res.json({
-                success: true,
-                storyId,
-                newLikes: stories[storyIndex].likes,
-                message: 'تم زيادة الإعجاب'
-            });
-        } else {
-            res.status(404).json({
-                success: false,
-                message: 'القصة غير موجودة'
+    // 2. مزامنة حركة اللاعب (الموقع، الاتجاه، السرعة)
+    socket.on('update_movement', (data) => {
+        const { matchId, x, y, heading, speed } = data;
+        if (activeMatches[matchId]) {
+            socket.to(matchId).emit('opponent_moved', {
+                x: x,
+                y: y,
+                heading: heading,
+                speed: speed
             });
         }
-    } catch (error) {
-        console.error('❌ خطأ في زيادة الإعجاب:', error.message);
-        res.json({ success: false, error: error.message });
-    }
-});
+    });
 
-// ============================================
-// 4. زيادة التعليقات
-// ============================================
-app.post('/:storyId/comment', async (req, res) => {
-    try {
-        const { storyId } = req.params;
-        console.log(`💬 زيادة تعليق لقصة: ${storyId}`);
-        
-        // نفس منطق الإعجابات
-        res.json({
-            success: true,
-            storyId,
-            message: 'تم زيادة التعليق'
-        });
-    } catch (error) {
-        console.error('❌ خطأ في زيادة التعليق:', error.message);
-        res.json({ success: false, error: error.message });
-    }
-});
+    // 3. مزامنة إطلاق التوربيدو
+    socket.on('fire_torpedo', (data) => {
+        const { matchId, x, y, heading } = data;
+        if (activeMatches[matchId]) {
+            socket.to(matchId).emit('opponent_fired', {
+                x: x,
+                y: y,
+                heading: heading
+            });
+        }
+    });
 
-// ============================================
-// 5. البحث عن القصص
-// ============================================
-app.get('/search/:query', async (req, res) => {
-    try {
-        const { query } = req.params;
-        console.log(`🔍 بحث عن: ${query}`);
-        
-        const response = await axios.get(SHEETDB_URL);
-        const allStories = response.data || [];
-        
-        // فلترة النتائج
-        const results = allStories.filter(story => {
-            return (
-                (story.title && story.title.toLowerCase().includes(query.toLowerCase())) ||
-                (story.id && story.id.toLowerCase().includes(query.toLowerCase()))
-            );
-        });
-        
-        // تحويل إلى هيكل Firebase
-        const firebaseResults = {};
-        results.forEach(story => {
-            if (story.id) {
-                firebaseResults[story.id] = story;
+    // 4. تسجيل الضرر والقتل (TDM Logic)
+    socket.on('register_hit', (data) => {
+        const { matchId, damage } = data;
+        const match = activeMatches[matchId];
+        if (!match) return;
+
+        const opponentId = Object.keys(match.players).find(id => id !== socket.id);
+        if (!opponentId) return;
+
+        let opponent = match.players[opponentId];
+        opponent.hp -= damage;
+
+        if (opponent.hp <= 0) {
+            opponent.hp = 0;
+            // زيادة نقاط اللاعب الحالي (القاتل)
+            match.players[socket.id].score += 1;
+
+            io.to(matchId).emit('player_killed', {
+                killedPlayerId: opponentId,
+                killerId: socket.id,
+                scores: {
+                    [socket.id]: match.players[socket.id].score,
+                    [opponentId]: match.players[opponentId].score
+                }
+            });
+
+            // التحقق من الفوز (الوصول لـ 4 قتلات)
+            if (match.players[socket.id].score >= match.maxKills) {
+                io.to(matchId).emit('game_over', {
+                    winnerId: socket.id,
+                    loserId: opponentId
+                });
+                // تنظيف الغرفة بعد انتهاء المباراة
+                delete activeMatches[matchId];
+            } else {
+                // إعادة تعيين الجولة (Round Reset) وإعادة توزيع اللاعبين لمواقع البداية
+                setTimeout(() => {
+                    match.players[socket.id].hp = 100;
+                    match.players[opponentId].hp = 100;
+
+                    const p1Id = Object.keys(match.players)[0];
+                    const p2Id = Object.keys(match.players)[1];
+
+                    io.sockets.sockets.get(p1Id)?.emit('round_start', {
+                        spawnX: 2000, spawnY: 2000, spawnHeading: 0, hp: 100
+                    });
+                    io.sockets.sockets.get(p2Id)?.emit('round_start', {
+                        spawnX: 4000, spawnY: 4000, spawnHeading: 180, hp: 100
+                    });
+                }, 3000); // انتظار 3 ثوانٍ قبل بدء الجولة التالية لعرض تأثير الانفجار
             }
-        });
-        
-        res.json(firebaseResults);
-    } catch (error) {
-        console.error('❌ خطأ في البحث:', error.message);
-        res.json({});
-    }
-});
+        } else {
+            // مزامنة شريط الصحة للخصم فقط
+            io.to(matchId).emit('hp_sync', {
+                playerId: opponentId,
+                hp: opponent.hp
+            });
+        }
+    });
 
-// ============================================
-// 6. القصص الأكثر إعجاباً
-// ============================================
-app.get('/top/likes', async (req, res) => {
-    try {
-        const response = await axios.get(SHEETDB_URL);
-        const stories = response.data || [];
+    // 5. عند خروج اللاعب أو انقطاع الاتصال
+    socket.on('disconnect', () => {
+        console.log(`Player disconnected: ${socket.id}`);
         
-        // ترتيب تنازلي حسب الإعجابات
-        const sorted = [...stories]
-            .filter(s => s.likes)
-            .sort((a, b) => (parseInt(b.likes) || 0) - (parseInt(a.likes) || 0))
-            .slice(0, 20); // أول 20
-        
-        const firebaseData = {};
-        sorted.forEach(story => {
-            if (story.id) {
-                firebaseData[story.id] = story;
+        // إزالة اللاعب من قائمة الانتظار إذا كان بها
+        matchmakingQueue = matchmakingQueue.filter(id => id !== socket.id);
+
+        // البحث عن أي مباراة نشطة كان يشارك فيها اللاعب
+        for (const matchId in activeMatches) {
+            if (activeMatches[matchId].players[socket.id]) {
+                // إعلام اللاعب الآخر بانسحاب الخصم وفوزه تلقائياً
+                socket.to(matchId).emit('opponent_disconnected', {
+                    message: "Opponent disconnected. You win!"
+                });
+                delete activeMatches[matchId];
+                break;
             }
-        });
-        
-        res.json(firebaseData);
-    } catch (error) {
-        console.error('❌ خطأ في جلب الأكثر إعجاباً:', error.message);
-        res.json({});
-    }
-});
-
-// ============================================
-// 7. القصص الأكثر تعليقاً
-// ============================================
-app.get('/top/comments', async (req, res) => {
-    try {
-        const response = await axios.get(SHEETDB_URL);
-        const stories = response.data || [];
-        
-        // ترتيب تنازلي حسب التعليقات
-        const sorted = [...stories]
-            .filter(s => s.comments)
-            .sort((a, b) => (parseInt(b.comments) || 0) - (parseInt(a.comments) || 0))
-            .slice(0, 20);
-        
-        const firebaseData = {};
-        sorted.forEach(story => {
-            if (story.id) {
-                firebaseData[story.id] = story;
-            }
-        });
-        
-        res.json(firebaseData);
-    } catch (error) {
-        console.error('❌ خطأ في جلب الأكثر تعليقاً:', error.message);
-        res.json({});
-    }
-});
-
-// ============================================
-// 8. Health Check (للفيرباس)
-// ============================================
-app.get('/.settings/rules.json', (req, res) => {
-    res.json({
-        "rules": {
-            ".read": true,
-            ".write": false // للقراءة فقط
         }
     });
 });
 
-// ============================================
-// 9. بدء الخادم
-// ============================================
-app.listen(PORT, () => {
-    console.log(`🔥 Firebase Emulator for Manga/Novels`);
-    console.log(`📚 Running on port: ${PORT}`);
-    console.log(`🔗 Firebase URL: http://localhost:${PORT}`);
-    console.log('📖 Endpoints:');
-    console.log('   GET  /.json              # جميع القصص');
-    console.log('   GET  /{id}.json          # قصة محددة');
-    console.log('   POST /{id}/like          # زيادة إعجاب');
-    console.log('   POST /{id}/comment       # زيادة تعليق');
-    console.log('   GET  /search/{query}     # بحث');
-    console.log('   GET  /top/likes          # الأكثر إعجاباً');
-    console.log('   GET  /top/comments       # الأكثر تعليقاً');
+server.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
 });
