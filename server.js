@@ -17,7 +17,7 @@ let matchmakingQueue = [];
 let activeMatches = {};
 
 app.get('/', (req, res) => {
-    res.send('Grand3D TDM Server v3.0 - Smooth Lerp & Role Sync is Active!');
+    res.send('Grand3D TDM Server v3.1 - Matchmaking Fix is Live!');
 });
 
 io.on('connection', (socket) => {
@@ -26,6 +26,7 @@ io.on('connection', (socket) => {
     socket.on('join_match', () => {
         if (matchmakingQueue.includes(socket.id)) return;
         matchmakingQueue.push(socket.id);
+        console.log(`Queue size: ${matchmakingQueue.length}`);
 
         if (matchmakingQueue.length >= 2) {
             const p1 = matchmakingQueue.shift();
@@ -45,12 +46,14 @@ io.on('connection', (socket) => {
                     maxKills: 4
                 };
 
+                // إرسال حدث العثور على المباراة مع إرجاع opponentId لمنع الـ JSON Error
                 s1.emit('match_found', {
                     matchId: matchId,
                     role: "Red",
                     spawnX: 2000,
                     spawnY: 2000,
-                    spawnHeading: 0
+                    spawnHeading: 0,
+                    opponentId: p2
                 });
 
                 s2.emit('match_found', {
@@ -58,8 +61,11 @@ io.on('connection', (socket) => {
                     role: "Blue",
                     spawnX: 4000,
                     spawnY: 4000,
-                    spawnHeading: 180
+                    spawnHeading: 180,
+                    opponentId: p1
                 });
+                
+                console.log(`Match started successfully: ${matchId}`);
             }
         }
     });
@@ -69,7 +75,6 @@ io.on('connection', (socket) => {
         socket.join(matchId);
 
         if (activeMatches[matchId] && activeMatches[matchId].players[role]) {
-            // تحديث الـ socketId الجديد للاعب بعد انتقاله لصفحة اللعبة
             activeMatches[matchId].players[role].socketId = socket.id;
             console.log(`Player registered in-game: Room ${matchId} as Role ${role}`);
         }
@@ -77,7 +82,6 @@ io.on('connection', (socket) => {
 
     socket.on('update_movement', (data) => {
         const { matchId, role, x, y, heading, speed } = data;
-        // إرسال الحركة للخصم مع تحديد دور المرسل لكي يعرف المستقبل من يتحرك
         socket.to(matchId).emit('opponent_moved', {
             senderRole: role,
             x: x,
@@ -108,7 +112,7 @@ io.on('connection', (socket) => {
         player.hp = hp;
 
         if (hp <= 0) {
-            player.hp = 100; // إعادة تعيين الصحة للجولة القادمة
+            player.hp = 100;
             const opponentRole = role === "Red" ? "Blue" : "Red";
             match.players[opponentRole].score += 1;
 
