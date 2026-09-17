@@ -12,20 +12,29 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
+const MAX_FFA_PLAYERS = 100;
+const WORLD_MIN = 400, WORLD_MAX = 5600;
 
-// أوعية البيانات لإدارة الأطوار المختلفة
 let tdmQueue = [];
-let activeMatches = {}; // غرف TDM المغلقة
-let ffaRooms = {};     // غرف FFA المفتوحة (حتى 100 لاعب لكل غرفة)
+let activeMatches = {}; // غرف TDM
+let ffaRooms = {};      // غرف FFA المفتوحة (حتى 100 لاعب)
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Ultimate Game Server v5.0 is Live!');
+    res.send('Grand3D Ultimate Game Server v6.0 is Live!');
 });
+
+function randomSpawn() {
+    return {
+        x: WORLD_MIN + Math.random() * (WORLD_MAX - WORLD_MIN),
+        y: WORLD_MIN + Math.random() * (WORLD_MAX - WORLD_MIN),
+        heading: Math.random() * 360
+    };
+}
 
 io.on('connection', (socket) => {
     console.log(`Player Connected: ${socket.id}`);
 
-    // 1. استقبال طلب الدخول من اللوبي (TDM أو FFA)
+    // 1. طلب الدخول من اللوبي
     socket.on('join_match', (data) => {
         const { mode, skin, username } = data;
         socket.username = username || "Commander";
@@ -33,68 +42,65 @@ io.on('connection', (socket) => {
         socket.gameMode = mode;
 
         if (mode === "FFA") {
-            // منطق طور Endless FFA (حتى 100 لاعب)
             let roomToJoin = null;
-
-            // البحث عن غرفة FFA نشطة بها مساحة (أقل من 100 لاعب)
             for (const roomId in ffaRooms) {
-                if (Object.keys(ffaRooms[roomId].players).length < 100) {
+                if (Object.keys(ffaRooms[roomId].players).length < MAX_FFA_PLAYERS) {
                     roomToJoin = roomId;
                     break;
                 }
             }
-
-            // إذا لم تتوفر غرفة، ننشئ غرفة جديدة
             if (!roomToJoin) {
                 roomToJoin = `ffa_room_${Date.now()}`;
-                ffaRooms[roomToJoin] = {
-                    id: roomToJoin,
-                    players: {}
-                };
+                ffaRooms[roomToJoin] = { id: roomToJoin, players: {} };
                 console.log(`New FFA Room Created: ${roomToJoin}`);
             }
 
-            // إضافة اللاعب للغرفة
+            // تنظيف اللاعب من أي غرفة سابقة (أمان ضد الانضمام المزدوج)
+            leaveCurrentRoom(socket);
+
             socket.join(roomToJoin);
             socket.currentRoom = roomToJoin;
 
+            const sp = randomSpawn();
             ffaRooms[roomToJoin].players[socket.id] = {
                 id: socket.id,
                 name: socket.username,
                 skin: socket.skin,
-                x: 1000 + Math.random() * 4000,
-                y: 1000 + Math.random() * 4000,
-                heading: Math.random() * 360,
+                x: sp.x, y: sp.y, heading: sp.heading,
                 hp: 100,
                 kills: 0
             };
 
-            // إرسال حدث الدخول الفوري للاعب دون انتظار
+            // اللاعب الجديد يدخل فوراً
             socket.emit('match_found', {
                 matchId: roomToJoin,
                 role: "FFA",
-                spawnX: ffaRooms[roomToJoin].players[socket.id].x,
-                spawnY: ffaRooms[roomToJoin].players[socket.id].y,
-                spawnHeading: ffaRooms[roomToJoin].players[socket.id].heading,
+                spawnX: sp.x,
+                spawnY: sp.y,
+                spawnHeading: sp.heading,
                 opponentId: "FFA_MULTIPLAYER"
             });
 
-            // إعلام بقية اللاعبين في الغرفة بدخول لاعب جديد
+            // إرسال قائمة كل اللاعبين الموجودين مسبقاً للاعب الجديد
+            const existing = Object.values(ffaRooms[roomToJoin].players)
+                .filter(p => p.id !== socket.id)
+                .map(p => ({ id: p.id, name: p.name, skin: p.skin, x: p.x, y: p.y, heading: p.heading, hp: p.hp }));
+            socket.emit('ffa_state', { yourId: socket.id, players: existing });
+
+            // إعلام البقية بدخول لاعب جديد
             socket.to(roomToJoin).emit('opponent_joined_ffa', {
                 id: socket.id,
                 name: socket.username,
                 skin: socket.skin,
-                x: ffaRooms[roomToJoin].players[socket.id].x,
-                y: ffaRooms[roomToJoin].players[socket.id].y,
-                heading: ffaRooms[roomToJoin].players[socket.id].heading
+                x: sp.x, y: sp.y, heading: sp.heading
             });
 
-            // تحديث قائمة المتصدرين للغرفة
             sendLeaderboardUpdate(roomToJoin);
 
         } else {
-            // منطق طور TDM (المطابقة الثنائية السريعة)
+            // TDM 1v1
             if (tdmQueue.includes(socket.id)) return;
+            leaveCurrentRoom(socket);
             tdmQueue.push(socket.id);
 
             if (tdmQueue.length >= 2) {
@@ -121,70 +127,50 @@ io.on('connection', (socket) => {
                     s1.currentRoom = matchId;
                     s2.currentRoom = matchId;
 
-                    s1.emit('match_found', {
-                        matchId: matchId,
-                        role: "Red",
-                        spawnX: 2000,
-                        spawnY: 2000,
-                        spawnHeading: 0,
-                        opponentId: p2
-                    });
-
-                    s2.emit('match_found', {
-                        matchId: matchId,
-                        role: "Blue",
-                        spawnX: 4000,
-                        spawnY: 4000,
-                        spawnHeading: 180,
-                        opponentId: p1
-                    });
+                    s1.emit('match_found', { matchId, role: "Red", spawnX: 2000, spawnY: 2000, spawnHeading: 0, opponentId: p2 });
+                    s2.emit('match_found', { matchId, role: "Blue", spawnX: 4000, spawnY: 4000, spawnHeading: 180, opponentId: p1 });
                 }
             }
         }
     });
 
-    // 2. مزامنة الحركة الفورية لجميع الأطوار
+    // 2. مزامنة الحركة (مع تقييد معدل خفيف لمنع السبام)
     socket.on('update_movement', (data) => {
         const { matchId, x, y, heading, speed } = data;
-        
-        // تحديث إحداثيات اللاعب في الذاكرة لغرف FFA
+        if (!matchId || matchId !== socket.currentRoom) return;
+
         if (ffaRooms[matchId] && ffaRooms[matchId].players[socket.id]) {
             let p = ffaRooms[matchId].players[socket.id];
             p.x = x; p.y = y; p.heading = heading;
         }
 
-        // بث الحركة لبقية اللاعبين في الغرفة
         socket.to(matchId).emit('opponent_moved', {
             senderId: socket.id,
             senderRole: socket.gameMode === "FFA" ? "FFA" : data.role,
             skin: socket.skin,
             name: socket.username,
-            x: x,
-            y: y,
-            heading: heading,
-            speed: speed
+            x, y, heading, speed
         });
     });
 
-    // 3. مزامنة إطلاق التوربيدو
+    // 3. إطلاق التوربيدو
     socket.on('fire_torpedo', (data) => {
         const { matchId, x, y, heading } = data;
+        if (!matchId || matchId !== socket.currentRoom) return;
         socket.to(matchId).emit('opponent_fired', {
             senderId: socket.id,
             senderRole: socket.gameMode === "FFA" ? "FFA" : data.role,
-            x: x,
-            y: y,
-            heading: heading
+            x, y, heading
         });
     });
 
-    // 4. تسجيل الضرر والقتلات المشترك
+    // 4. تسجيل الضرر والقتلات
     socket.on('register_hit', (data) => {
         const { matchId, damage } = data;
-        
+        if (!matchId || matchId !== socket.currentRoom) return;
+
         if (socket.gameMode === "FFA") {
-            // منطق الضرر في طور FFA Endless
-            const targetId = data.targetId; // معرف اللاعب المتضرر
+            const targetId = data.targetId;
             const room = ffaRooms[matchId];
             if (!room) return;
 
@@ -195,7 +181,7 @@ io.on('connection', (socket) => {
 
             if (target.hp <= 0) {
                 target.hp = 0;
-                room.players[socket.id].kills += 1; // زيادة قتلات القاتل
+                if (room.players[socket.id]) room.players[socket.id].kills += 1;
 
                 io.to(matchId).emit('player_killed_ffa', {
                     killedId: targetId,
@@ -204,32 +190,33 @@ io.on('connection', (socket) => {
                     killerName: socket.username
                 });
 
-                // إعادة توليد اللاعب الميت فوراً بدم كامل وقتلات 0
                 setTimeout(() => {
                     if (room.players[targetId]) {
+                        const sp = randomSpawn();
                         room.players[targetId].hp = 100;
-                        room.players[targetId].kills = 0; // تصفير قتلات الميت
-                        room.players[targetId].x = 1000 + Math.random() * 4000;
-                        room.players[targetId].y = 1000 + Math.random() * 4000;
+                        room.players[targetId].kills = 0; // تصفير قتلات الجولة عند الموت
+                        room.players[targetId].x = sp.x;
+                        room.players[targetId].y = sp.y;
 
                         io.to(targetId).emit('respawn_ffa', {
-                            spawnX: room.players[targetId].x,
-                            spawnY: room.players[targetId].y,
-                            spawnHeading: Math.random() * 360
+                            spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
+                        });
+                        // إعلام البقية بموقع اللاعب الجديد
+                        socket.to(matchId).emit('opponent_joined_ffa', {
+                            id: targetId,
+                            name: target.name,
+                            skin: target.skin,
+                            x: sp.x, y: sp.y, heading: sp.heading
                         });
                     }
                 }, 2000);
 
                 sendLeaderboardUpdate(matchId);
             } else {
-                io.to(matchId).emit('hp_sync_ffa', {
-                    playerId: targetId,
-                    hp: target.hp
-                });
+                io.to(matchId).emit('hp_sync_ffa', { playerId: targetId, hp: target.hp });
             }
 
         } else {
-            // منطق الضرر في طور TDM
             const match = activeMatches[matchId];
             if (!match || !match.roundActive) return;
 
@@ -244,21 +231,24 @@ io.on('connection', (socket) => {
                 opponent.hp = 100;
                 match.players[socket.id].score += 1;
 
+                const killerScore = match.players[socket.id].score;
+                const oppScore = opponent.score;
+
                 io.to(matchId).emit('player_killed', {
                     killedRole: opponent.role,
                     killerRole: match.players[socket.id].role,
                     scores: {
-                        "Red": match.players[socket.id].role === "Red" ? match.players[socket.id].score : opponent.score,
-                        "Blue": match.players[socket.id].role === "Blue" ? match.players[socket.id].score : opponent.score
+                        "Red": match.players[socket.id].role === "Red" ? killerScore : oppScore,
+                        "Blue": match.players[socket.id].role === "Blue" ? killerScore : oppScore
                     }
                 });
 
-                if (match.players[socket.id].score >= match.maxKills) {
+                if (killerScore >= match.maxKills) {
                     io.to(matchId).emit('game_over', {
                         winnerRole: match.players[socket.id].role,
                         loserRole: opponent.role
                     });
-                    delete activeMatches[matchId];
+                    cleanupMatch(matchId);
                 } else {
                     setTimeout(() => {
                         if (activeMatches[matchId]) {
@@ -274,18 +264,16 @@ io.on('connection', (socket) => {
                     }, 3000);
                 }
             } else {
-                io.to(matchId).emit('hp_sync', {
-                    role: opponent.role,
-                    hp: opponent.hp
-                });
+                io.to(matchId).emit('hp_sync', { role: opponent.role, hp: opponent.hp });
             }
         }
     });
 
-    // 5. مزامنة الضرر الذاتي (الاصطدام بالجبال)
+    // 5. الضرر الذاتي (الجبال الحمراء)
     socket.on('sync_self_damage', (data) => {
         const { matchId, hp } = data;
-        
+        if (!matchId || matchId !== socket.currentRoom) return;
+
         if (socket.gameMode === "FFA") {
             const room = ffaRooms[matchId];
             if (!room || !room.players[socket.id]) return;
@@ -294,7 +282,7 @@ io.on('connection', (socket) => {
 
             if (hp <= 0) {
                 room.players[socket.id].hp = 100;
-                room.players[socket.id].kills = 0; // تصفير قتلاته لأنه انتحر بالاصطدام
+                room.players[socket.id].kills = 0;
 
                 io.to(matchId).emit('player_killed_ffa', {
                     killedId: socket.id,
@@ -305,60 +293,76 @@ io.on('connection', (socket) => {
 
                 setTimeout(() => {
                     if (room.players[socket.id]) {
-                        room.players[socket.id].x = 1000 + Math.random() * 4000;
-                        room.players[socket.id].y = 1000 + Math.random() * 4000;
-
+                        const sp = randomSpawn();
+                        room.players[socket.id].x = sp.x;
+                        room.players[socket.id].y = sp.y;
                         io.to(socket.id).emit('respawn_ffa', {
-                            spawnX: room.players[socket.id].x,
-                            spawnY: room.players[socket.id].y,
-                            spawnHeading: Math.random() * 360
+                            spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
                         });
                     }
                 }, 2000);
 
                 sendLeaderboardUpdate(matchId);
             } else {
-                io.to(matchId).emit('hp_sync_ffa', {
-                    playerId: socket.id,
-                    hp: hp
-                });
+                io.to(matchId).emit('hp_sync_ffa', { playerId: socket.id, hp: hp });
             }
         }
     });
 
-    // 6. عند انقطاع الاتصال
+    // 6. الخروج الطوعي من المباراة (بدون قطع السوكيت)
+    socket.on('leave_game', () => {
+        leaveCurrentRoom(socket);
+    });
+
+    // 7. انقطاع الاتصال
     socket.on('disconnect', () => {
         console.log(`Disconnected: ${socket.id}`);
         tdmQueue = tdmQueue.filter(id => id !== socket.id);
-
-        const room = socket.currentRoom;
-        if (room) {
-            if (ffaRooms[room]) {
-                delete ffaRooms[room].players[socket.id];
-                socket.to(room).emit('opponent_left_ffa', { id: socket.id });
-                sendLeaderboardUpdate(room);
-
-                // مسح الغرفة إذا أصبحت فارغة تماماً
-                if (Object.keys(ffaRooms[room].players).length === 0) {
-                    delete ffaRooms[room];
-                }
-            } else if (activeMatches[room]) {
-                socket.to(room).emit('opponent_disconnected');
-                delete activeMatches[room];
-            }
-        }
+        leaveCurrentRoom(socket);
     });
 });
 
-// دالة حساب وإرسال قائمة المتصدرين (Leaderboard) لغرف FFA
+function leaveCurrentRoom(socket) {
+    const room = socket.currentRoom;
+    if (!room) return;
+    socket.currentRoom = null;
+
+    if (ffaRooms[room]) {
+        delete ffaRooms[room].players[socket.id];
+        socket.to(room).emit('opponent_left_ffa', { id: socket.id });
+        socket.leave(room);
+        sendLeaderboardUpdate(room);
+
+        if (Object.keys(ffaRooms[room].players).length === 0) {
+            delete ffaRooms[room];
+        }
+    } else if (activeMatches[room]) {
+        socket.to(room).emit('opponent_disconnected');
+        socket.leave(room);
+        cleanupMatch(room);
+    }
+}
+
+function cleanupMatch(matchId) {
+    const match = activeMatches[matchId];
+    if (!match) return;
+    for (const pid of Object.keys(match.players)) {
+        const s = io.sockets.sockets.get(pid);
+        if (s) {
+            s.currentRoom = null;
+            s.leave(matchId);
+        }
+    }
+    delete activeMatches[matchId];
+}
+
 function sendLeaderboardUpdate(roomId) {
     const room = ffaRooms[roomId];
     if (!room) return;
 
-    // تحويل اللاعبين إلى مصفوفة وترتيبهم تنازلياً حسب عدد القتلات
     let sortedPlayers = Object.values(room.players)
         .sort((a, b) => b.kills - a.kills)
-        .slice(0, 5) // جلب أعلى 5 لاعبين فقط
+        .slice(0, 5)
         .map(p => ({ name: p.name, kills: p.kills }));
 
     io.to(roomId).emit('leaderboard_update', sortedPlayers);
