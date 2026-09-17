@@ -14,17 +14,16 @@ const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
 const BOT_SPEED_WAVE_CAP = 20;
 const WORLD_SIZE = 6000;
-const WORLD_MIN = 500;
-const WORLD_MAX = WORLD_SIZE - 500;
+const WORLD_MIN = 700;
+const WORLD_MAX = WORLD_SIZE - 700;
 
 let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v11.0 — 1vBOT + 4vBOT');
+    res.send('Grand3D Co-op Server v12.0');
 });
 
-// ============ Utils ============
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
@@ -42,14 +41,29 @@ function botCountForWave(wave) {
     return Math.min(3 + wave * 2, 40);
 }
 
-function randomSpawnNear(cx, cy, minD, maxD) {
-    const a = Math.random() * Math.PI * 2;
-    const d = rnd(minD, maxD);
-    let x = cx + Math.cos(a) * d;
-    let y = cy + Math.sin(a) * d;
-    x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
-    y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
-    return { x, y };
+// توليد بعيد عن الجزر عبر فحص تداخل بسيط
+function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
+    for (let attempt = 0; attempt < 30; attempt++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = rnd(minD, maxD);
+        let x = cx + Math.cos(a) * d;
+        let y = cy + Math.sin(a) * d;
+        x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
+        y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
+
+        // افحص إذا داخل جزيرة
+        let inside = false;
+        if (islands && islands.length) {
+            for (const isl of islands) {
+                if (Math.hypot(x - isl.x, y - isl.y) < isl.radius + 250) {
+                    inside = true; break;
+                }
+            }
+        }
+        if (!inside) return { x, y };
+    }
+    // فشل → ارجع نقطة بعيدة
+    return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
 }
 
 function findOpenRoom(mode) {
@@ -70,7 +84,8 @@ function createRoom(mode) {
         wave: 1,
         bots: {},
         botIdCounter: 1,
-        botTickInterval: null
+        botTickInterval: null,
+        islands: [] // ← الجزر تُرسَل من العميل الأول
     };
     startBotTick(id);
     console.log(`Room created: ${id} (${mode})`);
@@ -86,7 +101,10 @@ function startBotTick(roomId) {
         if (Object.keys(r.players).length === 0) return;
 
         const playersList = Object.values(r.players).filter(p => p.hp > 0);
-        if (playersList.length === 0) return;
+        if (playersList.length === 0) {
+            io.to(roomId).emit('bots_update', []);
+            return;
+        }
 
         for (const botId in r.bots) {
             const bot = r.bots[botId];
@@ -103,8 +121,33 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.hypot(dx, dy) || 1;
-            bot.x += (dx / len) * speed * 0.6;
-            bot.y += (dy / len) * speed * 0.6;
+            const step = speed * 0.7;
+
+            let nx = bot.x + (dx / len) * step;
+            let ny = bot.y + (dy / len) * step;
+
+            // افحص الاصطدام بالجزر
+            let blocked = false;
+            for (const isl of r.islands) {
+                if (Math.hypot(nx - isl.x, ny - isl.y) < isl.radius + 100) {
+                    blocked = true; break;
+                }
+            }
+            if (!blocked) {
+                bot.x = nx; bot.y = ny;
+            } else {
+                // التفاف بسيط
+                const perp = Math.atan2(dy, dx) + Math.PI / 2;
+                const tX = bot.x + Math.cos(perp) * step;
+                const tY = bot.y + Math.sin(perp) * step;
+                let b2 = false;
+                for (const isl of r.islands) {
+                    if (Math.hypot(tX - isl.x, tY - isl.y) < isl.radius + 100) { b2 = true; break; }
+                }
+                if (!b2) { bot.x = tX; bot.y = tY; }
+            }
+            bot.x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, bot.x));
+            bot.y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, bot.y));
             bot.heading = Math.atan2(dy, dx) * 180 / Math.PI;
 
             bot.fireTimer = (bot.fireTimer || 0) + 0.1;
@@ -138,7 +181,7 @@ function spawnWave(roomId) {
     const cy = first ? first.y : WORLD_SIZE / 2;
 
     for (let i = 0; i < count; i++) {
-        const sp = randomSpawnNear(cx, cy, 1500, 3000);
+        const sp = randomSpawnNearSafe(cx, cy, 1500, 3000, room.islands);
         const id = room.botIdCounter++;
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
@@ -214,7 +257,7 @@ io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
     socket.on('join_match', async (data) => {
-        const { mode, username, uid, level, total_kills } = data || {};
+        const { mode, username, uid, level, total_kills, islands } = data || {};
         socket.username = username || 'Commander';
         socket.uid = uid || '';
         socket.mode = mode || '4VBOT';
@@ -226,13 +269,19 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        if (!roomId) roomId = createRoom(socket.mode);
+        if (!roomId) {
+            roomId = createRoom(socket.mode);
+            // أول لاعب → نضع الجزر
+            if (islands && Array.isArray(islands)) {
+                rooms[roomId].islands = islands;
+            }
+        }
 
         const room = rooms[roomId];
         socket.join(roomId);
         socket.currentRoom = roomId;
 
-        const sp = randomSpawnNear(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200);
+        const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, room.islands);
         room.players[socket.id] = {
             id: socket.id,
             name: socket.username,
@@ -250,7 +299,8 @@ io.on('connection', (socket) => {
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
-            mode: socket.mode
+            mode: socket.mode,
+            islands: room.islands
         });
 
         const existing = Object.values(room.players)
@@ -301,16 +351,29 @@ io.on('connection', (socket) => {
             });
             io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
+            // إذا انتهت الموجة → ابدأ الجديدة وحدّث الجميع
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
+
+                // ★ حفظ القتلات والمستوى لكل لاعب في Firebase
                 for (const pid in room.players) {
                     const pl = room.players[pid];
+                    // نحفظ الـ level على أنه أعلى wave وصل لها الفريق
                     if (pl.level < room.wave) pl.level = room.wave;
-                    const totalKills = await fetchUserKills(pl.uid);
-                    await pushUserStats(pl.uid, totalKills + pl.kills, pl.level);
+
+                    // نجلب total_kills الحالي ثم نضيف kills هذه الجلسة
+                    const currentTotal = await fetchUserKills(pl.uid);
+                    const newTotal = currentTotal + pl.kills;
+                    await pushUserStats(pl.uid, newTotal, pl.level);
                 }
+
+                // ★ بث المتصدرين المحدّثين للجميع
+                await sendLeaderboard(socket.currentRoom);
+
+                // ★ بث إشارة رفع المستوى للاعبين
+                io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
+
                 spawnWave(socket.currentRoom);
-                sendLeaderboard(socket.currentRoom);
             }
         } else {
             io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
@@ -338,7 +401,7 @@ io.on('connection', (socket) => {
                     return;
                 }
                 if (r.players[socket.id]) {
-                    const sp = randomSpawnNear(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200);
+                    const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands);
                     r.players[socket.id].x = sp.x;
                     r.players[socket.id].y = sp.y;
                     r.players[socket.id].hp = 100;
@@ -388,5 +451,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v11.0 running on port ${PORT}`);
+    console.log(`Co-op server v12.0 running on port ${PORT}`);
 });
