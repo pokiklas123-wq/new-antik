@@ -65,7 +65,6 @@ async function sendLeaderboardUpdate(roomId) {
     io.to(roomId).emit('leaderboard_update', top);
 }
 
-// حفظ القتلة عبر UID مباشرة
 async function addKillToFirebaseByUid(uid, currentKills) {
     if (!uid) return;
     try {
@@ -83,7 +82,6 @@ async function addKillToFirebaseByUid(uid, currentKills) {
     }
 }
 
-// جلب قيمة total_kills الحالية من Firebase
 async function fetchCurrentKills(uid) {
     if (!uid) return 0;
     try {
@@ -245,7 +243,6 @@ io.on('connection', (socket) => {
                 target.hp = 0;
                 if (room.players[socket.id]) room.players[socket.id].kills += 1;
 
-                // حفظ القتلة في Firebase عبر UID
                 if (socket.uid) {
                     const currentKills = await fetchCurrentKills(socket.uid);
                     await addKillToFirebaseByUid(socket.uid, currentKills);
@@ -391,7 +388,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// kick اللاعب الوحيد بعد 60 ثانية
 setInterval(() => {
     const now = Date.now();
     for (const roomId in ffaRooms) {
@@ -412,7 +408,6 @@ setInterval(() => {
     }
 }, 5000);
 
-// تحديث المتصدرين كل 15 ثانية لكل غرفة
 setInterval(() => {
     for (const roomId in ffaRooms) {
         sendLeaderboardUpdate(roomId);
