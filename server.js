@@ -10,19 +10,18 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
-const MAX_ROOM_PLAYERS = 4;
+const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
-const TEAM_WIPE_WINDOW_MS = 5000;
 const BOT_SPEED_WAVE_CAP = 20;
 const WORLD_SIZE = 6000;
 const WORLD_MIN = 500;
 const WORLD_MAX = WORLD_SIZE - 500;
 
-let rooms = {};           // { roomId: { players, wave, bots, botIdCounter, startTime } }
+let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v10.0 — Server-Authoritative Waves');
+    res.send('Grand3D Co-op Server v11.0 — 1vBOT + 4vBOT');
 });
 
 // ============ Utils ============
@@ -30,11 +29,10 @@ function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
     if (wave <= BOT_SPEED_WAVE_CAP) return 1.5 + wave * 0.4;
-    return 1.5 + BOT_SPEED_WAVE_CAP * 0.4; // يقفل عند 20
+    return 1.5 + BOT_SPEED_WAVE_CAP * 0.4;
 }
 
-function botDamageForWave(wave) {
-    // كم طلقة يحتاج البوت ليموت — نخليه hp رقمياً
+function botHPForWave(wave) {
     if (wave >= 70) return 3;
     if (wave >= 40) return 2;
     return 1;
@@ -54,17 +52,20 @@ function randomSpawnNear(cx, cy, minD, maxD) {
     return { x, y };
 }
 
-function findOpenRoom() {
+function findOpenRoom(mode) {
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length < MAX_ROOM_PLAYERS) return id;
+        const r = rooms[id];
+        if (r.mode !== mode) continue;
+        if (mode === '1VBOT' && Object.keys(r.players).length === 0) return id;
+        if (mode === '4VBOT' && Object.keys(r.players).length < MAX_PLAYERS_4V) return id;
     }
     return null;
 }
 
-function createRoom() {
-    const id = `room_${nextRoomId++}`;
+function createRoom(mode) {
+    const id = `${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++}`;
     rooms[id] = {
-        id,
+        id, mode,
         players: {},
         wave: 1,
         bots: {},
@@ -72,6 +73,7 @@ function createRoom() {
         botTickInterval: null
     };
     startBotTick(id);
+    console.log(`Room created: ${id} (${mode})`);
     return id;
 }
 
@@ -83,7 +85,6 @@ function startBotTick(roomId) {
         if (!r) return;
         if (Object.keys(r.players).length === 0) return;
 
-        // تحريك كل بوت نحو أقرب لاعب
         const playersList = Object.values(r.players).filter(p => p.hp > 0);
         if (playersList.length === 0) return;
 
@@ -91,7 +92,6 @@ function startBotTick(roomId) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
-            // أقرب لاعب
             let closest = null, closestD = Infinity;
             for (const p of playersList) {
                 const d = Math.hypot(p.x - bot.x, p.y - bot.y);
@@ -103,25 +103,21 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.hypot(dx, dy) || 1;
-            bot.x += (dx / len) * speed * 2.5;
-            bot.y += (dy / len) * speed * 2.5;
+            bot.x += (dx / len) * speed * 0.6;
+            bot.y += (dy / len) * speed * 0.6;
             bot.heading = Math.atan2(dy, dx) * 180 / Math.PI;
 
-            // إطلاق نار على اللاعب (كل 2 ثانية)
-            bot.fireTimer = (bot.fireTimer || 0) + 0.05;
+            bot.fireTimer = (bot.fireTimer || 0) + 0.1;
             if (bot.fireTimer > 2.0 && closestD < 1200) {
                 bot.fireTimer = 0;
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
-                    x: bot.x,
-                    y: bot.y,
-                    targetX: closest.x,
-                    targetY: closest.y
+                    x: bot.x, y: bot.y,
+                    targetX: closest.x, targetY: closest.y
                 });
             }
         }
 
-        // بث حالة البوتات كل 100ms
         const botsPayload = Object.values(r.bots).map(b => ({
             id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
         }));
@@ -135,21 +131,19 @@ function spawnWave(roomId) {
 
     room.bots = {};
     const count = botCountForWave(room.wave);
+    const hpVal = botHPForWave(room.wave);
 
-    // مركز قريب من أول لاعب
     const first = Object.values(room.players)[0];
     const cx = first ? first.x : WORLD_SIZE / 2;
     const cy = first ? first.y : WORLD_SIZE / 2;
 
     for (let i = 0; i < count; i++) {
-        const sp = randomSpawnNear(cx, cy, 1200, 2700);
+        const sp = randomSpawnNear(cx, cy, 1500, 3000);
         const id = room.botIdCounter++;
         room.bots[id] = {
-            id,
-            x: sp.x,
-            y: sp.y,
+            id, x: sp.x, y: sp.y,
             heading: rnd(0, 360),
-            hp: botDamageForWave(room.wave),
+            hp: hpVal,
             fireTimer: 0
         };
     }
@@ -180,9 +174,7 @@ async function fetchLeaderboard() {
         cachedLeaderboard = arr.slice(0, 5);
         lastFetch = now;
         return cachedLeaderboard;
-    } catch (e) {
-        return cachedLeaderboard;
-    }
+    } catch (e) { return cachedLeaderboard; }
 }
 
 async function sendLeaderboard(roomId) {
@@ -198,16 +190,6 @@ async function fetchUserKills(uid) {
         const v = await res.json();
         return (typeof v === 'number') ? v : 0;
     } catch (e) { return 0; }
-}
-
-async function fetchUserLevel(uid) {
-    if (!uid) return 1;
-    try {
-        const res = await fetch(DB_URL + "/users/" + uid + "/level.json");
-        if (!res.ok) return 1;
-        const v = await res.json();
-        return (typeof v === 'number' && v > 0) ? v : 1;
-    } catch (e) { return 1; }
 }
 
 async function pushUserStats(uid, kills, level) {
@@ -237,13 +219,14 @@ io.on('connection', (socket) => {
         socket.uid = uid || '';
         socket.mode = mode || '4VBOT';
         socket.startLevel = Math.max(1, level || 1);
-        socket.startKills = Math.max(0, total_kills || 0);
 
-        if (socket.mode !== '4VBOT') return; // النظام الجديد يقبل 4VBOT فقط
+        if (socket.mode !== '1VBOT' && socket.mode !== '4VBOT') {
+            socket.emit('mode_rejected');
+            return;
+        }
 
-        // ابحث عن غرفة أو أنشئ
-        let roomId = findOpenRoom();
-        if (!roomId) roomId = createRoom();
+        let roomId = findOpenRoom(socket.mode);
+        if (!roomId) roomId = createRoom(socket.mode);
 
         const room = rooms[roomId];
         socket.join(roomId);
@@ -254,64 +237,50 @@ io.on('connection', (socket) => {
             id: socket.id,
             name: socket.username,
             uid: socket.uid,
-            x: sp.x,
-            y: sp.y,
-            heading: 0,
+            x: sp.x, y: sp.y, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel,
-            isDying: false,
-            respawnAt: 0
+            level: socket.startLevel
         };
 
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
-            spawnX: sp.x,
-            spawnY: sp.y,
-            spawnHeading: 0,
+            spawnX: sp.x, spawnY: sp.y, spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
-            mode: '4VBOT'
+            mode: socket.mode
         });
 
-        // أرسل قائمة اللاعبين الحاليين للجديد
         const existing = Object.values(room.players)
             .filter(p => p.id !== socket.id)
             .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
-        // أبلغ الآخرين
         socket.to(roomId).emit('player_joined', {
             id: socket.id, name: socket.username, x: sp.x, y: sp.y, heading: 0
         });
 
-        // أرسل البوتات الحالية للجديد
         socket.emit('bots_update', Object.values(room.bots));
 
-        // إذا كانت الغرفة جديدة (لا بوتات) → ابدأ الموجة
         if (Object.keys(room.bots).length === 0) {
             spawnWave(roomId);
         }
 
         sendLeaderboard(roomId);
-        console.log(`${socket.username} joined ${roomId}`);
     });
 
-    // حركة اللاعب
     socket.on('player_moved', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.id]) return;
         const p = room.players[socket.id];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
-
         socket.to(socket.currentRoom).emit('player_moved', {
             id: socket.id, x: p.x, y: p.y, heading: p.heading
         });
     });
 
-    // ضربة على بوت
     socket.on('hit_bot', async (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
@@ -321,47 +290,33 @@ io.on('connection', (socket) => {
         bot.hp -= 1;
 
         if (bot.hp <= 0) {
-            // احذف البوت
             delete room.bots[data.botId];
-
-            // احفظ القتلة للاعب
             const p = room.players[socket.id];
             if (p) p.kills += 1;
 
-            // أبلغ الجميع
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
-                byName: room.players[socket.id] ? room.players[socket.id].name : '?'
+                byName: p ? p.name : '?'
             });
-
-            // بث حالة جديدة
             io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
-            // إذا انتهت الموجة → ابدأ الجديدة
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
-                // تحديث level للجميع في Firebase
                 for (const pid in room.players) {
                     const pl = room.players[pid];
-                    if (pl.level < room.wave) {
-                        pl.level = room.wave;
-                        const totalKills = await fetchUserKills(pl.uid);
-                        await pushUserStats(pl.uid, totalKills + pl.kills, pl.level);
-                    }
+                    if (pl.level < room.wave) pl.level = room.wave;
+                    const totalKills = await fetchUserKills(pl.uid);
+                    await pushUserStats(pl.uid, totalKills + pl.kills, pl.level);
                 }
-                // بث الموجة الجديدة
                 spawnWave(socket.currentRoom);
-                // بث المتصدرين
                 sendLeaderboard(socket.currentRoom);
             }
         } else {
-            // حدّث hp البوت فقط
             io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
         }
     });
 
-    // إصابة لاعب من بوت
     socket.on('bot_hit_player', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
@@ -369,15 +324,10 @@ io.on('connection', (socket) => {
         if (!p || p.hp <= 0) return;
 
         p.hp -= data.damage || 15;
-
         if (p.hp <= 0) {
             p.hp = 0;
-            p.isDying = true;
-            p.respawnAt = Date.now() + RESPAWN_MS;
-
             io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
 
-            // فحص wipe
             setTimeout(() => {
                 const r = rooms[socket.currentRoom];
                 if (!r) return;
@@ -387,16 +337,12 @@ io.on('connection', (socket) => {
                     endRoom(socket.currentRoom);
                     return;
                 }
-                // respawn اللاعب
                 if (r.players[socket.id]) {
                     const sp = randomSpawnNear(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200);
                     r.players[socket.id].x = sp.x;
                     r.players[socket.id].y = sp.y;
                     r.players[socket.id].hp = 100;
-                    r.players[socket.id].isDying = false;
-                    io.to(socket.id).emit('player_respawned', {
-                        x: sp.x, y: sp.y
-                    });
+                    io.to(socket.id).emit('player_respawned', { x: sp.x, y: sp.y });
                 }
             }, RESPAWN_MS);
         } else {
@@ -404,12 +350,9 @@ io.on('connection', (socket) => {
         }
     });
 
-    // عند الخروج
-    socket.on('leave_match', () => {
-        leaveRoom(socket);
-    });
-
+    socket.on('leave_match', () => leaveRoom(socket));
     socket.on('disconnect', () => {
+        console.log('Disconnected:', socket.id);
         leaveRoom(socket);
     });
 });
@@ -421,11 +364,10 @@ function leaveRoom(socket) {
     if (!room) return;
 
     delete room.players[socket.id];
-    socket.to(roomId).emit('player_left', { id: socket.id });
+    io.to(roomId).emit('player_left', { id: socket.id });
     socket.leave(roomId);
     socket.currentRoom = null;
 
-    // إذا الغرفة فاضية → احذفها
     if (Object.keys(room.players).length === 0) {
         endRoom(roomId);
     }
@@ -439,7 +381,6 @@ function endRoom(roomId) {
     console.log('Room ended:', roomId);
 }
 
-// تنظيف الغرف الفارغة كل 30 ثانية
 setInterval(() => {
     for (const id in rooms) {
         if (Object.keys(rooms[id].players).length === 0) endRoom(id);
@@ -447,5 +388,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server running on port ${PORT}`);
+    console.log(`Co-op server v11.0 running on port ${PORT}`);
 });
