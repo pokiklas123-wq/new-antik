@@ -13,102 +13,105 @@ const io = new Server(server, {
 
 const PORT = process.env.PORT || 3000;
 
-// قائمة الانتظار للاعبين الذين يبحثون عن مباراة
 let matchmakingQueue = [];
-
-// غرف المباريات النشطة
 let activeMatches = {};
 
 app.get('/', (req, res) => {
-    res.send('Grand3D TDM Game Server is Running smoothly!');
+    res.send('Grand3D TDM Server v2.0 is Running!');
 });
 
 io.on('connection', (socket) => {
-    console.log(`Player connected: ${socket.id}`);
+    console.log(`Connected: ${socket.id}`);
 
-    // 1. عند طلب الدخول في مباراة (Matchmaking)
-    socket.on('join_match', (data) => {
-        // التحقق من عدم تكرار اللاعب في قائمة الانتظار
+    // 1. البحث عن مباراة من صفحة الهوم
+    socket.on('join_match', () => {
         if (matchmakingQueue.includes(socket.id)) return;
-
         matchmakingQueue.push(socket.id);
-        console.log(`Player ${socket.id} joined queue. Queue size: ${matchmakingQueue.length}`);
+        console.log(`Queue size: ${matchmakingQueue.length}`);
 
-        // إذا توفر لاعبان في قائمة الانتظار، يتم بدء المباراة فوراً
         if (matchmakingQueue.length >= 2) {
-            const player1Id = matchmakingQueue.shift();
-            const player2Id = matchmakingQueue.shift();
+            const p1 = matchmakingQueue.shift();
+            const p2 = matchmakingQueue.shift();
+            const matchId = `match_${p1}_${p2}`;
 
-            const matchId = `match_${player1Id}_${player2Id}`;
+            const s1 = io.sockets.sockets.get(p1);
+            const s2 = io.sockets.sockets.get(p2);
 
-            const player1Socket = io.sockets.sockets.get(player1Id);
-            const player2Socket = io.sockets.sockets.get(player2Id);
-
-            if (player1Socket && player2Socket) {
-                // إدخال اللاعبين في غرفة خاصة بالمباراة
-                player1Socket.join(matchId);
-                player2Socket.join(matchId);
-
-                // إنشاء بيانات المباراة الافتراضية
+            if (s1 && s2) {
                 activeMatches[matchId] = {
                     id: matchId,
-                    players: {
-                        [player1Id]: { x: 2000, y: 2000, heading: 0, hp: 100, score: 0, role: "Red" },
-                        [player2Id]: { x: 4000, y: 4000, heading: 180, hp: 100, score: 0, role: "Blue" }
-                    },
+                    players: {}, // سيتم ملؤها عند دخول MainActivity
+                    scores: { [p1]: 0, [p2]: 0 },
                     maxKills: 4
                 };
 
-                // إرسال حدث مطابقة الخصم وبدء اللعبة
-                player1Socket.emit('match_found', {
+                s1.emit('match_found', {
                     matchId: matchId,
                     role: "Red",
                     spawnX: 2000,
                     spawnY: 2000,
                     spawnHeading: 0,
-                    opponentId: player2Id
+                    opponentId: p2
                 });
 
-                player2Socket.emit('match_found', {
+                s2.emit('match_found', {
                     matchId: matchId,
                     role: "Blue",
                     spawnX: 4000,
                     spawnY: 4000,
                     spawnHeading: 180,
-                    opponentId: player1Id
+                    opponentId: p1
                 });
-
-                console.log(`Match created: ${matchId}`);
             }
         }
     });
 
-    // 2. مزامنة حركة اللاعب (الموقع، الاتجاه، السرعة)
+    // 2. تسجيل الدخول الفعلي للعبة (MainActivity) لتحديث الـ Socket ID
+    socket.on('join_game', (data) => {
+        const { matchId, role } = data;
+        socket.join(matchId);
+
+        if (!activeMatches[matchId]) {
+            activeMatches[matchId] = {
+                id: matchId,
+                players: {},
+                scores: {},
+                maxKills: 4
+            };
+        }
+
+        // تسجيل اللاعب بالـ Socket ID الجديد والنشط داخل اللعبة
+        activeMatches[matchId].players[socket.id] = {
+            role: role,
+            hp: 100,
+            score: 0
+        };
+
+        console.log(`Player ${socket.id} joined room ${matchId} as ${role}`);
+    });
+
+    // 3. مزامنة الحركة الفورية
     socket.on('update_movement', (data) => {
         const { matchId, x, y, heading, speed } = data;
-        if (activeMatches[matchId]) {
-            socket.to(matchId).emit('opponent_moved', {
-                x: x,
-                y: y,
-                heading: heading,
-                speed: speed
-            });
-        }
+        socket.to(matchId).emit('opponent_moved', {
+            x: x,
+            y: y,
+            heading: heading,
+            speed: speed
+        });
     });
 
-    // 3. مزامنة إطلاق التوربيدو
+    // 4. مزامنة إطلاق النار
     socket.on('fire_torpedo', (data) => {
         const { matchId, x, y, heading } = data;
-        if (activeMatches[matchId]) {
-            socket.to(matchId).emit('opponent_fired', {
-                x: x,
-                y: y,
-                heading: heading
-            });
-        }
+        socket.to(matchId).emit('opponent_fired', {
+            x: x,
+            y: y,
+            heading: heading
+        });
     });
 
-    // 4. تسجيل الضرر والقتل (TDM Logic)
+    // 5. تسجيل الضرر والقتلات
     socket.on('register_hit', (data) => {
         const { matchId, damage } = data;
         const match = activeMatches[matchId];
@@ -122,7 +125,6 @@ io.on('connection', (socket) => {
 
         if (opponent.hp <= 0) {
             opponent.hp = 0;
-            // زيادة نقاط اللاعب الحالي (القاتل)
             match.players[socket.id].score += 1;
 
             io.to(matchId).emit('player_killed', {
@@ -134,33 +136,32 @@ io.on('connection', (socket) => {
                 }
             });
 
-            // التحقق من الفوز (الوصول لـ 4 قتلات)
             if (match.players[socket.id].score >= match.maxKills) {
                 io.to(matchId).emit('game_over', {
                     winnerId: socket.id,
                     loserId: opponentId
                 });
-                // تنظيف الغرفة بعد انتهاء المباراة
                 delete activeMatches[matchId];
             } else {
-                // إعادة تعيين الجولة (Round Reset) وإعادة توزيع اللاعبين لمواقع البداية
+                // إعادة تعيين الجولة بعد 3 ثوانٍ
                 setTimeout(() => {
-                    match.players[socket.id].hp = 100;
-                    match.players[opponentId].hp = 100;
+                    if (activeMatches[matchId]) {
+                        match.players[socket.id].hp = 100;
+                        match.players[opponentId].hp = 100;
 
-                    const p1Id = Object.keys(match.players)[0];
-                    const p2Id = Object.keys(match.players)[1];
+                        const p1Id = Object.keys(match.players)[0];
+                        const p2Id = Object.keys(match.players)[1];
 
-                    io.sockets.sockets.get(p1Id)?.emit('round_start', {
-                        spawnX: 2000, spawnY: 2000, spawnHeading: 0, hp: 100
-                    });
-                    io.sockets.sockets.get(p2Id)?.emit('round_start', {
-                        spawnX: 4000, spawnY: 4000, spawnHeading: 180, hp: 100
-                    });
-                }, 3000); // انتظار 3 ثوانٍ قبل بدء الجولة التالية لعرض تأثير الانفجار
+                        io.to(p1Id).emit('round_start', {
+                            spawnX: 2000, spawnY: 2000, spawnHeading: 0, hp: 100
+                        });
+                        io.to(p2Id).emit('round_start', {
+                            spawnX: 4000, spawnY: 4000, spawnHeading: 180, hp: 100
+                        });
+                    }
+                }, 3000);
             }
         } else {
-            // مزامنة شريط الصحة للخصم فقط
             io.to(matchId).emit('hp_sync', {
                 playerId: opponentId,
                 hp: opponent.hp
@@ -168,20 +169,69 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 5. عند خروج اللاعب أو انقطاع الاتصال
-    socket.on('disconnect', () => {
-        console.log(`Player disconnected: ${socket.id}`);
-        
-        // إزالة اللاعب من قائمة الانتظار إذا كان بها
-        matchmakingQueue = matchmakingQueue.filter(id => id !== socket.id);
+    // 6. مزامنة الضرر الذاتي (مثل الاصطدام بالجبال)
+    socket.on('sync_self_damage', (data) => {
+        const { matchId, hp } = data;
+        const match = activeMatches[matchId];
+        if (!match) return;
 
-        // البحث عن أي مباراة نشطة كان يشارك فيها اللاعب
+        if (match.players[socket.id]) {
+            match.players[socket.id].hp = hp;
+            
+            if (hp <= 0) {
+                const opponentId = Object.keys(match.players).find(id => id !== socket.id);
+                if (opponentId) {
+                    match.players[opponentId].score += 1;
+                    io.to(matchId).emit('player_killed', {
+                        killedPlayerId: socket.id,
+                        killerId: opponentId,
+                        scores: {
+                            [opponentId]: match.players[opponentId].score,
+                            [socket.id]: match.players[socket.id].score
+                        }
+                    });
+
+                    if (match.players[opponentId].score >= match.maxKills) {
+                        io.to(matchId).emit('game_over', {
+                            winnerId: opponentId,
+                            loserId: socket.id
+                        });
+                        delete activeMatches[matchId];
+                    } else {
+                        setTimeout(() => {
+                            if (activeMatches[matchId]) {
+                                match.players[socket.id].hp = 100;
+                                match.players[opponentId].hp = 100;
+                                io.to(socket.id).emit('round_start', {
+                                    spawnX: socket.id === Object.keys(match.players)[0] ? 2000 : 4000,
+                                    spawnY: socket.id === Object.keys(match.players)[0] ? 2000 : 4000,
+                                    spawnHeading: socket.id === Object.keys(match.players)[0] ? 0 : 180,
+                                    hp: 100
+                                });
+                                io.to(opponentId).emit('round_start', {
+                                    spawnX: opponentId === Object.keys(match.players)[0] ? 2000 : 4000,
+                                    spawnY: opponentId === Object.keys(match.players)[0] ? 2000 : 4000,
+                                    spawnHeading: opponentId === Object.keys(match.players)[0] ? 0 : 180,
+                                    hp: 100
+                                });
+                            }
+                        }, 3000);
+                    }
+                }
+            } else {
+                io.to(matchId).emit('hp_sync', {
+                    playerId: socket.id,
+                    hp: hp
+                });
+            }
+        }
+    });
+
+    socket.on('disconnect', () => {
+        matchmakingQueue = matchmakingQueue.filter(id => id !== socket.id);
         for (const matchId in activeMatches) {
             if (activeMatches[matchId].players[socket.id]) {
-                // إعلام اللاعب الآخر بانسحاب الخصم وفوزه تلقائياً
-                socket.to(matchId).emit('opponent_disconnected', {
-                    message: "Opponent disconnected. You win!"
-                });
+                socket.to(matchId).emit('opponent_disconnected');
                 delete activeMatches[matchId];
                 break;
             }
@@ -190,5 +240,5 @@ io.on('connection', (socket) => {
 });
 
 server.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`Server running on port ${PORT}`);
 });
