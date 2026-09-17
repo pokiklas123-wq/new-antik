@@ -13,14 +13,19 @@ const PORT = process.env.PORT || 3000;
 const MAX_FFA_PLAYERS = 100;
 const WORLD_MIN = 400, WORLD_MAX = 5600;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
-const IDLE_KICK_MS = 60000; // 60 ثانية
+const IDLE_KICK_MS = 60000;
 
 let tdmQueue = [];
 let activeMatches = {};
 let ffaRooms = {};
 
+// ===== Leaderboard cache =====
+let cachedLeaderboard = [];
+let lastLeaderboardFetch = 0;
+const LEADERBOARD_CACHE_MS = 5000;
+
 app.get('/', (req, res) => {
-    res.send('Grand3D Ultimate Game Server v7.0 is Live!');
+    res.send('Grand3D Ultimate Game Server v8.0 is Live!');
 });
 
 function randomSpawn() {
@@ -31,21 +36,28 @@ function randomSpawn() {
     };
 }
 
-// ====== سحب leaderboard من Firebase ======
+// ===== Firebase helpers =====
 async function fetchGlobalLeaderboard() {
+    const now = Date.now();
+    if (now - lastLeaderboardFetch < LEADERBOARD_CACHE_MS && cachedLeaderboard.length > 0) {
+        return cachedLeaderboard;
+    }
     try {
         const res = await fetch(DB_URL + "/users.json");
-        if (!res.ok) return [];
+        if (!res.ok) return cachedLeaderboard;
         const data = await res.json();
-        if (!data) return [];
+        if (!data) return cachedLeaderboard;
         const arr = Object.values(data).map(u => ({
             name: u.username || "Commander",
             kills: u.total_kills || 0
         }));
         arr.sort((a, b) => b.kills - a.kills);
-        return arr.slice(0, 5);
+        cachedLeaderboard = arr.slice(0, 5);
+        lastLeaderboardFetch = now;
+        return cachedLeaderboard;
     } catch (e) {
-        return [];
+        console.error("Leaderboard fetch failed:", e);
+        return cachedLeaderboard;
     }
 }
 
@@ -54,13 +66,39 @@ async function sendLeaderboardUpdate(roomId) {
     io.to(roomId).emit('leaderboard_update', top);
 }
 
+async function addKillToFirebase(username, amount) {
+    if (!username) return;
+    try {
+        const res = await fetch(DB_URL + "/users.json");
+        if (!res.ok) return;
+        const users = await res.json();
+        if (!users) return;
+
+        let uid = null;
+        for (const k in users) {
+            if (users[k].username === username) {
+                uid = k;
+                break;
+            }
+        }
+        if (!uid) return;
+
+        const newTotal = (users[uid].total_kills || 0) + amount;
+
+        await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(newTotal)
+        });
+
+        lastLeaderboardFetch = 0;
+    } catch (e) {
+        console.error("Firebase update failed:", e);
+    }
+}
+
 io.on('connection', (socket) => {
     console.log(`Player Connected: ${socket.id}`);
-
-    // نبضة حياة لمنع الـ kick التلقائي
-    socket.on('heartbeat', () => {
-        socket.lastHeartbeat = Date.now();
-    });
 
     socket.on('join_match', (data) => {
         const { mode, skin, username } = data;
@@ -105,7 +143,7 @@ io.on('connection', (socket) => {
                 spawnY: sp.y,
                 spawnHeading: sp.heading,
                 opponentId: "FFA_MULTIPLAYER",
-                serverId: socket.id   // ← معرّف السيرفر للمستخدم
+                serverId: socket.id
             });
 
             const existing = Object.values(ffaRooms[roomToJoin].players)
@@ -123,7 +161,6 @@ io.on('connection', (socket) => {
             sendLeaderboardUpdate(roomToJoin);
 
         } else {
-            // TDM 1v1
             if (tdmQueue.includes(socket.id)) return;
             leaveCurrentRoom(socket);
             tdmQueue.push(socket.id);
@@ -163,6 +200,8 @@ io.on('connection', (socket) => {
         const { matchId, x, y, heading, speed } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
 
+        socket.lastHeartbeat = Date.now();
+
         if (ffaRooms[matchId] && ffaRooms[matchId].players[socket.id]) {
             let p = ffaRooms[matchId].players[socket.id];
             p.x = x; p.y = y; p.heading = heading;
@@ -187,7 +226,7 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('register_hit', (data) => {
+    socket.on('register_hit', async (data) => {
         const { matchId, damage } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
 
@@ -205,6 +244,9 @@ io.on('connection', (socket) => {
                 target.hp = 0;
                 if (room.players[socket.id]) room.players[socket.id].kills += 1;
 
+                // حفظ في Firebase
+                await addKillToFirebase(socket.username, 1);
+
                 io.to(matchId).emit('player_killed_ffa', {
                     killedId: targetId,
                     killedName: target.name,
@@ -217,7 +259,6 @@ io.on('connection', (socket) => {
                     if (r && r.players[targetId]) {
                         const sp = randomSpawn();
                         r.players[targetId].hp = 100;
-                        r.players[targetId].kills = 0;
                         r.players[targetId].x = sp.x;
                         r.players[targetId].y = sp.y;
 
@@ -250,6 +291,9 @@ io.on('connection', (socket) => {
                 match.roundActive = false;
                 opponent.hp = 100;
                 match.players[socket.id].score += 1;
+
+                // حفظ في Firebase
+                await addKillToFirebase(socket.username, 1);
 
                 const killerScore = match.players[socket.id].score;
                 const oppScore = opponent.score;
@@ -301,7 +345,6 @@ io.on('connection', (socket) => {
 
             if (hp <= 0) {
                 room.players[socket.id].hp = 100;
-                room.players[socket.id].kills = 0;
 
                 io.to(matchId).emit('player_killed_ffa', {
                     killedId: socket.id,
@@ -325,8 +368,6 @@ io.on('connection', (socket) => {
                         });
                     }
                 }, 2000);
-
-                sendLeaderboardUpdate(matchId);
             } else {
                 io.to(matchId).emit('hp_sync_ffa', { playerId: socket.id, hp: hp });
             }
@@ -344,7 +385,7 @@ io.on('connection', (socket) => {
     });
 });
 
-// ====== kick تلقائي للغرف الفارغة بعد 60 ثانية ======
+// kick الفارغين بعد 60 ثانية
 setInterval(() => {
     const now = Date.now();
     for (const roomId in ffaRooms) {
@@ -356,7 +397,7 @@ setInterval(() => {
             if (s) {
                 if (!s.lastHeartbeat) s.lastHeartbeat = now;
                 if (now - s.lastHeartbeat > IDLE_KICK_MS) {
-                    console.log(`Idle kick (no players joined): ${onlyP.id}`);
+                    console.log(`Idle kick: ${onlyP.id}`);
                     s.emit('server_timeout');
                     s.disconnect(true);
                 }
@@ -372,7 +413,6 @@ function leaveCurrentRoom(socket) {
 
     if (ffaRooms[room]) {
         delete ffaRooms[room].players[socket.id];
-        // ← إعلام جميع الموجودين أن اللاعب غادر (يمسح الشبح فوراً)
         io.to(room).emit('opponent_left_ffa', { id: socket.id });
         socket.leave(room);
         sendLeaderboardUpdate(room);
