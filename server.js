@@ -26,6 +26,7 @@ io.on('connection', (socket) => {
     socket.on('join_match', () => {
         if (matchmakingQueue.includes(socket.id)) return;
         matchmakingQueue.push(socket.id);
+        console.log(`Queue size: ${matchmakingQueue.length}`);
 
         if (matchmakingQueue.length >= 2) {
             const p1 = matchmakingQueue.shift();
@@ -38,7 +39,7 @@ io.on('connection', (socket) => {
             if (s1 && s2) {
                 activeMatches[matchId] = {
                     id: matchId,
-                    roundActive: true, // جولة نشطة لمنع غلتشات الموت المتكرر
+                    roundActive: true,
                     players: {
                         "Red": { socketId: p1, hp: 100, score: 0 },
                         "Blue": { socketId: p2, hp: 100, score: 0 }
@@ -73,6 +74,7 @@ io.on('connection', (socket) => {
 
         if (activeMatches[matchId] && activeMatches[matchId].players[role]) {
             activeMatches[matchId].players[role].socketId = socket.id;
+            console.log(`Player registered in-game: Room ${matchId} as Role ${role}`);
         }
     });
 
@@ -100,7 +102,7 @@ io.on('connection', (socket) => {
     socket.on('sync_self_damage', (data) => {
         const { matchId, role, hp } = data;
         const match = activeMatches[matchId];
-        if (!match || !match.roundActive) return; // تجاهل الضرر إذا كانت الجولة منتهية
+        if (!match || !match.roundActive) return;
 
         const player = match.players[role];
         if (!player) return;
@@ -108,7 +110,7 @@ io.on('connection', (socket) => {
         player.hp = hp;
 
         if (hp <= 0) {
-            match.roundActive = false; // إيقاف الجولة فوراً لمنع تداخل الموت
+            match.roundActive = false;
             player.hp = 100;
             
             const opponentRole = role === "Red" ? "Blue" : "Red";
@@ -136,7 +138,7 @@ io.on('connection', (socket) => {
                     if (activeMatches[matchId]) {
                         match.players["Red"].hp = 100;
                         match.players["Blue"].hp = 100;
-                        match.roundActive = true; // إعادة تفعيل الجولة
+                        match.roundActive = true;
 
                         io.to(matchId).emit('round_start', {
                             "Red": { spawnX: 2000, spawnY: 2000, spawnHeading: 0 },
