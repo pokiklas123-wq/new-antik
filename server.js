@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
 
-
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -10,37 +9,163 @@ const io = new Server(server, {
 });
 
 const PORT = process.env.PORT || 3000;
-const MAX_FFA_PLAYERS = 100;
-const WORLD_MIN = 400, WORLD_MAX = 5600;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
-const IDLE_KICK_MS = 60000;
+const MAX_ROOM_PLAYERS = 4;
+const RESPAWN_MS = 3000;
+const TEAM_WIPE_WINDOW_MS = 5000;
+const BOT_SPEED_WAVE_CAP = 20;
+const WORLD_SIZE = 6000;
+const WORLD_MIN = 500;
+const WORLD_MAX = WORLD_SIZE - 500;
 
-let tdmQueue = [];
-let activeMatches = {};
-let ffaRooms = {};
-
-let cachedLeaderboard = [];
-let lastLeaderboardFetch = 0;
-const LEADERBOARD_CACHE_MS = 5000;
+let rooms = {};           // { roomId: { players, wave, bots, botIdCounter, startTime } }
+let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Ultimate Game Server v9.0 is Live!');
+    res.send('Grand3D Co-op Server v10.0 — Server-Authoritative Waves');
 });
 
-function randomSpawn() {
-    return {
-        x: WORLD_MIN + Math.random() * (WORLD_MAX - WORLD_MIN),
-        y: WORLD_MIN + Math.random() * (WORLD_MAX - WORLD_MIN),
-        heading: Math.random() * 360
+// ============ Utils ============
+function rnd(a, b) { return a + Math.random() * (b - a); }
+
+function botSpeedForWave(wave) {
+    if (wave <= BOT_SPEED_WAVE_CAP) return 1.5 + wave * 0.4;
+    return 1.5 + BOT_SPEED_WAVE_CAP * 0.4; // يقفل عند 20
+}
+
+function botDamageForWave(wave) {
+    // كم طلقة يحتاج البوت ليموت — نخليه hp رقمياً
+    if (wave >= 70) return 3;
+    if (wave >= 40) return 2;
+    return 1;
+}
+
+function botCountForWave(wave) {
+    return Math.min(3 + wave * 2, 40);
+}
+
+function randomSpawnNear(cx, cy, minD, maxD) {
+    const a = Math.random() * Math.PI * 2;
+    const d = rnd(minD, maxD);
+    let x = cx + Math.cos(a) * d;
+    let y = cy + Math.sin(a) * d;
+    x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
+    y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
+    return { x, y };
+}
+
+function findOpenRoom() {
+    for (const id in rooms) {
+        if (Object.keys(rooms[id].players).length < MAX_ROOM_PLAYERS) return id;
+    }
+    return null;
+}
+
+function createRoom() {
+    const id = `room_${nextRoomId++}`;
+    rooms[id] = {
+        id,
+        players: {},
+        wave: 1,
+        bots: {},
+        botIdCounter: 1,
+        botTickInterval: null
     };
+    startBotTick(id);
+    return id;
+}
+
+function startBotTick(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    room.botTickInterval = setInterval(() => {
+        const r = rooms[roomId];
+        if (!r) return;
+        if (Object.keys(r.players).length === 0) return;
+
+        // تحريك كل بوت نحو أقرب لاعب
+        const playersList = Object.values(r.players).filter(p => p.hp > 0);
+        if (playersList.length === 0) return;
+
+        for (const botId in r.bots) {
+            const bot = r.bots[botId];
+            if (bot.hp <= 0) continue;
+
+            // أقرب لاعب
+            let closest = null, closestD = Infinity;
+            for (const p of playersList) {
+                const d = Math.hypot(p.x - bot.x, p.y - bot.y);
+                if (d < closestD) { closestD = d; closest = p; }
+            }
+            if (!closest) continue;
+
+            const speed = botSpeedForWave(r.wave);
+            const dx = closest.x - bot.x;
+            const dy = closest.y - bot.y;
+            const len = Math.hypot(dx, dy) || 1;
+            bot.x += (dx / len) * speed * 2.5;
+            bot.y += (dy / len) * speed * 2.5;
+            bot.heading = Math.atan2(dy, dx) * 180 / Math.PI;
+
+            // إطلاق نار على اللاعب (كل 2 ثانية)
+            bot.fireTimer = (bot.fireTimer || 0) + 0.05;
+            if (bot.fireTimer > 2.0 && closestD < 1200) {
+                bot.fireTimer = 0;
+                io.to(roomId).emit('bot_fired', {
+                    botId: bot.id,
+                    x: bot.x,
+                    y: bot.y,
+                    targetX: closest.x,
+                    targetY: closest.y
+                });
+            }
+        }
+
+        // بث حالة البوتات كل 100ms
+        const botsPayload = Object.values(r.bots).map(b => ({
+            id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
+        }));
+        io.to(roomId).emit('bots_update', botsPayload);
+    }, 100);
+}
+
+function spawnWave(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    room.bots = {};
+    const count = botCountForWave(room.wave);
+
+    // مركز قريب من أول لاعب
+    const first = Object.values(room.players)[0];
+    const cx = first ? first.x : WORLD_SIZE / 2;
+    const cy = first ? first.y : WORLD_SIZE / 2;
+
+    for (let i = 0; i < count; i++) {
+        const sp = randomSpawnNear(cx, cy, 1200, 2700);
+        const id = room.botIdCounter++;
+        room.bots[id] = {
+            id,
+            x: sp.x,
+            y: sp.y,
+            heading: rnd(0, 360),
+            hp: botDamageForWave(room.wave),
+            fireTimer: 0
+        };
+    }
+
+    io.to(roomId).emit('wave_start', { wave: room.wave, count });
+    io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
 
 // ============ Firebase ============
-async function fetchGlobalLeaderboard() {
+let cachedLeaderboard = [];
+let lastFetch = 0;
+const CACHE_MS = 5000;
+
+async function fetchLeaderboard() {
     const now = Date.now();
-    if (now - lastLeaderboardFetch < LEADERBOARD_CACHE_MS && cachedLeaderboard.length > 0) {
-        return cachedLeaderboard;
-    }
+    if (now - lastFetch < CACHE_MS && cachedLeaderboard.length > 0) return cachedLeaderboard;
     try {
         const res = await fetch(DB_URL + "/users.json");
         if (!res.ok) return cachedLeaderboard;
@@ -48,406 +173,279 @@ async function fetchGlobalLeaderboard() {
         if (!data) return cachedLeaderboard;
         const arr = Object.values(data).map(u => ({
             name: u.username || "Commander",
-            kills: u.total_kills || 0
+            kills: u.total_kills || 0,
+            level: u.level || 1
         }));
-        arr.sort((a, b) => b.kills - a.kills);
+        arr.sort((a, b) => b.level - a.level || b.kills - a.kills);
         cachedLeaderboard = arr.slice(0, 5);
-        lastLeaderboardFetch = now;
+        lastFetch = now;
         return cachedLeaderboard;
     } catch (e) {
-        console.error("Leaderboard fetch failed:", e);
         return cachedLeaderboard;
     }
 }
 
-async function sendLeaderboardUpdate(roomId) {
-    const top = await fetchGlobalLeaderboard();
+async function sendLeaderboard(roomId) {
+    const top = await fetchLeaderboard();
     io.to(roomId).emit('leaderboard_update', top);
 }
 
-async function addKillToFirebaseByUid(uid, currentKills) {
-    if (!uid) return;
-    try {
-        const newTotal = (currentKills || 0) + 1;
-        const res = await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(newTotal)
-        });
-        if (res.ok) {
-            lastLeaderboardFetch = 0;
-        }
-    } catch (e) {
-        console.error("Firebase kill update failed:", e);
-    }
-}
-
-async function fetchCurrentKills(uid) {
+async function fetchUserKills(uid) {
     if (!uid) return 0;
     try {
         const res = await fetch(DB_URL + "/users/" + uid + "/total_kills.json");
         if (!res.ok) return 0;
-        const val = await res.json();
-        return (typeof val === 'number') ? val : 0;
-    } catch (e) {
-        return 0;
-    }
+        const v = await res.json();
+        return (typeof v === 'number') ? v : 0;
+    } catch (e) { return 0; }
 }
 
+async function fetchUserLevel(uid) {
+    if (!uid) return 1;
+    try {
+        const res = await fetch(DB_URL + "/users/" + uid + "/level.json");
+        if (!res.ok) return 1;
+        const v = await res.json();
+        return (typeof v === 'number' && v > 0) ? v : 1;
+    } catch (e) { return 1; }
+}
+
+async function pushUserStats(uid, kills, level) {
+    if (!uid) return;
+    try {
+        if (kills != null) {
+            await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
+            });
+        }
+        if (level != null) {
+            await fetch(DB_URL + "/users/" + uid + "/level.json", {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
+            });
+        }
+        lastFetch = 0;
+    } catch (e) { }
+}
+
+// ============ Socket ============
 io.on('connection', (socket) => {
-    console.log(`Player Connected: ${socket.id}`);
+    console.log('Connected:', socket.id);
 
-    socket.on('join_match', (data) => {
-        const { mode, skin, username, uid } = data;
-        socket.username = username || "Commander";
-        socket.skin = skin || "bt1";
-        socket.uid = uid || "";
-        socket.gameMode = mode;
-        socket.lastHeartbeat = Date.now();
+    socket.on('join_match', async (data) => {
+        const { mode, username, uid, level, total_kills } = data || {};
+        socket.username = username || 'Commander';
+        socket.uid = uid || '';
+        socket.mode = mode || '4VBOT';
+        socket.startLevel = Math.max(1, level || 1);
+        socket.startKills = Math.max(0, total_kills || 0);
 
-        if (mode === "FFA") {
-            let roomToJoin = null;
-            for (const roomId in ffaRooms) {
-                if (Object.keys(ffaRooms[roomId].players).length < MAX_FFA_PLAYERS) {
-                    roomToJoin = roomId;
-                    break;
-                }
-            }
-            if (!roomToJoin) {
-                roomToJoin = `ffa_room_${Date.now()}`;
-                ffaRooms[roomToJoin] = { id: roomToJoin, players: {} };
-                console.log(`New FFA Room Created: ${roomToJoin}`);
-            }
+        if (socket.mode !== '4VBOT') return; // النظام الجديد يقبل 4VBOT فقط
 
-            leaveCurrentRoom(socket);
+        // ابحث عن غرفة أو أنشئ
+        let roomId = findOpenRoom();
+        if (!roomId) roomId = createRoom();
 
-            socket.join(roomToJoin);
-            socket.currentRoom = roomToJoin;
+        const room = rooms[roomId];
+        socket.join(roomId);
+        socket.currentRoom = roomId;
 
-            const sp = randomSpawn();
-            ffaRooms[roomToJoin].players[socket.id] = {
-                id: socket.id,
-                name: socket.username,
-                skin: socket.skin,
-                uid: socket.uid,
-                x: sp.x, y: sp.y, heading: sp.heading,
-                hp: 100,
-                kills: 0
-            };
-
-            socket.emit('match_found', {
-                matchId: roomToJoin,
-                role: "FFA",
-                spawnX: sp.x,
-                spawnY: sp.y,
-                spawnHeading: sp.heading,
-                opponentId: "FFA_MULTIPLAYER",
-                serverId: socket.id
-            });
-
-            const existing = Object.values(ffaRooms[roomToJoin].players)
-                .filter(p => p.id !== socket.id)
-                .map(p => ({ id: p.id, name: p.name, skin: p.skin, x: p.x, y: p.y, heading: p.heading, hp: p.hp }));
-            socket.emit('ffa_state', { yourId: socket.id, players: existing });
-
-            socket.to(roomToJoin).emit('opponent_joined_ffa', {
-                id: socket.id,
-                name: socket.username,
-                skin: socket.skin,
-                x: sp.x, y: sp.y, heading: sp.heading
-            });
-
-            sendLeaderboardUpdate(roomToJoin);
-
-        } else {
-            if (tdmQueue.includes(socket.id)) return;
-            leaveCurrentRoom(socket);
-            tdmQueue.push(socket.id);
-
-            if (tdmQueue.length >= 2) {
-                const p1 = tdmQueue.shift();
-                const p2 = tdmQueue.shift();
-                const matchId = `tdm_${p1}_${p2}`;
-
-                const s1 = io.sockets.sockets.get(p1);
-                const s2 = io.sockets.sockets.get(p2);
-
-                if (s1 && s2) {
-                    activeMatches[matchId] = {
-                        id: matchId,
-                        roundActive: true,
-                        players: {
-                            [p1]: { role: "Red", hp: 100, score: 0, skin: s1.skin, name: s1.username, uid: s1.uid || "" },
-                            [p2]: { role: "Blue", hp: 100, score: 0, skin: s2.skin, name: s2.username, uid: s2.uid || "" }
-                        },
-                        maxKills: 4
-                    };
-
-                    s1.join(matchId);
-                    s2.join(matchId);
-                    s1.currentRoom = matchId;
-                    s2.currentRoom = matchId;
-
-                    s1.emit('match_found', { matchId, role: "Red", spawnX: 2000, spawnY: 2000, spawnHeading: 0, opponentId: p2, serverId: p1 });
-                    s2.emit('match_found', { matchId, role: "Blue", spawnX: 4000, spawnY: 4000, spawnHeading: 180, opponentId: p1, serverId: p2 });
-                }
-            }
-        }
-    });
-
-    socket.on('update_movement', (data) => {
-        const { matchId, x, y, heading, speed } = data;
-        if (!matchId || matchId !== socket.currentRoom) return;
-
-        socket.lastHeartbeat = Date.now();
-
-        if (ffaRooms[matchId] && ffaRooms[matchId].players[socket.id]) {
-            let p = ffaRooms[matchId].players[socket.id];
-            p.x = x; p.y = y; p.heading = heading;
-        }
-
-        socket.to(matchId).emit('opponent_moved', {
-            senderId: socket.id,
-            senderRole: socket.gameMode === "FFA" ? "FFA" : data.role,
-            skin: socket.skin,
+        const sp = randomSpawnNear(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200);
+        room.players[socket.id] = {
+            id: socket.id,
             name: socket.username,
-            x, y, heading, speed
+            uid: socket.uid,
+            x: sp.x,
+            y: sp.y,
+            heading: 0,
+            hp: 100,
+            kills: 0,
+            level: socket.startLevel,
+            isDying: false,
+            respawnAt: 0
+        };
+
+        socket.emit('match_found', {
+            matchId: roomId,
+            role: 'Player',
+            spawnX: sp.x,
+            spawnY: sp.y,
+            spawnHeading: 0,
+            opponentId: '',
+            serverId: socket.id,
+            wave: room.wave,
+            mode: '4VBOT'
+        });
+
+        // أرسل قائمة اللاعبين الحاليين للجديد
+        const existing = Object.values(room.players)
+            .filter(p => p.id !== socket.id)
+            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
+        socket.emit('room_state', { players: existing, wave: room.wave });
+
+        // أبلغ الآخرين
+        socket.to(roomId).emit('player_joined', {
+            id: socket.id, name: socket.username, x: sp.x, y: sp.y, heading: 0
+        });
+
+        // أرسل البوتات الحالية للجديد
+        socket.emit('bots_update', Object.values(room.bots));
+
+        // إذا كانت الغرفة جديدة (لا بوتات) → ابدأ الموجة
+        if (Object.keys(room.bots).length === 0) {
+            spawnWave(roomId);
+        }
+
+        sendLeaderboard(roomId);
+        console.log(`${socket.username} joined ${roomId}`);
+    });
+
+    // حركة اللاعب
+    socket.on('player_moved', (data) => {
+        const room = rooms[socket.currentRoom];
+        if (!room || !room.players[socket.id]) return;
+        const p = room.players[socket.id];
+        p.x = data.x; p.y = data.y; p.heading = data.heading;
+
+        socket.to(socket.currentRoom).emit('player_moved', {
+            id: socket.id, x: p.x, y: p.y, heading: p.heading
         });
     });
 
-    socket.on('fire_torpedo', (data) => {
-        const { matchId, x, y, heading } = data;
-        if (!matchId || matchId !== socket.currentRoom) return;
-        socket.to(matchId).emit('opponent_fired', {
-            senderId: socket.id,
-            senderRole: socket.gameMode === "FFA" ? "FFA" : data.role,
-            x, y, heading
-        });
-    });
+    // ضربة على بوت
+    socket.on('hit_bot', async (data) => {
+        const room = rooms[socket.currentRoom];
+        if (!room) return;
+        const bot = room.bots[data.botId];
+        if (!bot || bot.hp <= 0) return;
 
-    socket.on('register_hit', async (data) => {
-        const { matchId, damage } = data;
-        if (!matchId || matchId !== socket.currentRoom) return;
+        bot.hp -= 1;
 
-        if (socket.gameMode === "FFA") {
-            const targetId = data.targetId;
-            const room = ffaRooms[matchId];
-            if (!room) return;
+        if (bot.hp <= 0) {
+            // احذف البوت
+            delete room.bots[data.botId];
 
-            let target = room.players[targetId];
-            if (!target || target.hp <= 0) return;
+            // احفظ القتلة للاعب
+            const p = room.players[socket.id];
+            if (p) p.kills += 1;
 
-            target.hp -= damage;
+            // أبلغ الجميع
+            io.to(socket.currentRoom).emit('bot_killed', {
+                botId: data.botId,
+                byId: socket.id,
+                byName: room.players[socket.id] ? room.players[socket.id].name : '?'
+            });
 
-            if (target.hp <= 0) {
-                target.hp = 0;
-                if (room.players[socket.id]) room.players[socket.id].kills += 1;
+            // بث حالة جديدة
+            io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
-                if (socket.uid) {
-                    const currentKills = await fetchCurrentKills(socket.uid);
-                    await addKillToFirebaseByUid(socket.uid, currentKills);
-                }
-
-                io.to(matchId).emit('player_killed_ffa', {
-                    killedId: targetId,
-                    killedName: target.name,
-                    killerId: socket.id,
-                    killerName: socket.username
-                });
-
-                setTimeout(() => {
-                    const r = ffaRooms[matchId];
-                    if (r && r.players[targetId]) {
-                        const sp = randomSpawn();
-                        r.players[targetId].hp = 100;
-                        r.players[targetId].x = sp.x;
-                        r.players[targetId].y = sp.y;
-
-                        io.to(targetId).emit('respawn_ffa', {
-                            spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
-                        });
-                        io.to(matchId).emit('opponent_respawned_ffa', {
-                            id: targetId,
-                            x: sp.x, y: sp.y, heading: sp.heading
-                        });
+            // إذا انتهت الموجة → ابدأ الجديدة
+            if (Object.keys(room.bots).length === 0) {
+                room.wave += 1;
+                // تحديث level للجميع في Firebase
+                for (const pid in room.players) {
+                    const pl = room.players[pid];
+                    if (pl.level < room.wave) {
+                        pl.level = room.wave;
+                        const totalKills = await fetchUserKills(pl.uid);
+                        await pushUserStats(pl.uid, totalKills + pl.kills, pl.level);
                     }
-                }, 2000);
-
-                sendLeaderboardUpdate(matchId);
-            } else {
-                io.to(matchId).emit('hp_sync_ffa', { playerId: targetId, hp: target.hp });
+                }
+                // بث الموجة الجديدة
+                spawnWave(socket.currentRoom);
+                // بث المتصدرين
+                sendLeaderboard(socket.currentRoom);
             }
-
         } else {
-            const match = activeMatches[matchId];
-            if (!match || !match.roundActive) return;
+            // حدّث hp البوت فقط
+            io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
+        }
+    });
 
-            const opponentId = Object.keys(match.players).find(id => id !== socket.id);
-            if (!opponentId) return;
+    // إصابة لاعب من بوت
+    socket.on('bot_hit_player', (data) => {
+        const room = rooms[socket.currentRoom];
+        if (!room) return;
+        const p = room.players[socket.id];
+        if (!p || p.hp <= 0) return;
 
-            let opponent = match.players[opponentId];
-            opponent.hp -= damage;
+        p.hp -= data.damage || 15;
 
-            if (opponent.hp <= 0) {
-                match.roundActive = false;
-                opponent.hp = 100;
-                match.players[socket.id].score += 1;
+        if (p.hp <= 0) {
+            p.hp = 0;
+            p.isDying = true;
+            p.respawnAt = Date.now() + RESPAWN_MS;
 
-                if (socket.uid) {
-                    const currentKills = await fetchCurrentKills(socket.uid);
-                    await addKillToFirebaseByUid(socket.uid, currentKills);
+            io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
+
+            // فحص wipe
+            setTimeout(() => {
+                const r = rooms[socket.currentRoom];
+                if (!r) return;
+                const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
+                if (allDead && Object.keys(r.players).length > 0) {
+                    io.to(socket.currentRoom).emit('team_wipe');
+                    endRoom(socket.currentRoom);
+                    return;
                 }
-
-                const killerScore = match.players[socket.id].score;
-                const oppScore = opponent.score;
-
-                io.to(matchId).emit('player_killed', {
-                    killedRole: opponent.role,
-                    killerRole: match.players[socket.id].role,
-                    scores: {
-                        "Red": match.players[socket.id].role === "Red" ? killerScore : oppScore,
-                        "Blue": match.players[socket.id].role === "Blue" ? killerScore : oppScore
-                    }
-                });
-
-                if (killerScore >= match.maxKills) {
-                    io.to(matchId).emit('game_over', {
-                        winnerRole: match.players[socket.id].role,
-                        loserRole: opponent.role
+                // respawn اللاعب
+                if (r.players[socket.id]) {
+                    const sp = randomSpawnNear(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200);
+                    r.players[socket.id].x = sp.x;
+                    r.players[socket.id].y = sp.y;
+                    r.players[socket.id].hp = 100;
+                    r.players[socket.id].isDying = false;
+                    io.to(socket.id).emit('player_respawned', {
+                        x: sp.x, y: sp.y
                     });
-                    cleanupMatch(matchId);
-                } else {
-                    setTimeout(() => {
-                        if (activeMatches[matchId]) {
-                            match.players[socket.id].hp = 100;
-                            match.players[opponentId].hp = 100;
-                            match.roundActive = true;
-
-                            io.to(matchId).emit('round_start', {
-                                "Red": { spawnX: 2000, spawnY: 2000, spawnHeading: 0 },
-                                "Blue": { spawnX: 4000, spawnY: 4000, spawnHeading: 180 }
-                            });
-                        }
-                    }, 3000);
                 }
-            } else {
-                io.to(matchId).emit('hp_sync', { role: opponent.role, hp: opponent.hp });
-            }
+            }, RESPAWN_MS);
+        } else {
+            io.to(socket.id).emit('hp_update', { hp: p.hp });
         }
     });
 
-    socket.on('sync_self_damage', (data) => {
-        const { matchId, hp } = data;
-        if (!matchId || matchId !== socket.currentRoom) return;
-
-        if (socket.gameMode === "FFA") {
-            const room = ffaRooms[matchId];
-            if (!room || !room.players[socket.id]) return;
-
-            room.players[socket.id].hp = hp;
-
-            if (hp <= 0) {
-                room.players[socket.id].hp = 100;
-
-                io.to(matchId).emit('player_killed_ffa', {
-                    killedId: socket.id,
-                    killedName: socket.username,
-                    killerId: "ENVIRONMENT",
-                    killerName: "MOUNTAIN"
-                });
-
-                setTimeout(() => {
-                    const r = ffaRooms[matchId];
-                    if (r && r.players[socket.id]) {
-                        const sp = randomSpawn();
-                        r.players[socket.id].x = sp.x;
-                        r.players[socket.id].y = sp.y;
-                        io.to(socket.id).emit('respawn_ffa', {
-                            spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
-                        });
-                        io.to(matchId).emit('opponent_respawned_ffa', {
-                            id: socket.id,
-                            x: sp.x, y: sp.y, heading: sp.heading
-                        });
-                    }
-                }, 2000);
-            } else {
-                io.to(matchId).emit('hp_sync_ffa', { playerId: socket.id, hp: hp });
-            }
-        }
-    });
-
-    socket.on('leave_game', () => {
-        leaveCurrentRoom(socket);
+    // عند الخروج
+    socket.on('leave_match', () => {
+        leaveRoom(socket);
     });
 
     socket.on('disconnect', () => {
-        console.log(`Disconnected: ${socket.id}`);
-        tdmQueue = tdmQueue.filter(id => id !== socket.id);
-        leaveCurrentRoom(socket);
+        leaveRoom(socket);
     });
 });
 
-setInterval(() => {
-    const now = Date.now();
-    for (const roomId in ffaRooms) {
-        const room = ffaRooms[roomId];
-        const count = Object.keys(room.players).length;
-        if (count === 1) {
-            const onlyP = Object.values(room.players)[0];
-            const s = io.sockets.sockets.get(onlyP.id);
-            if (s) {
-                if (!s.lastHeartbeat) s.lastHeartbeat = now;
-                if (now - s.lastHeartbeat > IDLE_KICK_MS) {
-                    console.log(`Idle kick: ${onlyP.id}`);
-                    s.emit('server_timeout');
-                    s.disconnect(true);
-                }
-            }
-        }
-    }
-}, 5000);
-
-setInterval(() => {
-    for (const roomId in ffaRooms) {
-        sendLeaderboardUpdate(roomId);
-    }
-}, 15000);
-
-function leaveCurrentRoom(socket) {
-    const room = socket.currentRoom;
+function leaveRoom(socket) {
+    const roomId = socket.currentRoom;
+    if (!roomId) return;
+    const room = rooms[roomId];
     if (!room) return;
+
+    delete room.players[socket.id];
+    socket.to(roomId).emit('player_left', { id: socket.id });
+    socket.leave(roomId);
     socket.currentRoom = null;
 
-    if (ffaRooms[room]) {
-        delete ffaRooms[room].players[socket.id];
-        io.to(room).emit('opponent_left_ffa', { id: socket.id });
-        socket.leave(room);
-        sendLeaderboardUpdate(room);
-
-        if (Object.keys(ffaRooms[room].players).length === 0) {
-            delete ffaRooms[room];
-        }
-    } else if (activeMatches[room]) {
-        socket.to(room).emit('opponent_disconnected');
-        socket.leave(room);
-        cleanupMatch(room);
+    // إذا الغرفة فاضية → احذفها
+    if (Object.keys(room.players).length === 0) {
+        endRoom(roomId);
     }
 }
 
-function cleanupMatch(matchId) {
-    const match = activeMatches[matchId];
-    if (!match) return;
-    for (const pid of Object.keys(match.players)) {
-        const s = io.sockets.sockets.get(pid);
-        if (s) {
-            s.currentRoom = null;
-            s.leave(matchId);
-        }
-    }
-    delete activeMatches[matchId];
+function endRoom(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+    if (room.botTickInterval) clearInterval(room.botTickInterval);
+    delete rooms[roomId];
+    console.log('Room ended:', roomId);
 }
+
+// تنظيف الغرف الفارغة كل 30 ثانية
+setInterval(() => {
+    for (const id in rooms) {
+        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
+    }
+}, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
+    console.log(`Co-op server running on port ${PORT}`);
 });
