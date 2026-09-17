@@ -1,26 +1,26 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
+const fetch = require('node-fetch');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    cors: {
-        origin: "*",
-        methods: ["GET", "POST"]
-    }
+    cors: { origin: "*", methods: ["GET", "POST"] }
 });
 
 const PORT = process.env.PORT || 3000;
 const MAX_FFA_PLAYERS = 100;
 const WORLD_MIN = 400, WORLD_MAX = 5600;
+const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
+const IDLE_KICK_MS = 60000; // 60 ثانية
 
 let tdmQueue = [];
-let activeMatches = {}; // غرف TDM
-let ffaRooms = {};      // غرف FFA المفتوحة (حتى 100 لاعب)
+let activeMatches = {};
+let ffaRooms = {};
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Ultimate Game Server v6.0 is Live!');
+    res.send('Grand3D Ultimate Game Server v7.0 is Live!');
 });
 
 function randomSpawn() {
@@ -31,15 +31,43 @@ function randomSpawn() {
     };
 }
 
+// ====== سحب leaderboard من Firebase ======
+async function fetchGlobalLeaderboard() {
+    try {
+        const res = await fetch(DB_URL + "/users.json");
+        if (!res.ok) return [];
+        const data = await res.json();
+        if (!data) return [];
+        const arr = Object.values(data).map(u => ({
+            name: u.username || "Commander",
+            kills: u.total_kills || 0
+        }));
+        arr.sort((a, b) => b.kills - a.kills);
+        return arr.slice(0, 5);
+    } catch (e) {
+        return [];
+    }
+}
+
+async function sendLeaderboardUpdate(roomId) {
+    const top = await fetchGlobalLeaderboard();
+    io.to(roomId).emit('leaderboard_update', top);
+}
+
 io.on('connection', (socket) => {
     console.log(`Player Connected: ${socket.id}`);
 
-    // 1. طلب الدخول من اللوبي
+    // نبضة حياة لمنع الـ kick التلقائي
+    socket.on('heartbeat', () => {
+        socket.lastHeartbeat = Date.now();
+    });
+
     socket.on('join_match', (data) => {
         const { mode, skin, username } = data;
         socket.username = username || "Commander";
         socket.skin = skin || "bt1";
         socket.gameMode = mode;
+        socket.lastHeartbeat = Date.now();
 
         if (mode === "FFA") {
             let roomToJoin = null;
@@ -55,7 +83,6 @@ io.on('connection', (socket) => {
                 console.log(`New FFA Room Created: ${roomToJoin}`);
             }
 
-            // تنظيف اللاعب من أي غرفة سابقة (أمان ضد الانضمام المزدوج)
             leaveCurrentRoom(socket);
 
             socket.join(roomToJoin);
@@ -71,23 +98,21 @@ io.on('connection', (socket) => {
                 kills: 0
             };
 
-            // اللاعب الجديد يدخل فوراً
             socket.emit('match_found', {
                 matchId: roomToJoin,
                 role: "FFA",
                 spawnX: sp.x,
                 spawnY: sp.y,
                 spawnHeading: sp.heading,
-                opponentId: "FFA_MULTIPLAYER"
+                opponentId: "FFA_MULTIPLAYER",
+                serverId: socket.id   // ← معرّف السيرفر للمستخدم
             });
 
-            // إرسال قائمة كل اللاعبين الموجودين مسبقاً للاعب الجديد
             const existing = Object.values(ffaRooms[roomToJoin].players)
                 .filter(p => p.id !== socket.id)
                 .map(p => ({ id: p.id, name: p.name, skin: p.skin, x: p.x, y: p.y, heading: p.heading, hp: p.hp }));
             socket.emit('ffa_state', { yourId: socket.id, players: existing });
 
-            // إعلام البقية بدخول لاعب جديد
             socket.to(roomToJoin).emit('opponent_joined_ffa', {
                 id: socket.id,
                 name: socket.username,
@@ -127,14 +152,13 @@ io.on('connection', (socket) => {
                     s1.currentRoom = matchId;
                     s2.currentRoom = matchId;
 
-                    s1.emit('match_found', { matchId, role: "Red", spawnX: 2000, spawnY: 2000, spawnHeading: 0, opponentId: p2 });
-                    s2.emit('match_found', { matchId, role: "Blue", spawnX: 4000, spawnY: 4000, spawnHeading: 180, opponentId: p1 });
+                    s1.emit('match_found', { matchId, role: "Red", spawnX: 2000, spawnY: 2000, spawnHeading: 0, opponentId: p2, serverId: p1 });
+                    s2.emit('match_found', { matchId, role: "Blue", spawnX: 4000, spawnY: 4000, spawnHeading: 180, opponentId: p1, serverId: p2 });
                 }
             }
         }
     });
 
-    // 2. مزامنة الحركة (مع تقييد معدل خفيف لمنع السبام)
     socket.on('update_movement', (data) => {
         const { matchId, x, y, heading, speed } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
@@ -153,7 +177,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 3. إطلاق التوربيدو
     socket.on('fire_torpedo', (data) => {
         const { matchId, x, y, heading } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
@@ -164,7 +187,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 4. تسجيل الضرر والقتلات
     socket.on('register_hit', (data) => {
         const { matchId, damage } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
@@ -191,21 +213,19 @@ io.on('connection', (socket) => {
                 });
 
                 setTimeout(() => {
-                    if (room.players[targetId]) {
+                    const r = ffaRooms[matchId];
+                    if (r && r.players[targetId]) {
                         const sp = randomSpawn();
-                        room.players[targetId].hp = 100;
-                        room.players[targetId].kills = 0; // تصفير قتلات الجولة عند الموت
-                        room.players[targetId].x = sp.x;
-                        room.players[targetId].y = sp.y;
+                        r.players[targetId].hp = 100;
+                        r.players[targetId].kills = 0;
+                        r.players[targetId].x = sp.x;
+                        r.players[targetId].y = sp.y;
 
                         io.to(targetId).emit('respawn_ffa', {
                             spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
                         });
-                        // إعلام البقية بموقع اللاعب الجديد
-                        socket.to(matchId).emit('opponent_joined_ffa', {
+                        io.to(matchId).emit('opponent_respawned_ffa', {
                             id: targetId,
-                            name: target.name,
-                            skin: target.skin,
                             x: sp.x, y: sp.y, heading: sp.heading
                         });
                     }
@@ -269,7 +289,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 5. الضرر الذاتي (الجبال الحمراء)
     socket.on('sync_self_damage', (data) => {
         const { matchId, hp } = data;
         if (!matchId || matchId !== socket.currentRoom) return;
@@ -292,12 +311,17 @@ io.on('connection', (socket) => {
                 });
 
                 setTimeout(() => {
-                    if (room.players[socket.id]) {
+                    const r = ffaRooms[matchId];
+                    if (r && r.players[socket.id]) {
                         const sp = randomSpawn();
-                        room.players[socket.id].x = sp.x;
-                        room.players[socket.id].y = sp.y;
+                        r.players[socket.id].x = sp.x;
+                        r.players[socket.id].y = sp.y;
                         io.to(socket.id).emit('respawn_ffa', {
                             spawnX: sp.x, spawnY: sp.y, spawnHeading: sp.heading
+                        });
+                        io.to(matchId).emit('opponent_respawned_ffa', {
+                            id: socket.id,
+                            x: sp.x, y: sp.y, heading: sp.heading
                         });
                     }
                 }, 2000);
@@ -309,18 +333,37 @@ io.on('connection', (socket) => {
         }
     });
 
-    // 6. الخروج الطوعي من المباراة (بدون قطع السوكيت)
     socket.on('leave_game', () => {
         leaveCurrentRoom(socket);
     });
 
-    // 7. انقطاع الاتصال
     socket.on('disconnect', () => {
         console.log(`Disconnected: ${socket.id}`);
         tdmQueue = tdmQueue.filter(id => id !== socket.id);
         leaveCurrentRoom(socket);
     });
 });
+
+// ====== kick تلقائي للغرف الفارغة بعد 60 ثانية ======
+setInterval(() => {
+    const now = Date.now();
+    for (const roomId in ffaRooms) {
+        const room = ffaRooms[roomId];
+        const count = Object.keys(room.players).length;
+        if (count === 1) {
+            const onlyP = Object.values(room.players)[0];
+            const s = io.sockets.sockets.get(onlyP.id);
+            if (s) {
+                if (!s.lastHeartbeat) s.lastHeartbeat = now;
+                if (now - s.lastHeartbeat > IDLE_KICK_MS) {
+                    console.log(`Idle kick (no players joined): ${onlyP.id}`);
+                    s.emit('server_timeout');
+                    s.disconnect(true);
+                }
+            }
+        }
+    }
+}, 5000);
 
 function leaveCurrentRoom(socket) {
     const room = socket.currentRoom;
@@ -329,7 +372,8 @@ function leaveCurrentRoom(socket) {
 
     if (ffaRooms[room]) {
         delete ffaRooms[room].players[socket.id];
-        socket.to(room).emit('opponent_left_ffa', { id: socket.id });
+        // ← إعلام جميع الموجودين أن اللاعب غادر (يمسح الشبح فوراً)
+        io.to(room).emit('opponent_left_ffa', { id: socket.id });
         socket.leave(room);
         sendLeaderboardUpdate(room);
 
@@ -354,18 +398,6 @@ function cleanupMatch(matchId) {
         }
     }
     delete activeMatches[matchId];
-}
-
-function sendLeaderboardUpdate(roomId) {
-    const room = ffaRooms[roomId];
-    if (!room) return;
-
-    let sortedPlayers = Object.values(room.players)
-        .sort((a, b) => b.kills - a.kills)
-        .slice(0, 5)
-        .map(p => ({ name: p.name, kills: p.kills }));
-
-    io.to(roomId).emit('leaderboard_update', sortedPlayers);
 }
 
 server.listen(PORT, () => {
