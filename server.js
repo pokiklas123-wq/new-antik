@@ -21,16 +21,16 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v13.0 - Optimized Bots & Sync');
+    res.send('Grand3D Co-op Server v14.0 - High Performance Sync & Instant Bot Death');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
     let base = 8.0;
-    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.8;
-    else base += BOT_SPEED_WAVE_CAP * 0.8;
-    return base;
+    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.4;
+    else base += BOT_SPEED_WAVE_CAP * 0.4;
+    return Math.min(base, 16.0); // تحديد حد أقصى لسرعة البوتات لمنع التقطيع
 }
 
 function botHPForWave(wave) {
@@ -194,7 +194,7 @@ function spawnWave(roomId) {
 
 let cachedLeaderboard = [];
 let lastFetch = 0;
-const CACHE_MS = 5000;
+const CACHE_MS = 10000; // زيادة الكاش لتقليل الضغط على السيرفر
 
 async function fetchLeaderboard() {
     const now = Date.now();
@@ -216,42 +216,44 @@ async function fetchLeaderboard() {
     } catch (e) { return cachedLeaderboard; }
 }
 
-async function sendLeaderboard(roomId) {
-    const top = await fetchLeaderboard();
-    io.to(roomId).emit('leaderboard_update', top);
+function sendLeaderboard(roomId) {
+    fetchLeaderboard().then(top => {
+        io.to(roomId).emit('leaderboard_update', top);
+    }).catch(() => {});
 }
 
-async function fetchUserKills(uid) {
-    if (!uid) return 0;
-    try {
-        const res = await fetch(DB_URL + "/users/" + uid + "/total_kills.json");
-        if (!res.ok) return 0;
-        const v = await res.json();
-        return (typeof v === 'number') ? v : 0;
-    } catch (e) { return 0; }
+// دالة جلب غير حاصرة (Non-blocking)
+function fetchUserKillsAndIncrement(uid, callback) {
+    if (!uid) return callback(0);
+    fetch(DB_URL + "/users/" + uid + "/total_kills.json")
+        .then(res => res.json())
+        .then(v => {
+            const current = (typeof v === 'number') ? v : 0;
+            callback(current);
+        })
+        .catch(() => callback(0));
 }
 
-async function pushUserStats(uid, kills, level) {
+// دالة دفع البيانات غير الحاصرة (Non-blocking)
+function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
-    try {
-        if (kills != null) {
-            await fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
-                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
-            });
-        }
-        if (level != null && level > 0) {
-            await fetch(DB_URL + "/users/" + uid + "/level.json", {
-                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
-            });
-        }
-        lastFetch = 0;
-    } catch (e) { }
+    if (kills != null) {
+        fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
+        }).catch(() => {});
+    }
+    if (level != null && level > 0) {
+        fetch(DB_URL + "/users/" + uid + "/level.json", {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
+        }).catch(() => {});
+    }
+    lastFetch = 0; // تصفير الكاش لتحديث المتصدرين لاحقاً
 }
 
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
-    socket.on('join_match', async (data) => {
+    socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
         socket.username = username || 'Commander';
         socket.uid = uid || '';
@@ -329,47 +331,53 @@ io.on('connection', (socket) => {
         });
     });
 
-    socket.on('hit_bot', async (data) => {
+    // 🔴 تعديل جوهري: معالجة كل ضربة للبوت بشكل فوري وتزامني بدون لاغ
+    socket.on('hit_bot', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
 
-        bot.hp -= 1;
+        bot.hp -= 1; // إنقاص الصحة على السيرفر فوراً
 
         if (bot.hp <= 0) {
+            // البوت مات فعلياً
             delete room.bots[data.botId];
             const p = room.players[socket.id];
             if (p) p.kills += 1;
 
+            // إرسال حدث الموت فوراً لجميع اللاعبين في الغرفة
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
                 byName: p ? p.name : '?'
             });
-            io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
+            // تحديث إحصائيات اللاعب في قاعدة البيانات بشكل غير متزامن (خلفية السيرفر) لمنع اللاغ
             if (p && p.uid) {
-                const currentTotal = await fetchUserKills(p.uid);
-                await pushUserStats(p.uid, currentTotal + 1, Math.max(p.level, room.wave));
+                fetchUserKillsAndIncrement(p.uid, (currentTotal) => {
+                    pushUserStatsAsync(p.uid, currentTotal + 1, Math.max(p.level, room.wave));
+                });
             }
 
+            // التحقق من انتهاء الموجة (Wave)
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
                 for (const pid in room.players) {
                     const pl = room.players[pid];
-                    if (pl.level < room.wave) pl.level = room.wave;
-
-                    const currentTotal = await fetchUserKills(pl.uid);
-                    await pushUserStats(pl.uid, currentTotal, pl.level);
+                    if (pl.level < room.wave) {
+                        pl.level = room.wave;
+                        pushUserStatsAsync(pl.uid, null, pl.level);
+                    }
                 }
 
-                await sendLeaderboard(socket.currentRoom);
+                sendLeaderboard(socket.currentRoom);
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
                 spawnWave(socket.currentRoom);
             }
         } else {
+            // البوت لم يمت بعد، قم بمزامنة صحته الجديدة فوراً لجميع اللاعبين لمنع إعادة تعيينها محلياً
             io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
         }
     });
@@ -445,5 +453,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v13.0 running on port ${PORT}`);
+    console.log(`Co-op server v14.0 running on port ${PORT}`);
 });
