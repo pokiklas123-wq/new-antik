@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v15.0 - Ultra Smooth 120/60 FPS
+// Grand3D Co-op Server v15.1 - Fixed Bot Heading
 // =====================================================
 
 if (typeof fetch === 'undefined') {
@@ -22,8 +22,7 @@ const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     pingInterval: 10000,
     pingTimeout: 5000,
-    perMessageDeflate: false, // ✅ أسرع من compression
-    //transports: ['websocket']  // ✅ لا polling = لا تقطيع
+    perMessageDeflate: false,
 });
 
 const PORT = process.env.PORT || 3000;
@@ -35,7 +34,6 @@ const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
-// ✅ 60Hz server tick (16ms) لمزامنة سلسة مع 60/120 FPS
 const SERVER_TICK_MS = 16;
 const SERVER_DT = SERVER_TICK_MS / 1000;
 
@@ -43,19 +41,18 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v15.0 - Ultra Smooth');
+    res.send('Grand3D Co-op Server v15.1 - Fixed Bot Heading');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
-// ✅ دالة سريعة بديلة عن Math.hypot (أسرع 10x)
 function dist2(ax, ay, bx, by) {
     const dx = ax - bx, dy = ay - by;
     return dx * dx + dy * dy;
 }
 
 function botSpeedForWave(wave) {
-    let base = 220; // px/sec
+    let base = 220;
     if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 14;
     else base += BOT_SPEED_WAVE_CAP * 8;
     return Math.min(base, 380);
@@ -119,7 +116,7 @@ function createRoom(mode, startWave) {
     return id;
 }
 
-// ✅ الخوارزمية الجديدة: 60Hz + dist2 + heading smoothing + delta compression
+// ✅✅✅ الدالة المعدلة
 function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -136,7 +133,6 @@ function startBotTick(roomId) {
         }
 
         const islands = r.islands || [];
-        // ✅ خزّن نصف القطر مربعاً لتجنب sqrt
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
             r100sq: (i.radius + 100) * (i.radius + 100)
@@ -149,7 +145,6 @@ function startBotTick(roomId) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
-            // ✅ أقرب لاعب باستخدام dist2
             let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
@@ -167,7 +162,6 @@ function startBotTick(roomId) {
             let nx = bot.x + dirX * speed;
             let ny = bot.y + dirY * speed;
 
-            // ✅ فحص التصادم
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
                 if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -178,7 +172,6 @@ function startBotTick(roomId) {
             if (!blocked) {
                 bot.x = nx; bot.y = ny;
             } else {
-                // ✅ حركة انزلاقية (slide) على الجانب
                 const perpX = -dirY, perpY = dirX;
                 const tX = bot.x + perpX * speed;
                 const tY = bot.y + perpY * speed;
@@ -191,7 +184,6 @@ function startBotTick(roomId) {
                 }
                 if (!b2) { bot.x = tX; bot.y = tY; }
                 else {
-                    // ✅ ابتعاد عن أقرب جزيرة
                     let nearest = null, nd = Infinity;
                     for (let i = 0; i < islData.length; i++) {
                         const d = dist2(bot.x, bot.y, islData[i].x, islData[i].y);
@@ -207,23 +199,25 @@ function startBotTick(roomId) {
                 }
             }
 
-            // ✅ Clamp سريع
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN;
             else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN;
             else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            // ✅ Smooth rotation (بدون قفزات)
+            // ✅✅✅✅ التعديل #1: heading فوري من أول tick
             const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
-            if (bot.heading === undefined) bot.heading = targetHeading;
-            else {
+
+            // ✅✅✅✅ التعديل #2: أول tick → heading = target مباشرة (لا smoothing)
+            if (bot.heading === undefined || bot.heading === null || bot.heading === 0) {
+                bot.heading = targetHeading;
+            } else {
                 let diff = targetHeading - bot.heading;
                 while (diff > 180) diff -= 360;
                 while (diff < -180) diff += 360;
-                bot.heading += diff * 0.15; // ✅ smooth
+                // ✅✅✅✅ التعديل #3: smoothing أسرع (0.35 بدل 0.15)
+                bot.heading += diff * 0.35;
             }
 
-            // ✅ إطلاق النار
             bot.fireTimer = (bot.fireTimer || 0) + SERVER_DT;
             if (bot.fireTimer > 2.0 && closestD2 < 1800 * 1800) {
                 bot.fireTimer = 0;
@@ -234,12 +228,12 @@ function startBotTick(roomId) {
                 });
             }
 
-            // ✅ تقليل دقة الإحداثيات = payload أصغر
+            // ✅✅✅✅ التعديل #4: إرسال heading بدون round
             botsPayload.push({
                 id: bot.id,
                 x: Math.round(bot.x * 10) / 10,
                 y: Math.round(bot.y * 10) / 10,
-                h: Math.round(bot.heading),
+                h: bot.heading,   // ← بدون Math.round
                 hp: bot.hp
             });
         }
@@ -265,7 +259,7 @@ function spawnWave(roomId) {
         const id = room.botIdCounter++;
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
-            heading: rnd(0, 360),
+            heading: 0,          // ✅✅✅✅ التعديل #5: 0 بدل rnd(0,360)
             hp: hpVal,
             fireTimer: 0
         };
@@ -561,6 +555,6 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v15.0 (60Hz) running on port ${PORT}`);
+    console.log(`🚀 Co-op server v15.1 (60Hz) running on port ${PORT}`);
     console.log(`📦 Node: ${process.version}`);
 });
