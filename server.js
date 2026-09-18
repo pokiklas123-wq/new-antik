@@ -23,7 +23,7 @@ const io = new Server(server, {
     pingInterval: 10000,
     pingTimeout: 5000,
     perMessageDeflate: false, // ✅ أسرع من compression
-    transports: ['websocket']  // ✅ لا polling = لا تقطيع
+    //transports: ['websocket']  // ✅ لا polling = لا تقطيع
 });
 
 const PORT = process.env.PORT || 3000;
