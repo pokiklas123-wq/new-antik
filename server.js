@@ -42,7 +42,7 @@ app.get('/', (req, res) => {
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
-    let base = 8.0;
+    let base = 12.0;
     if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.8;
     else base += BOT_SPEED_WAVE_CAP * 0.8;
     return base;
@@ -193,7 +193,7 @@ function startBotTick(roomId) {
             id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
         }));
         io.to(roomId).emit('bots_update', botsPayload);
-    }, 100);
+    }, 20);
 }
 
 function spawnWave(roomId) {
