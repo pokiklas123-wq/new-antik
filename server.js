@@ -21,14 +21,16 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v12.0');
+    res.send('Grand3D Co-op Server v13.0 - Optimized Bots & Sync');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
-    if (wave <= BOT_SPEED_WAVE_CAP) return 1.5 + wave * 0.4;
-    return 1.5 + BOT_SPEED_WAVE_CAP * 0.4;
+    let base = 8.0;
+    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.8;
+    else base += BOT_SPEED_WAVE_CAP * 0.8;
+    return base;
 }
 
 function botHPForWave(wave) {
@@ -73,19 +75,19 @@ function findOpenRoom(mode) {
     return null;
 }
 
-function createRoom(mode) {
+function createRoom(mode, startWave) {
     const id = `${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++}`;
     rooms[id] = {
         id, mode,
         players: {},
-        wave: 1,
+        wave: Math.max(1, startWave || 1),
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
         islands: []
     };
     startBotTick(id);
-    console.log(`Room created: ${id} (${mode})`);
+    console.log(`Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -118,7 +120,7 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.hypot(dx, dy) || 1;
-            const step = speed * 0.7;
+            const step = speed;
 
             let nx = bot.x + (dx / len) * step;
             let ny = bot.y + (dy / len) * step;
@@ -143,10 +145,10 @@ function startBotTick(roomId) {
             }
             bot.x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, bot.x));
             bot.y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, bot.y));
-            bot.heading = Math.atan2(dy, dx) * 180 / Math.PI;
+            bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
             bot.fireTimer = (bot.fireTimer || 0) + 0.1;
-            if (bot.fireTimer > 2.0 && closestD < 1200) {
+            if (bot.fireTimer > 2.0 && closestD < 1800) {
                 bot.fireTimer = 0;
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
@@ -237,7 +239,7 @@ async function pushUserStats(uid, kills, level) {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
             });
         }
-        if (level != null) {
+        if (level != null && level > 0) {
             await fetch(DB_URL + "/users/" + uid + "/level.json", {
                 method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
             });
@@ -263,7 +265,7 @@ io.on('connection', (socket) => {
 
         let roomId = findOpenRoom(socket.mode);
         if (!roomId) {
-            roomId = createRoom(socket.mode);
+            roomId = createRoom(socket.mode, socket.startLevel);
             if (islands && Array.isArray(islands)) {
                 rooms[roomId].islands = islands;
             }
@@ -272,6 +274,10 @@ io.on('connection', (socket) => {
         const room = rooms[roomId];
         socket.join(roomId);
         socket.currentRoom = roomId;
+
+        if (socket.startLevel > room.wave) {
+            room.wave = socket.startLevel;
+        }
 
         const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, room.islands);
         room.players[socket.id] = {
@@ -439,5 +445,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v12.0 running on port ${PORT}`);
+    console.log(`Co-op server v13.0 running on port ${PORT}`);
 });
