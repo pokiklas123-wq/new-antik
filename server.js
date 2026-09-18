@@ -13,7 +13,7 @@ const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
 const BOT_SPEED_WAVE_CAP = 20;
-const WORLD_SIZE = 6000;
+const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
@@ -41,7 +41,6 @@ function botCountForWave(wave) {
     return Math.min(3 + wave * 2, 40);
 }
 
-// توليد بعيد عن الجزر عبر فحص تداخل بسيط
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     for (let attempt = 0; attempt < 30; attempt++) {
         const a = Math.random() * Math.PI * 2;
@@ -51,7 +50,6 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
         x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
         y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
 
-        // افحص إذا داخل جزيرة
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
@@ -62,7 +60,6 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
         }
         if (!inside) return { x, y };
     }
-    // فشل → ارجع نقطة بعيدة
     return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
 }
 
@@ -85,7 +82,7 @@ function createRoom(mode) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: [] // ← الجزر تُرسَل من العميل الأول
+        islands: []
     };
     startBotTick(id);
     console.log(`Room created: ${id} (${mode})`);
@@ -126,7 +123,6 @@ function startBotTick(roomId) {
             let nx = bot.x + (dx / len) * step;
             let ny = bot.y + (dy / len) * step;
 
-            // افحص الاصطدام بالجزر
             let blocked = false;
             for (const isl of r.islands) {
                 if (Math.hypot(nx - isl.x, ny - isl.y) < isl.radius + 100) {
@@ -136,7 +132,6 @@ function startBotTick(roomId) {
             if (!blocked) {
                 bot.x = nx; bot.y = ny;
             } else {
-                // التفاف بسيط
                 const perp = Math.atan2(dy, dx) + Math.PI / 2;
                 const tX = bot.x + Math.cos(perp) * step;
                 const tY = bot.y + Math.sin(perp) * step;
@@ -195,7 +190,6 @@ function spawnWave(roomId) {
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
 
-// ============ Firebase ============
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 5000;
@@ -252,7 +246,6 @@ async function pushUserStats(uid, kills, level) {
     } catch (e) { }
 }
 
-// ============ Socket ============
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -271,7 +264,6 @@ io.on('connection', (socket) => {
         let roomId = findOpenRoom(socket.mode);
         if (!roomId) {
             roomId = createRoom(socket.mode);
-            // أول لاعب → نضع الجزر
             if (islands && Array.isArray(islands)) {
                 rooms[roomId].islands = islands;
             }
@@ -351,28 +343,20 @@ io.on('connection', (socket) => {
             });
             io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
-            // إذا انتهت الموجة → ابدأ الجديدة وحدّث الجميع
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
-                // ★ حفظ القتلات والمستوى لكل لاعب في Firebase
                 for (const pid in room.players) {
                     const pl = room.players[pid];
-                    // نحفظ الـ level على أنه أعلى wave وصل لها الفريق
                     if (pl.level < room.wave) pl.level = room.wave;
 
-                    // نجلب total_kills الحالي ثم نضيف kills هذه الجلسة
                     const currentTotal = await fetchUserKills(pl.uid);
                     const newTotal = currentTotal + pl.kills;
                     await pushUserStats(pl.uid, newTotal, pl.level);
                 }
 
-                // ★ بث المتصدرين المحدّثين للجميع
                 await sendLeaderboard(socket.currentRoom);
-
-                // ★ بث إشارة رفع المستوى للاعبين
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
-
                 spawnWave(socket.currentRoom);
             }
         } else {
