@@ -1,3 +1,7 @@
+// =====================================================
+// Grand3D Co-op Server v14.2 - Far Spawn + Wave-end Stats + Full Heal
+// =====================================================
+
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -19,18 +23,21 @@ const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
-const TICK_MS = 50;   // ✅ نفس v14.0 الذي يعمل
+const TICK_MS = 50;
+
+// ✅ نطاق ظهور البوتات — بعيد جداً عن اللاعب
+const BOT_SPAWN_MIN_DIST = 3500;
+const BOT_SPAWN_MAX_DIST = 6000;
 
 let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.1');
+    res.send('Grand3D Co-op Server v14.2');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
-// ✅ تحسين: dist2 بدل Math.hypot
 function dist2(ax, ay, bx, by) {
     const dx = ax - bx, dy = ay - by;
     return dx * dx + dy * dy;
@@ -54,7 +61,7 @@ function botCountForWave(wave) {
 }
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 40; attempt++) {
         const a = Math.random() * Math.PI * 2;
         const d = rnd(minD, maxD);
         let x = cx + Math.cos(a) * d;
@@ -101,7 +108,6 @@ function createRoom(mode, startWave) {
     return id;
 }
 
-// ✅ نفس منطق v14.0 تماماً — فقط dist2 بدل Math.hypot
 function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -171,7 +177,6 @@ function startBotTick(roomId) {
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN;
             else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            // ✅ نفس v14.0 بالضبط — لا smoothing، لا تغييرات
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
             bot.fireTimer = (bot.fireTimer || 0) + 0.1;
@@ -192,6 +197,7 @@ function startBotTick(roomId) {
     }, TICK_MS);
 }
 
+// ✅ spawnWave: بوتات بعيدة جداً
 function spawnWave(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -200,12 +206,19 @@ function spawnWave(roomId) {
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
-    const first = Object.values(room.players)[0];
-    const cx = first ? first.x : WORLD_SIZE / 2;
-    const cy = first ? first.y : WORLD_SIZE / 2;
+    // متوسط موقع كل اللاعبين
+    let cx = 0, cy = 0, n = 0;
+    for (const pid in room.players) {
+        cx += room.players[pid].x;
+        cy += room.players[pid].y;
+        n++;
+    }
+    if (n > 0) { cx /= n; cy /= n; }
+    else { cx = WORLD_SIZE / 2; cy = WORLD_SIZE / 2; }
 
     for (let i = 0; i < count; i++) {
-        const sp = randomSpawnNearSafe(cx, cy, 1500, 3000, room.islands || []);
+        // ✅ 3500 - 6000 وحدة بعيداً
+        const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
@@ -215,10 +228,12 @@ function spawnWave(roomId) {
         };
     }
 
+    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots spawned FAR (3.5k-6k)`);
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
 
+// ============= Firebase =============
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 10000;
@@ -249,7 +264,7 @@ function sendLeaderboard(roomId) {
     }).catch(() => {});
 }
 
-function fetchUserKillsAndIncrement(uid, callback) {
+function fetchUserKills(uid, callback) {
     if (!uid) return callback(0);
     fetch(DB_URL + "/users/" + uid + "/total_kills.json")
         .then(res => res.json())
@@ -275,6 +290,28 @@ function pushUserStatsAsync(uid, kills, level) {
     lastFetch = 0;
 }
 
+// ✅ دالة موحدة: عند نهاية الموجة تُرسل كل الإحصائيات مرة واحدة
+function flushWaveStats(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    for (const pid in room.players) {
+        const pl = room.players[pid];
+        if (!pl.uid) continue;
+
+        // جلب القتلات القديمة + إضافة قتلات هذه الموجة
+        fetchUserKills(pl.uid, (oldKills) => {
+            const newTotal = oldKills + (pl.kills || 0);
+            pushUserStatsAsync(pl.uid, newTotal, pl.level);
+            // تصفير قتلات الموجة بعد ما راحت لفيرباس
+            pl.kills = 0;
+            console.log(`💾 Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
+        });
+    }
+
+    sendLeaderboard(roomId);
+}
+
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -297,7 +334,6 @@ io.on('connection', (socket) => {
 
         const room = rooms[roomId];
 
-        // ✅ التعديل الوحيد: حدّث islands دائماً
         if (islands && Array.isArray(islands) && islands.length > 0) {
             room.islands = islands;
         }
@@ -309,12 +345,26 @@ io.on('connection', (socket) => {
             room.wave = socket.startLevel;
         }
 
-        const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, room.islands || []);
+        // ✅ لاعب جديد يظهر بعيد عن البوتات قدر الإمكان
+        let sx = WORLD_SIZE / 2, sy = WORLD_SIZE / 2;
+        let bestDist = -1;
+        for (let attempt = 0; attempt < 40; attempt++) {
+            const cand = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1500, room.islands || []);
+            let minD = Infinity;
+            for (const bid in room.bots) {
+                const b = room.bots[bid];
+                const d = dist2(cand.x, cand.y, b.x, b.y);
+                if (d < minD) minD = d;
+            }
+            if (minD > bestDist) { bestDist = minD; sx = cand.x; sy = cand.y; }
+            if (bestDist > 4000 * 4000) break;
+        }
+
         room.players[socket.id] = {
             id: socket.id,
             name: socket.username,
             uid: socket.uid,
-            x: sp.x, y: sp.y, heading: 0,
+            x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
             level: socket.startLevel
@@ -323,7 +373,7 @@ io.on('connection', (socket) => {
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
-            spawnX: sp.x, spawnY: sp.y, spawnHeading: 0,
+            spawnX: sx, spawnY: sy, spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
@@ -337,7 +387,7 @@ io.on('connection', (socket) => {
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username, x: sp.x, y: sp.y, heading: 0
+            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0
         });
 
         socket.emit('bots_update', Object.values(room.bots));
@@ -359,6 +409,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ✅ hit_bot: لا Firebase هنا — فقط زيادة العداد المحلي
     socket.on('hit_bot', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
@@ -370,7 +421,7 @@ io.on('connection', (socket) => {
         if (bot.hp <= 0) {
             delete room.bots[data.botId];
             const p = room.players[socket.id];
-            if (p) p.kills += 1;
+            if (p) p.kills += 1;   // ← يُحفظ في الذاكرة فقط
 
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
@@ -378,25 +429,26 @@ io.on('connection', (socket) => {
                 byName: p ? p.name : '?'
             });
 
-            if (p && p.uid) {
-                fetchUserKillsAndIncrement(p.uid, (currentTotal) => {
-                    pushUserStatsAsync(p.uid, currentTotal + 1, Math.max(p.level, room.wave));
-                });
-            }
-
+            // ✅ نهاية الموجة
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
+                // ✅ دفع الإحصائيات لفيرباس مرة واحدة + زيادة المستوى + استرجاع HP
                 for (const pid in room.players) {
                     const pl = room.players[pid];
-                    if (pl.level < room.wave) {
-                        pl.level = room.wave;
-                        pushUserStatsAsync(pl.uid, null, pl.level);
-                    }
+                    if (pl.level < room.wave) pl.level = room.wave;
+                    pl.hp = 100;   // ← استرجاع كامل للـ HP
                 }
 
-                sendLeaderboard(socket.currentRoom);
+                flushWaveStats(socket.currentRoom);
+
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
+
+                // إبلاغ اللاعبين باسترجاع HP
+                for (const pid in room.players) {
+                    io.to(pid).emit('hp_update', { hp: 100 });
+                }
+
                 spawnWave(socket.currentRoom);
             }
         } else {
@@ -421,6 +473,8 @@ io.on('connection', (socket) => {
                 if (!r) return;
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
                 if (allDead && Object.keys(r.players).length > 0) {
+                    // ✅ كل الفريق مات — ادفع الإحصائيات قبل الإنهاء
+                    flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
                     endRoom(roomIdAtDeath);
                     return;
@@ -476,5 +530,8 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v14.1 running on port ${PORT}`);
+    console.log(`🚀 Co-op server v14.2 running on port ${PORT}`);
+    console.log(`👁️  Bots spawn FAR: ${BOT_SPAWN_MIN_DIST}-${BOT_SPAWN_MAX_DIST} units away`);
+    console.log(`💾 Stats saved only at wave end`);
+    console.log(`❤️  Full HP restore each wave`);
 });
