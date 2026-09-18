@@ -440,3 +440,4 @@ setInterval(() => {
 
 server.listen(PORT, () => {
     console.log(`Co-op server v12.0 running on port ${PORT}`);
+});
