@@ -21,7 +21,7 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.0 - High Performance Sync & Instant Bot Death');
+    res.send('Grand3D Co-op Server v14.1 - Enhanced Spawn Distancing');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -30,7 +30,7 @@ function botSpeedForWave(wave) {
     let base = 12.0;
     if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.6;
     else base += BOT_SPEED_WAVE_CAP * 0.4;
-    return Math.min(base, 20.0); // تحديد حد أقصى لسرعة البوتات لمنع التقطيع
+    return Math.min(base, 20.0);
 }
 
 function botHPForWave(wave) {
@@ -43,26 +43,35 @@ function botCountForWave(wave) {
     return Math.min(3 + wave * 2, 40);
 }
 
+/**
+ * دالة محسنة للرسبنة تضمن البعد عن المركز أو الهدف المحدد
+ */
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < 50; attempt++) {
         const a = Math.random() * Math.PI * 2;
         const d = rnd(minD, maxD);
         let x = cx + Math.cos(a) * d;
         let y = cy + Math.sin(a) * d;
+        
+        // التأكد من البقاء داخل حدود العالم
         x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
         y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
 
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
-                if (Math.hypot(x - isl.x, y - isl.y) < isl.radius + 250) {
+                if (Math.hypot(x - isl.x, y - isl.y) < isl.radius + 300) {
                     inside = true; break;
                 }
             }
         }
-        if (!inside) return { x, y };
+        
+        // التأكد من أن المسافة الفعلية بعد الـ Clamping لا تزال كافية
+        const actualDist = Math.hypot(x - cx, y - cy);
+        if (!inside && actualDist >= minD * 0.8) return { x, y };
     }
-    return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+    // في حال فشل المحاولات، نختار زاوية بعيدة جداً
+    return { x: WORLD_MIN + 100, y: WORLD_MAX - 100 };
 }
 
 function findOpenRoom(mode) {
@@ -165,6 +174,9 @@ function startBotTick(roomId) {
     }, 50);
 }
 
+/**
+ * تعديل رسبنة الموجات لتكون أبعد عن اللاعبين
+ */
 function spawnWave(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -173,12 +185,23 @@ function spawnWave(roomId) {
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
-    const first = Object.values(room.players)[0];
-    const cx = first ? first.x : WORLD_SIZE / 2;
-    const cy = first ? first.y : WORLD_SIZE / 2;
+    // حساب متوسط موقع اللاعبين لرسبنة البوتات بعيداً عنهم جميعاً
+    const players = Object.values(room.players).filter(p => p.hp > 0);
+    let cx = WORLD_SIZE / 2;
+    let cy = WORLD_SIZE / 2;
+    
+    if (players.length > 0) {
+        cx = players.reduce((sum, p) => sum + p.x, 0) / players.length;
+        cy = players.reduce((sum, p) => sum + p.y, 0) / players.length;
+    }
+
+    // زيادة المسافة بناءً على رقم الموجة (كلما زادت الموجة زاد البعد الابتدائي)
+    // المسافة الدنيا تبدأ من 3500 وتصل إلى 5000
+    const dynamicMinDist = Math.min(3500 + (room.wave * 50), 5500);
+    const dynamicMaxDist = Math.min(5000 + (room.wave * 100), 8500);
 
     for (let i = 0; i < count; i++) {
-        const sp = randomSpawnNearSafe(cx, cy, 1500, 3000, room.islands);
+        const sp = randomSpawnNearSafe(cx, cy, dynamicMinDist, dynamicMaxDist, room.islands);
         const id = room.botIdCounter++;
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
@@ -194,7 +217,7 @@ function spawnWave(roomId) {
 
 let cachedLeaderboard = [];
 let lastFetch = 0;
-const CACHE_MS = 10000; // زيادة الكاش لتقليل الضغط على السيرفر
+const CACHE_MS = 10000;
 
 async function fetchLeaderboard() {
     const now = Date.now();
@@ -222,7 +245,6 @@ function sendLeaderboard(roomId) {
     }).catch(() => {});
 }
 
-// دالة جلب غير حاصرة (Non-blocking)
 function fetchUserKillsAndIncrement(uid, callback) {
     if (!uid) return callback(0);
     fetch(DB_URL + "/users/" + uid + "/total_kills.json")
@@ -234,7 +256,6 @@ function fetchUserKillsAndIncrement(uid, callback) {
         .catch(() => callback(0));
 }
 
-// دالة دفع البيانات غير الحاصرة (Non-blocking)
 function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
     if (kills != null) {
@@ -247,7 +268,7 @@ function pushUserStatsAsync(uid, kills, level) {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
     }
-    lastFetch = 0; // تصفير الكاش لتحديث المتصدرين لاحقاً
+    lastFetch = 0;
 }
 
 io.on('connection', (socket) => {
@@ -281,7 +302,8 @@ io.on('connection', (socket) => {
             room.wave = socket.startLevel;
         }
 
-        const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, room.islands);
+        // رسبنة المستخدم في مكان أبعد عند الدخول (بين 2500 و 5000 من المركز)
+        const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 2500, 5000, room.islands);
         room.players[socket.id] = {
             id: socket.id,
             name: socket.username,
@@ -331,39 +353,33 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 🔴 تعديل جوهري: معالجة كل ضربة للبوت بشكل فوري وتزامني بدون لاغ
     socket.on('hit_bot', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
 
-        bot.hp -= 1; // إنقاص الصحة على السيرفر فوراً
+        bot.hp -= 1;
 
         if (bot.hp <= 0) {
-            // البوت مات فعلياً
             delete room.bots[data.botId];
             const p = room.players[socket.id];
             if (p) p.kills += 1;
 
-            // إرسال حدث الموت فوراً لجميع اللاعبين في الغرفة
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
                 byName: p ? p.name : '?'
             });
 
-            // تحديث إحصائيات اللاعب في قاعدة البيانات بشكل غير متزامن (خلفية السيرفر) لمنع اللاغ
             if (p && p.uid) {
                 fetchUserKillsAndIncrement(p.uid, (currentTotal) => {
                     pushUserStatsAsync(p.uid, currentTotal + 1, Math.max(p.level, room.wave));
                 });
             }
 
-            // التحقق من انتهاء الموجة (Wave)
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
-
                 for (const pid in room.players) {
                     const pl = room.players[pid];
                     if (pl.level < room.wave) {
@@ -371,13 +387,13 @@ io.on('connection', (socket) => {
                         pushUserStatsAsync(pl.uid, null, pl.level);
                     }
                 }
-
                 sendLeaderboard(socket.currentRoom);
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
+                
+                // رسبنة الموجة الجديدة بعيداً عن اللاعبين
                 spawnWave(socket.currentRoom);
             }
         } else {
-            // البوت لم يمت بعد، قم بمزامنة صحته الجديدة فوراً لجميع اللاعبين لمنع إعادة تعيينها محلياً
             io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
         }
     });
@@ -403,7 +419,8 @@ io.on('connection', (socket) => {
                     return;
                 }
                 if (r.players[socket.id]) {
-                    const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands);
+                    // رسبنة اللاعب عند الموت في مكان أبعد (بين 3000 و 5500 من المركز)
+                    const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 3000, 5500, r.islands);
                     r.players[socket.id].x = sp.x;
                     r.players[socket.id].y = sp.y;
                     r.players[socket.id].hp = 100;
@@ -453,5 +470,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v14.0 running on port ${PORT}`);
+    console.log(`Co-op server v14.1 running on port ${PORT}`);
 });
