@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v16.0 - Clean Reconnection
+// Grand3D Co-op Server v17.0 - Sleeping Players Solution
 // =====================================================
 
 const express = require('express');
@@ -27,14 +27,14 @@ const TICK_MS = 50;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
-// ✅ مهلة reconnection
-const RECONNECT_GRACE_MS = 90000;
+// ✅ مهلة إعادة الاتصال — 2 دقيقة
+const RECONNECT_GRACE_MS = 120000;
 
 let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v16.0');
+    res.send('Grand3D Co-op Server v17.0');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -83,69 +83,21 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
 }
 
-// ✅ تنظيف: احذف المنقطعين + احذف البوتات إذا لا يوجد لاعبون نشطون
-function cleanupRoom(room) {
-    if (!room) return;
-
-    // 1️⃣ احذف المنقطعين المنتهية مدتهم
-    if (room.disconnectedPlayers) {
-        const now = Date.now();
-        for (const uid in room.disconnectedPlayers) {
-            const dp = room.disconnectedPlayers[uid];
-            if (now - dp.disconnectedAt > RECONNECT_GRACE_MS) {
-                console.log(`⏰ Expired: ${dp.name} in ${room.id}`);
-                delete room.disconnectedPlayers[uid];
-            }
-        }
-    }
-
-    // 2️⃣ إذا لا يوجد لاعبون نشطون → احذف البوتات فوراً
-    const activeCount = Object.keys(room.players).length;
-    if (activeCount === 0) {
-        if (Object.keys(room.bots).length > 0) {
-            console.log(`🧹 [${room.id}] No active players → clearing ${Object.keys(room.bots).length} bots`);
-            room.bots = {};
-        }
-    }
+// ✅ احسب اللاعبين النشطين (غير مقطوعين)
+function getActivePlayers(room) {
+    return Object.values(room.players).filter(p => !p.disconnected);
 }
 
-// ✅ ابحث عن غرفة للانضمام (فقط غرف بها لاعبون نشطون!)
 function findOpenRoom(mode) {
     for (const id in rooms) {
         const r = rooms[id];
         if (r.mode !== mode) continue;
 
-        cleanupRoom(r);
-
-        const activeCount = Object.keys(r.players).length;
-
-        // ✅ لا تنضم لغرفة فارغة (حتى لو بها منقطعون)
+        const activeCount = getActivePlayers(r).length;
         if (activeCount === 0) continue;
-
-        // ✅ لا تنضم لغرفة ممتلئة
         if (activeCount >= MAX_PLAYERS_4V) continue;
 
         return id;
-    }
-    return null;
-}
-
-// ✅ ابحث عن غرفة اللاعب المنقطع — لكن تأكد أن الغرفة بها لاعبون نشطون!
-function findReconnectRoom(uid) {
-    if (!uid) return null;
-    for (const id in rooms) {
-        const r = rooms[id];
-        cleanupRoom(r);
-        if (r.disconnectedPlayers && r.disconnectedPlayers[uid]) {
-            // ✅ فقط إذا يوجد لاعبون نشطون
-            if (Object.keys(r.players).length > 0) {
-                return r;
-            } else {
-                // ❌ لا يوجد لاعبون نشطون → احذف اللاعب من الانتظار
-                console.log(`❌ No active players in ${r.id} — removing ${r.disconnectedPlayers[uid].name}`);
-                delete r.disconnectedPlayers[uid];
-            }
-        }
     }
     return null;
 }
@@ -155,7 +107,6 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        disconnectedPlayers: {},
         wave: Math.max(1, startWave || 1),
         bots: {},
         botIdCounter: 1,
@@ -175,22 +126,12 @@ function startBotTick(roomId) {
         const r = rooms[roomId];
         if (!r) return;
 
-        cleanupRoom(r);
+        // ✅ اللاعبون النشطون فقط (غير مقطوعين + hp > 0)
+        const activePlayers = getActivePlayers(r).filter(p => p.hp > 0);
 
-        // ✅ إذا لا يوجد لاعبون نشطون → لا تحرك البوتات
-        const activeCount = Object.keys(r.players).length;
-        if (activeCount === 0) {
-            if (Object.keys(r.bots).length > 0) {
-                r.bots = {};
-                io.to(roomId).emit('bots_update', []);
-            }
-            return;
-        }
-
-        const playersList = Object.values(r.players).filter(p => p.hp > 0);
-        if (playersList.length === 0) {
-            // ✅ كل اللاعبين ميتون → اجمد البوتات (لا تحرك)
-            io.to(roomId).emit('bots_update', []);
+        if (activePlayers.length === 0) {
+            // ✅ لا يوجد لاعبون نشطون → البوتات ثابتة في مكانها (لا تحذف، لا تحرك)
+            // لا ترسل شيئاً — البوتات متوقفة عند العميل
             return;
         }
 
@@ -205,8 +146,8 @@ function startBotTick(roomId) {
             if (bot.hp <= 0) continue;
 
             let closest = null, closestD2 = Infinity;
-            for (let i = 0; i < playersList.length; i++) {
-                const p = playersList[i];
+            for (let i = 0; i < activePlayers.length; i++) {
+                const p = activePlayers[i];
                 const d2 = dist2(p.x, p.y, bot.x, bot.y);
                 if (d2 < closestD2) { closestD2 = d2; closest = p; }
             }
@@ -272,8 +213,8 @@ function spawnWave(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
-    // ✅ لا ت spawn بوتات إذا لا يوجد لاعبون نشطون
-    if (Object.keys(room.players).length === 0) {
+    const activePlayers = getActivePlayers(room);
+    if (activePlayers.length === 0) {
         console.log(`⚠️ [${roomId}] spawnWave skipped: no active players`);
         room.bots = {};
         return;
@@ -283,14 +224,10 @@ function spawnWave(roomId) {
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
-    let cx = 0, cy = 0, n = 0;
-    for (const pid in room.players) {
-        cx += room.players[pid].x;
-        cy += room.players[pid].y;
-        n++;
-    }
-    if (n > 0) { cx /= n; cy /= n; }
-    else { cx = WORLD_SIZE / 2; cy = WORLD_SIZE / 2; }
+    let cx = 0, cy = 0;
+    for (const p of activePlayers) { cx += p.x; cy += p.y; }
+    cx /= activePlayers.length;
+    cy /= activePlayers.length;
 
     for (let i = 0; i < count; i++) {
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
@@ -383,6 +320,119 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
+// ✅ دالة موحدة لإعادة الاتصال
+function tryReconnect(socket, mode, username, uid, islands) {
+    if (!uid) return false;
+
+    for (const id in rooms) {
+        const r = rooms[id];
+        if (r.mode !== mode) continue;
+
+        // ✅ 1) نفس socket.id موجود ومقطوع
+        const sameSocket = r.players[socket.id];
+        if (sameSocket && sameSocket.disconnected) {
+            sameSocket.disconnected = false;
+            delete sameSocket.disconnectedAt;
+
+            socket.join(id);
+            socket.currentRoom = id;
+
+            console.log(`♻️ SAME-SOCKET reconnect: ${sameSocket.name} → ${id}`);
+
+            socket.emit('match_found', {
+                matchId: id,
+                role: 'Player',
+                spawnX: sameSocket.x, spawnY: sameSocket.y, spawnHeading: sameSocket.heading,
+                opponentId: '',
+                serverId: socket.id,
+                wave: r.wave,
+                mode: mode,
+                islands: r.islands || [],
+                reconnected: true
+            });
+
+            const others = Object.values(r.players)
+                .filter(p => p.id !== socket.id && !p.disconnected)
+                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
+            socket.emit('room_state', { players: others, wave: r.wave });
+
+            socket.emit('bots_update', Object.values(r.bots).map(b => ({
+                id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
+            })));
+
+            socket.emit('hp_update', { hp: sameSocket.hp });
+
+            socket.to(id).emit('player_joined', {
+                id: socket.id, name: sameSocket.name, x: sameSocket.x, y: sameSocket.y, heading: sameSocket.heading
+            });
+
+            sendLeaderboard(id);
+            return true;
+        }
+
+        // ✅ 2) نفس uid موجود لكن socket مختلف
+        for (const pid in r.players) {
+            const p = r.players[pid];
+            if (p.uid === uid && p.disconnected) {
+                const oldX = p.x, oldY = p.y, oldH = p.heading;
+                const oldKills = p.kills || 0;
+                const oldHp = p.hp > 0 ? p.hp : 100;
+                const oldLevel = p.level;
+                const oldName = p.name;
+
+                delete r.players[pid];
+
+                r.players[socket.id] = {
+                    id: socket.id,
+                    name: oldName,
+                    uid: uid,
+                    x: oldX, y: oldY, heading: oldH,
+                    hp: oldHp,
+                    kills: oldKills,
+                    level: oldLevel,
+                    disconnected: false
+                };
+
+                socket.join(id);
+                socket.currentRoom = id;
+
+                console.log(`♻️ NEW-SOCKET reconnect: ${oldName} → ${id}`);
+
+                socket.emit('match_found', {
+                    matchId: id,
+                    role: 'Player',
+                    spawnX: oldX, spawnY: oldY, spawnHeading: oldH,
+                    opponentId: '',
+                    serverId: socket.id,
+                    wave: r.wave,
+                    mode: mode,
+                    islands: r.islands || [],
+                    reconnected: true
+                });
+
+                const others = Object.values(r.players)
+                    .filter(pl => pl.id !== socket.id && !pl.disconnected)
+                    .map(pl => ({ id: pl.id, name: pl.name, x: pl.x, y: pl.y, heading: pl.heading }));
+                socket.emit('room_state', { players: others, wave: r.wave });
+
+                socket.emit('bots_update', Object.values(r.bots).map(b => ({
+                    id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
+                })));
+
+                socket.emit('hp_update', { hp: oldHp });
+
+                socket.to(id).emit('player_joined', {
+                    id: socket.id, name: oldName, x: oldX, y: oldY, heading: oldH
+                });
+
+                sendLeaderboard(id);
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -398,64 +448,12 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ═══════════════════════════════════════════════════════
-        // ✅ أولاً: هل اللاعب عائد من انقطاع؟ (والغرفة بها نشطون!)
-        // ═══════════════════════════════════════════════════════
-        const reconnectRoom = findReconnectRoom(socket.uid);
-        if (reconnectRoom) {
-            const dp = reconnectRoom.disconnectedPlayers[socket.uid];
-            delete reconnectRoom.disconnectedPlayers[socket.uid];
-
-            socket.join(reconnectRoom.id);
-            socket.currentRoom = reconnectRoom.id;
-
-            reconnectRoom.players[socket.id] = {
-                id: socket.id,
-                name: dp.name,
-                uid: dp.uid,
-                x: dp.x, y: dp.y, heading: dp.heading,
-                hp: dp.hp > 0 ? dp.hp : 100,
-                kills: dp.kills || 0,
-                level: dp.level
-            };
-
-            if (islands && Array.isArray(islands) && islands.length > 0) {
-                reconnectRoom.islands = islands;
-            }
-
-            console.log(`🔄 RECONNECT: ${dp.name} → ${reconnectRoom.id}`);
-
-            socket.emit('match_found', {
-                matchId: reconnectRoom.id,
-                role: 'Player',
-                spawnX: dp.x, spawnY: dp.y, spawnHeading: dp.heading,
-                opponentId: '',
-                serverId: socket.id,
-                wave: reconnectRoom.wave,
-                mode: socket.mode,
-                islands: reconnectRoom.islands || [],
-                reconnected: true
-            });
-
-            const existing = Object.values(reconnectRoom.players)
-                .filter(p => p.id !== socket.id)
-                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
-            socket.emit('room_state', { players: existing, wave: reconnectRoom.wave });
-
-            socket.to(reconnectRoom.id).emit('player_joined', {
-                id: socket.id, name: dp.name, x: dp.x, y: dp.y, heading: dp.heading
-            });
-
-            socket.emit('bots_update', Object.values(reconnectRoom.bots));
-            socket.emit('hp_update', { hp: reconnectRoom.players[socket.id].hp });
-
-            sendLeaderboard(reconnectRoom.id);
+        // ✅ 1) حاول إعادة الاتصال أولاً
+        if (tryReconnect(socket, socket.mode, socket.username, socket.uid, islands)) {
             return;
         }
 
-        // ═══════════════════════════════════════════════════════
-        // الطريقة العادية
-        // ═══════════════════════════════════════════════════════
+        // ✅ 2) الطريقة العادية
         let roomId = findOpenRoom(socket.mode);
         if (!roomId) {
             roomId = createRoom(socket.mode, socket.startLevel);
@@ -495,7 +493,8 @@ io.on('connection', (socket) => {
             x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel
+            level: socket.startLevel,
+            disconnected: false
         };
 
         socket.emit('match_found', {
@@ -511,7 +510,7 @@ io.on('connection', (socket) => {
         });
 
         const existing = Object.values(room.players)
-            .filter(p => p.id !== socket.id)
+            .filter(p => p.id !== socket.id && !p.disconnected)
             .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
@@ -532,6 +531,7 @@ io.on('connection', (socket) => {
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.id]) return;
         const p = room.players[socket.id];
+        if (p.disconnected) return;
         p.x = data.x; p.y = data.y; p.heading = data.heading;
         socket.to(socket.currentRoom).emit('player_moved', {
             id: socket.id, x: p.x, y: p.y, heading: p.heading
@@ -595,8 +595,9 @@ io.on('connection', (socket) => {
             setTimeout(() => {
                 const r = rooms[roomIdAtDeath];
                 if (!r) return;
-                const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
-                if (allDead && Object.keys(r.players).length > 0) {
+                const activePs = getActivePlayers(r);
+                const allDead = activePs.every(pl => pl.hp <= 0);
+                if (allDead && activePs.length > 0) {
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
                     endRoom(roomIdAtDeath);
@@ -623,49 +624,23 @@ io.on('connection', (socket) => {
         console.log('▶️ Resumed:', socket.id);
     });
 
+    // ✅ الأهم: عند disconnect — فقط علّم اللاعب كمقطوع
     socket.on('disconnect', () => {
         console.log('🔌 Disconnected:', socket.id);
-        leaveRoomWithGrace(socket);
+        const roomId = socket.currentRoom;
+        if (!roomId) return;
+        const room = rooms[roomId];
+        if (!room) return;
+
+        const player = room.players[socket.id];
+        if (player) {
+            player.disconnected = true;
+            player.disconnectedAt = Date.now();
+            console.log(`💤 ${player.name} sleeping in ${roomId}`);
+        }
+        // ✅ لا تحذفه، فقط علّم
     });
 });
-
-function leaveRoomWithGrace(socket) {
-    const roomId = socket.currentRoom;
-    if (!roomId) return;
-    const room = rooms[roomId];
-    if (!room) return;
-
-    const player = room.players[socket.id];
-    if (player) {
-        room.disconnectedPlayers = room.disconnectedPlayers || {};
-        room.disconnectedPlayers[player.uid] = {
-            ...player,
-            disconnectedAt: Date.now(),
-            oldSocketId: socket.id
-        };
-        console.log(`⏸️ ${player.name} → grace in ${roomId}`);
-    }
-
-    delete room.players[socket.id];
-    io.to(roomId).emit('player_left', { id: socket.id });
-    socket.leave(roomId);
-    socket.currentRoom = null;
-
-    // ✅ إذا الغرفة فارغة تماماً (لا نشطين) → احذفها فوراً
-    if (Object.keys(room.players).length === 0) {
-        // ⚠️ لكن احتفظ بالغرفة مؤقتاً إذا بها منقطعون
-        const hasDisconnected = room.disconnectedPlayers && Object.keys(room.disconnectedPlayers).length > 0;
-        if (!hasDisconnected) {
-            endRoom(roomId);
-        }
-        // ✅ إذا بها منقطعون → نظّف البوتات فقط
-        else {
-            room.bots = {};
-            io.to(roomId).emit('bots_update', []);
-            console.log(`🧹 [${roomId}] Empty but has disconnected — bots cleared`);
-        }
-    }
-}
 
 function endRoom(roomId) {
     const room = rooms[roomId];
@@ -675,24 +650,30 @@ function endRoom(roomId) {
     console.log('🛑 Room ended:', roomId);
 }
 
-// ✅ تنظيف دوري شامل
+// ✅ تنظيف دوري: احذف المنقطعين المنتهية مدتهم + الغرف الفارغة
 setInterval(() => {
+    const now = Date.now();
     for (const id in rooms) {
         const r = rooms[id];
-        cleanupRoom(r);
 
-        const hasActive = Object.keys(r.players).length > 0;
-        const hasDisconnected = r.disconnectedPlayers && Object.keys(r.disconnectedPlayers).length > 0;
+        // احذف المنقطعين المنتهية مدتهم
+        for (const pid in r.players) {
+            const p = r.players[pid];
+            if (p.disconnected && now - p.disconnectedAt > RECONNECT_GRACE_MS) {
+                console.log(`⏰ Expired: ${p.name} from ${id}`);
+                delete r.players[pid];
+            }
+        }
 
-        // ✅ احذف الغرفة فقط إذا فارغة تماماً
-        if (!hasActive && !hasDisconnected) {
+        // احذف الغرفة إذا فارغة تماماً
+        if (Object.keys(r.players).length === 0) {
             endRoom(id);
         }
     }
 }, 15000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v16.0 running on port ${PORT}`);
-    console.log(`🔄 Reconnect grace: ${RECONNECT_GRACE_MS / 1000}s`);
-    console.log(`🧹 Bot cleanup on empty room: ENABLED`);
+    console.log(`🚀 Co-op server v17.0 running on port ${PORT}`);
+    console.log(`💤 Reconnect grace: ${RECONNECT_GRACE_MS / 1000}s`);
+    console.log(`✅ Sleeping players solution enabled`);
 });
