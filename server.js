@@ -28,9 +28,9 @@ function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
     let base = 12.0;
-    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.8;
+    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.6;
     else base += BOT_SPEED_WAVE_CAP * 0.4;
-    return Math.min(base, 25.0); // تحديد حد أقصى لسرعة البوتات لمنع التقطيع
+    return Math.min(base, 20.0); // تحديد حد أقصى لسرعة البوتات لمنع التقطيع
 }
 
 function botHPForWave(wave) {
@@ -162,7 +162,7 @@ function startBotTick(roomId) {
             id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
         }));
         io.to(roomId).emit('bots_update', botsPayload);
-    }, 35);
+    }, 50);
 }
 
 function spawnWave(roomId) {
