@@ -21,16 +21,14 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v13.0 - Optimized Bots & Sync');
+    res.send('Grand3D Co-op Server v14.0 - Balanced & Reconnect Safe');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 
 function botSpeedForWave(wave) {
-    let base = 8.0;
-    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.8;
-    else base += BOT_SPEED_WAVE_CAP * 0.8;
-    return base;
+    let speed = 3.5 + Math.min(wave, BOT_SPEED_WAVE_CAP) * 0.18;
+    return Math.min(speed, 7.2);
 }
 
 function botHPForWave(wave) {
@@ -40,29 +38,35 @@ function botHPForWave(wave) {
 }
 
 function botCountForWave(wave) {
-    return Math.min(3 + wave * 2, 40);
+    return Math.min(3 + wave * 2, 35);
 }
 
-function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
-    for (let attempt = 0; attempt < 30; attempt++) {
-        const a = Math.random() * Math.PI * 2;
-        const d = rnd(minD, maxD);
-        let x = cx + Math.cos(a) * d;
-        let y = cy + Math.sin(a) * d;
-        x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
-        y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
-
+function randomSpawnFarFromBots(islands, bots) {
+    let bestX = WORLD_SIZE / 2, bestY = WORLD_SIZE / 2;
+    let maxMinDist = -1;
+    const botList = Object.values(bots || {});
+    for (let attempt = 0; attempt < 50; attempt++) {
+        let x = rnd(WORLD_MIN, WORLD_MAX);
+        let y = rnd(WORLD_MIN, WORLD_MAX);
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
-                if (Math.hypot(x - isl.x, y - isl.y) < isl.radius + 250) {
-                    inside = true; break;
-                }
+                if (Math.hypot(x - isl.x, y - isl.y) < isl.radius + 300) { inside = true; break; }
             }
         }
-        if (!inside) return { x, y };
+        if (inside) continue;
+        let minBotD = Infinity;
+        for (const b of botList) {
+            let d = Math.hypot(x - b.x, y - b.y);
+            if (d < minBotD) minBotD = d;
+        }
+        if (botList.length === 0) minBotD = 3000;
+        if (minBotD > maxMinDist) {
+            maxMinDist = minBotD;
+            bestX = x; bestY = y;
+        }
     }
-    return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
+    return { x: bestX, y: bestY };
 }
 
 function findOpenRoom(mode) {
@@ -99,7 +103,7 @@ function startBotTick(roomId) {
         if (!r) return;
         if (Object.keys(r.players).length === 0) return;
 
-        const playersList = Object.values(r.players).filter(p => p.hp > 0);
+        const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online !== false);
         if (playersList.length === 0) {
             io.to(roomId).emit('bots_update', []);
             return;
@@ -148,7 +152,7 @@ function startBotTick(roomId) {
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
             bot.fireTimer = (bot.fireTimer || 0) + 0.1;
-            if (bot.fireTimer > 2.0 && closestD < 1800) {
+            if (bot.fireTimer > 2.5 && closestD < 1600) {
                 bot.fireTimer = 0;
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
@@ -173,12 +177,8 @@ function spawnWave(roomId) {
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
-    const first = Object.values(room.players)[0];
-    const cx = first ? first.x : WORLD_SIZE / 2;
-    const cy = first ? first.y : WORLD_SIZE / 2;
-
     for (let i = 0; i < count; i++) {
-        const sp = randomSpawnNearSafe(cx, cy, 1500, 3000, room.islands);
+        const sp = randomSpawnFarFromBots(room.islands, room.bots);
         const id = room.botIdCounter++;
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
@@ -279,7 +279,7 @@ io.on('connection', (socket) => {
             room.wave = socket.startLevel;
         }
 
-        const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, room.islands);
+        const sp = randomSpawnFarFromBots(room.islands, room.bots);
         room.players[socket.id] = {
             id: socket.id,
             name: socket.username,
@@ -287,7 +287,8 @@ io.on('connection', (socket) => {
             x: sp.x, y: sp.y, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel
+            level: socket.startLevel,
+            online: true
         };
 
         socket.emit('match_found', {
@@ -395,7 +396,7 @@ io.on('connection', (socket) => {
                     return;
                 }
                 if (r.players[socket.id]) {
-                    const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands);
+                    const sp = randomSpawnFarFromBots(r.islands, r.bots);
                     r.players[socket.id].x = sp.x;
                     r.players[socket.id].y = sp.y;
                     r.players[socket.id].hp = 100;
@@ -410,6 +411,10 @@ io.on('connection', (socket) => {
     socket.on('leave_match', () => leaveRoom(socket));
     socket.on('disconnect', () => {
         console.log('Disconnected:', socket.id);
+        const room = rooms[socket.currentRoom];
+        if (room && room.players[socket.id]) {
+            room.players[socket.id].online = false;
+        }
         leaveRoom(socket);
     });
 });
@@ -445,5 +450,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`Co-op server v13.0 running on port ${PORT}`);
+    console.log(`Co-op server v14.0 running on port ${PORT}`);
 });
