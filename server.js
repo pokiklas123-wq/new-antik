@@ -343,6 +343,11 @@ io.on('connection', (socket) => {
             });
             io.to(socket.currentRoom).emit('bots_update', Object.values(room.bots));
 
+            if (p && p.uid) {
+                const currentTotal = await fetchUserKills(p.uid);
+                await pushUserStats(p.uid, currentTotal + 1, Math.max(p.level, room.wave));
+            }
+
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
@@ -351,8 +356,7 @@ io.on('connection', (socket) => {
                     if (pl.level < room.wave) pl.level = room.wave;
 
                     const currentTotal = await fetchUserKills(pl.uid);
-                    const newTotal = currentTotal + pl.kills;
-                    await pushUserStats(pl.uid, newTotal, pl.level);
+                    await pushUserStats(pl.uid, currentTotal, pl.level);
                 }
 
                 await sendLeaderboard(socket.currentRoom);
@@ -436,4 +440,3 @@ setInterval(() => {
 
 server.listen(PORT, () => {
     console.log(`Co-op server v12.0 running on port ${PORT}`);
-});
