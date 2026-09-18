@@ -76,7 +76,7 @@ function findOpenRoom(mode) {
 }
 
 function createRoom(mode, startWave) {
-    const id = ${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++};
+    const id = `${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++}`;
     rooms[id] = {
         id, mode,
         players: {},
@@ -87,7 +87,7 @@ function createRoom(mode, startWave) {
         islands: []
     };
     startBotTick(id);
-    console.log(Room created: ${id} (${mode}) at Wave ${rooms[id].wave});
+    console.log(`Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -453,5 +453,5 @@ setInterval(() => {
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(Co-op server v14.0 running on port ${PORT});
+    console.log(`Co-op server v14.0 running on port ${PORT}`);
 });
