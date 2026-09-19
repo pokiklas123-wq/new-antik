@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v15.0 - Full Cleanup + Offline Death Timer
+// Grand3D Co-op Server v15.2 - Anti-Exploit Level System
 // =====================================================
 
 const express = require('express');
@@ -28,7 +28,6 @@ const TICK_MS = 50;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
-// ✅ الجديد الوحيد: مهلة 60 ثانية قبل قتل offline
 const OFFLINE_DEATH_MS = 60000;
 
 let rooms = {};
@@ -37,7 +36,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v15.0 - Offline Death Timer');
+    res.send('Grand3D Co-op Server v15.2 - Anti-Exploit Level System Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -86,7 +85,6 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
 }
 
-// ✅ دالة موحدة لتنظيف socket
 function cleanSocket(socket) {
     if (!socket) return;
     socket.currentRoom = null;
@@ -120,7 +118,7 @@ function createRoom(mode, startWave) {
         wiped: false
     };
     startBotTick(id);
-    console.log(`Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
+    console.log(`✅ Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -313,8 +311,8 @@ function flushWaveStats(roomId) {
         fetchUserKills(pl.uid, (oldKills) => {
             const newTotal = oldKills + (pl.kills || 0);
             pushUserStatsAsync(pl.uid, newTotal, pl.level);
-            pl.kills = 0;
             console.log(`💾 Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
+            pl.kills = 0;
         });
     }
     sendLeaderboard(roomId);
@@ -372,11 +370,9 @@ io.on('connection', (socket) => {
 
         const player = room.players[uid];
         if (player) {
-            // ✅ ألغِ timer القتل (اللاعب عاد قبل 60 ثانية)
             if (player.deathTimer) {
                 clearTimeout(player.deathTimer);
                 player.deathTimer = null;
-                console.log(`⏱️ Cancelled offline death timer for ${player.name}`);
             }
 
             player.online = true;
@@ -412,11 +408,9 @@ io.on('connection', (socket) => {
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
 
-        // 1) نظّف socket من أي غرفة قديمة
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
             if (oldRoom && socket.uid && oldRoom.players[socket.uid]) {
-                // ✅ ألغِ timer القتل
                 if (oldRoom.players[socket.uid].deathTimer) {
                     clearTimeout(oldRoom.players[socket.uid].deathTimer);
                 }
@@ -430,7 +424,6 @@ io.on('connection', (socket) => {
         }
         cleanSocket(socket);
 
-        // 2) نظّف نفس uid من أي غرفة أخرى
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
@@ -468,10 +461,6 @@ io.on('connection', (socket) => {
 
         socket.join(roomId);
         socket.currentRoom = roomId;
-
-        if (socket.startLevel > room.wave) {
-            room.wave = socket.startLevel;
-        }
 
         let sx = WORLD_SIZE / 2, sy = WORLD_SIZE / 2;
         let bestDist = -1;
@@ -526,6 +515,7 @@ io.on('connection', (socket) => {
         }
 
         sendLeaderboard(roomId);
+        console.log(`👤 ${socket.username} (level=${socket.startLevel}) joined ${roomId} (wave=${room.wave})`);
     });
 
     socket.on('player_moved', (data) => {
@@ -558,15 +548,22 @@ io.on('connection', (socket) => {
             });
 
             if (Object.keys(room.bots).length === 0) {
+                const clearedWave = room.wave;
                 room.wave += 1;
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    if (pl.level < room.wave) pl.level = room.wave;
+                    // ✅ نظام مكافحة الثغرات: يرتفع المستوى فقط إذا كان مستوى اللاعب الحالي أقل من أو يساوي مستوى الموجة التي تم تخطيها
+                    if (pl.level <= clearedWave) {
+                        pl.level += 1;
+                    } else {
+                        console.log(`🛡️ Anti-exploit: ${pl.name} (level ${pl.level}) did not level up in Wave ${clearedWave}`);
+                    }
                     pl.hp = 100;
                 }
 
                 flushWaveStats(socket.currentRoom);
+
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
 
                 for (const uid in room.players) {
@@ -612,7 +609,14 @@ io.on('connection', (socket) => {
                 }
 
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
+
                 if (allDead && Object.keys(r.players).length > 0) {
+                    for (const uid in r.players) {
+                        const pl = r.players[uid];
+                        pl.level = Math.max(1, pl.level - 1);
+                        console.log(`📉 ${pl.name} → level ${pl.level} (team wipe)`);
+                    }
+
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
 
@@ -660,7 +664,6 @@ function leaveRoom(socket, immediate) {
     }
 
     if (immediate) {
-        // ✅ خروج عمدي
         if (player.deathTimer) clearTimeout(player.deathTimer);
         delete room.players[socket.uid];
         io.to(roomId).emit('player_left', { id: socket.id });
@@ -671,30 +674,25 @@ function leaveRoom(socket, immediate) {
             endRoom(roomId);
         }
     } else {
-        // ✅ انقطاع (Home / شبكة)
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
 
         console.log(`💤 ${player.name} offline in ${roomId} — 60s death timer started`);
 
-        // ✅ الجديد الوحيد: timer 60 ثانية
         player.deathTimer = setTimeout(() => {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
 
             const p = r.players[socket.uid];
-            if (!p || p.online) return;   // ← عاد قبل انتهاء المهلة
+            if (!p || p.online) return;
 
             console.log(`⏰ 60s expired for ${p.name} → killing`);
 
-            // ✅ اقتل اللاعب
             p.hp = 0;
             p.deathTimer = null;
 
-            // ✅ أخرجه من الغرفة
             delete r.players[socket.uid];
 
-            // ✅ إذا لم يبقَ أحد → أغلق الغرفة
             if (Object.keys(r.players).length === 0) {
                 console.log(`🛑 No players left in ${roomId} → closing`);
                 flushWaveStats(roomId);
@@ -736,6 +734,6 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v15.0 running on port ${PORT}`);
-    console.log(`⏱️  Offline death timer: 60 seconds`);
+    console.log(`🚀 Co-op server v15.2 running on port ${PORT}`);
+    console.log(`📊 Personal Level System: Anti-Exploit Active`);
 });
