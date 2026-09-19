@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.8 - Anti-Exploit Session Recovery
+// Grand3D Co-op Server v14.9 - Full Cleanup + Anti-Exploit
 // =====================================================
 
 const express = require('express');
@@ -34,7 +34,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.8 - Anti-Exploit Active');
+    res.send('Grand3D Co-op Server v14.9 - Clean Session');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -83,6 +83,16 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     return { x: WORLD_SIZE / 2, y: WORLD_SIZE / 2 };
 }
 
+// ✅ دالة موحدة لتنظيف socket
+function cleanSocket(socket) {
+    if (!socket) return;
+    socket.currentRoom = null;
+    socket.uid = null;
+    socket.username = null;
+    socket.mode = null;
+    socket.startLevel = null;
+}
+
 function findOpenRoom(mode) {
     for (const id in rooms) {
         const r = rooms[id];
@@ -119,7 +129,6 @@ function startBotTick(roomId) {
         const r = rooms[roomId];
         if (!r || r.wiped) return;
 
-        // ✅ البوتات تطارد online فقط (اللاعبون الحاضرون فعلاً)
         const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
             io.to(roomId).emit('bots_update', []);
@@ -308,18 +317,6 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
-// ✅ دالة مساعدة: أنهِ الغرفة مع تسجيل كل من فيها
-function wipeRoomWithLog(roomId) {
-    const room = rooms[roomId];
-    if (!room) return;
-
-    for (const uid in room.players) {
-        wipedRoomsLog.add(uid);
-    }
-
-    endRoom(roomId);
-}
-
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -405,11 +402,34 @@ io.on('connection', (socket) => {
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
 
+        // ═══════════════════════════════════════════════════════
+        // ✅ التنظيف الشامل قبل الانضمام الجديد
+        // ═══════════════════════════════════════════════════════
+
+        // 1) نظّف socket من أي غرفة قديمة يشير إليها
+        if (socket.currentRoom) {
+            const oldRoom = rooms[socket.currentRoom];
+            if (oldRoom && socket.uid && oldRoom.players[socket.uid]) {
+                delete oldRoom.players[socket.uid];
+                io.to(socket.currentRoom).emit('player_left', { id: socket.id });
+                if (Object.keys(oldRoom.players).length === 0) {
+                    endRoom(socket.currentRoom);
+                }
+            }
+            socket.leave(socket.currentRoom);
+        }
+        cleanSocket(socket);
+
+        // 2) نظّف نفس uid من أي غرفة أخرى
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
+                console.log(`🧹 Removing stale player uid=${uid} from ${rId}`);
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: socket.id });
+                if (Object.keys(r.players).length === 0) {
+                    endRoom(rId);
+                }
             }
         }
 
@@ -564,14 +584,10 @@ io.on('connection', (socket) => {
                 const r = rooms[roomIdAtDeath];
                 if (!r || r.wiped) return;
 
-                // ═══════════════════════════════════════════════════════
-                // ✅ Anti-Exploit: إذا مات آخر online → اقتل كل offline
-                // ═══════════════════════════════════════════════════════
                 const onlineAlive = Object.values(r.players)
                     .filter(pl => pl.online && pl.hp > 0);
 
                 if (onlineAlive.length === 0) {
-                    // لا يوجد online حي → كل offline يُقتل
                     for (const uid in r.players) {
                         const pl = r.players[uid];
                         if (pl.hp > 0) {
@@ -581,7 +597,6 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                // تحقق: هل الجميع ميت؟
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
                 if (allDead && Object.keys(r.players).length > 0) {
                     flushWaveStats(roomIdAtDeath);
@@ -595,7 +610,6 @@ io.on('connection', (socket) => {
                     return;
                 }
 
-                // إعادة الإحياء العادي للاعب الذي مات
                 if (r.players[socket.uid]) {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
                     r.players[socket.uid].x = sp.x;
@@ -618,18 +632,25 @@ io.on('connection', (socket) => {
 
 function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
-    if (!roomId) return;
-    const room = rooms[roomId];
-    if (!room) return;
+    const room = roomId ? rooms[roomId] : null;
+
+    // ✅ إذا الغرفة محذوفة أو لا توجد → نظّف socket فقط
+    if (!room) {
+        cleanSocket(socket);
+        return;
+    }
 
     const player = room.players[socket.uid];
-    if (!player) return;
+    if (!player) {
+        cleanSocket(socket);
+        return;
+    }
 
     if (immediate) {
         delete room.players[socket.uid];
         io.to(roomId).emit('player_left', { id: socket.id });
         socket.leave(roomId);
-        socket.currentRoom = null;
+        cleanSocket(socket);
 
         if (Object.keys(room.players).length === 0) {
             endRoom(roomId);
@@ -638,14 +659,11 @@ function leaveRoom(socket, immediate) {
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
 
-        // ═══════════════════════════════════════════════════════
         // ✅ Anti-Exploit: إذا كان آخر online يخرج → اقتل كل offline
-        // ═══════════════════════════════════════════════════════
         const onlineAlive = Object.values(room.players)
             .filter(pl => pl.online && pl.hp > 0);
 
         if (onlineAlive.length === 0) {
-            // لا يوجد online حي → كل من في الغرفة يُقتل ويُسجَّل
             console.log(`⚠️ Last online left ${roomId} → wiping room`);
 
             for (const uid in room.players) {
@@ -660,12 +678,26 @@ function leaveRoom(socket, immediate) {
     }
 }
 
+// ✅ endRoom ينظّف كل sockets المرتبطة بالغرفة
 function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
 
     if (room.botTickInterval) clearInterval(room.botTickInterval);
+
+    // ✅ نظّف كل socket مرتبط بهذه الغرفة
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (!p.id) continue;
+        const s = io.sockets.sockets.get(p.id);
+        if (s) {
+            s.leave(roomId);
+            cleanSocket(s);
+            console.log(`🧹 Cleaned socket ${s.id} (uid=${uid}) from ${roomId}`);
+        }
+    }
+
     delete rooms[roomId];
     console.log('Room ended:', roomId);
 }
@@ -679,6 +711,6 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.8 running on port ${PORT}`);
-    console.log(`🛡️  Anti-Exploit: enabled`);
+    console.log(`🚀 Co-op server v14.9 running on port ${PORT}`);
+    console.log(`🧹 Full cleanup enabled`);
 });
