@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.5 - Stable Session Recovery
+// Grand3D Co-op Server v14.7 - Stable Session Recovery
 // =====================================================
 
 const express = require('express');
@@ -24,7 +24,6 @@ const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
 const TICK_MS = 50;
-const RECONNECT_GRACE_MS = 60000; // مهلة 60 ثانية لاستعادة الجلسة
 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
@@ -32,8 +31,10 @@ const BOT_SPAWN_MAX_DIST = 6000;
 let rooms = {};
 let nextRoomId = 1;
 
+let wipedRoomsLog = new Set();
+
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.5 - Active with Session Recovery');
+    res.send('Grand3D Co-op Server v14.7 - Persistent Session Recovery Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -86,6 +87,7 @@ function findOpenRoom(mode) {
     for (const id in rooms) {
         const r = rooms[id];
         if (r.mode !== mode) continue;
+        if (r.wiped) continue;
         if (mode === '1VBOT' && Object.keys(r.players).length === 0) return id;
         if (mode === '4VBOT' && Object.keys(r.players).length < MAX_PLAYERS_4V) return id;
     }
@@ -101,7 +103,8 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: []
+        islands: [],
+        wiped: false
     };
     startBotTick(id);
     console.log(`Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
@@ -114,7 +117,7 @@ function startBotTick(roomId) {
 
     room.botTickInterval = setInterval(() => {
         const r = rooms[roomId];
-        if (!r) return;
+        if (!r || r.wiped) return;
         
         const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
@@ -198,16 +201,16 @@ function startBotTick(roomId) {
 
 function spawnWave(roomId) {
     const room = rooms[roomId];
-    if (!room) return;
+    if (!room || room.wiped) return;
 
     room.bots = {};
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
     let cx = 0, cy = 0, n = 0;
-    for (const pid in room.players) {
-        cx += room.players[pid].x;
-        cy += room.players[pid].y;
+    for (const uid in room.players) {
+        cx += room.players[uid].x;
+        cy += room.players[uid].y;
         n++;
     }
     if (n > 0) { cx /= n; cy /= n; }
@@ -290,8 +293,8 @@ function flushWaveStats(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
-    for (const pid in room.players) {
-        const pl = room.players[pid];
+    for (const uid in room.players) {
+        const pl = room.players[uid];
         if (!pl.uid) continue;
 
         fetchUserKills(pl.uid, (oldKills) => {
@@ -307,40 +310,57 @@ function flushWaveStats(roomId) {
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
-    // معالجة استعادة الجلسة الذكية
+    socket.on('check_active_session', (data) => {
+        const { uid } = data || {};
+        if (!uid) {
+            socket.emit('no_active_session');
+            return;
+        }
+
+        for (const roomId in rooms) {
+            const room = rooms[roomId];
+            if (room.wiped) continue;
+            
+            const player = room.players[uid];
+            if (player) {
+                const anyAlive = Object.values(room.players).some(p => p.hp > 0);
+                if (anyAlive) {
+                    console.log(`🔍 Active session found for UID: ${uid} in Room: ${roomId}`);
+                    socket.emit('active_session_found', {
+                        roomId: roomId,
+                        wave: room.wave,
+                        hp: player.hp,
+                        x: player.x,
+                        y: player.y,
+                        heading: player.heading,
+                        islands: room.islands
+                    });
+                    return;
+                }
+            }
+        }
+
+        if (wipedRoomsLog.has(uid)) {
+            wipedRoomsLog.delete(uid);
+            socket.emit('previous_team_wipe');
+            return;
+        }
+
+        socket.emit('no_active_session');
+    });
+
     socket.on('reconnect_session', (data) => {
-        const { uid, roomId, x, y, heading } = data || {};
+        const { uid, roomId } = data || {};
         const room = rooms[roomId];
-        if (!room) {
+        if (!room || room.wiped) {
             socket.emit('session_recovery_failed');
             return;
         }
 
-        let oldSocketId = null;
-        let player = null;
-        for (const pid in room.players) {
-            if (room.players[pid].uid === uid) {
-                player = room.players[pid];
-                oldSocketId = pid;
-                break;
-            }
-        }
-
-        // التحقق من الشروط: الغرفة موجودة، اللاعب موجود، وصديقه (أو أي لاعب آخر) لا يزال حياً أو الغرفة نشطة
+        const player = room.players[uid];
         if (player) {
-            if (player.disconnectTimeout) {
-                clearTimeout(player.disconnectTimeout);
-                player.disconnectTimeout = null;
-            }
-
             player.online = true;
             player.id = socket.id;
-            if (x !== undefined) player.x = x;
-            if (y !== undefined) player.y = y;
-            if (heading !== undefined) player.heading = heading;
-
-            delete room.players[oldSocketId];
-            room.players[socket.id] = player;
 
             socket.join(roomId);
             socket.currentRoom = roomId;
@@ -348,7 +368,7 @@ io.on('connection', (socket) => {
             socket.uid = player.uid;
             socket.mode = room.mode;
 
-            console.log(`🔄 Session recovered for ${player.name} in room ${roomId}`);
+            console.log(`🔄 Player ${player.name} reconnected to Room ${roomId}`);
 
             socket.emit('session_recovered', {
                 wave: room.wave,
@@ -360,7 +380,7 @@ io.on('connection', (socket) => {
             });
 
             const existing = Object.values(room.players)
-                .filter(p => p.id !== socket.id)
+                .filter(p => p.uid !== uid)
                 .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
             socket.emit('room_state', { players: existing, wave: room.wave });
             socket.emit('bots_update', Object.values(room.bots));
@@ -371,6 +391,15 @@ io.on('connection', (socket) => {
 
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
+        
+        for (const rId in rooms) {
+            const r = rooms[rId];
+            if (r.players[uid]) {
+                delete r.players[uid];
+                io.to(rId).emit('player_left', { id: socket.id });
+            }
+        }
+
         socket.username = username || 'Commander';
         socket.uid = uid || '';
         socket.mode = mode || '4VBOT';
@@ -387,7 +416,7 @@ io.on('connection', (socket) => {
         }
 
         const room = rooms[roomId];
-        if (islands && Array.isArray(islands) && islands.length > 0) {
+        if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
             room.islands = islands;
         }
 
@@ -412,16 +441,15 @@ io.on('connection', (socket) => {
             if (bestDist > 4000 * 4000) break;
         }
 
-        room.players[socket.id] = {
+        room.players[socket.uid] = {
             id: socket.id,
-            name: socket.username,
             uid: socket.uid,
+            name: socket.username,
             x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
             level: socket.startLevel,
-            online: true,
-            disconnectTimeout: null
+            online: true
         };
 
         socket.emit('match_found', {
@@ -436,7 +464,7 @@ io.on('connection', (socket) => {
         });
 
         const existing = Object.values(room.players)
-            .filter(p => p.id !== socket.id)
+            .filter(p => p.uid !== socket.uid)
             .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
@@ -455,8 +483,8 @@ io.on('connection', (socket) => {
 
     socket.on('player_moved', (data) => {
         const room = rooms[socket.currentRoom];
-        if (!room || !room.players[socket.id]) return;
-        const p = room.players[socket.id];
+        if (!room || !room.players[socket.uid]) return;
+        const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
         socket.to(socket.currentRoom).emit('player_moved', {
             id: socket.id, x: p.x, y: p.y, heading: p.heading
@@ -465,7 +493,7 @@ io.on('connection', (socket) => {
 
     socket.on('hit_bot', (data) => {
         const room = rooms[socket.currentRoom];
-        if (!room) return;
+        if (!room || room.wiped) return;
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
 
@@ -473,7 +501,7 @@ io.on('connection', (socket) => {
 
         if (bot.hp <= 0) {
             delete room.bots[data.botId];
-            const p = room.players[socket.id];
+            const p = room.players[socket.uid];
             if (p) p.kills += 1;
 
             io.to(socket.currentRoom).emit('bot_killed', {
@@ -485,8 +513,8 @@ io.on('connection', (socket) => {
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
-                for (const pid in room.players) {
-                    const pl = room.players[pid];
+                for (const uid in room.players) {
+                    const pl = room.players[uid];
                     if (pl.level < room.wave) pl.level = room.wave;
                     pl.hp = 100;
                 }
@@ -494,8 +522,8 @@ io.on('connection', (socket) => {
                 flushWaveStats(socket.currentRoom);
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
 
-                for (const pid in room.players) {
-                    io.to(pid).emit('hp_update', { hp: 100 });
+                for (const uid in room.players) {
+                    io.to(room.players[uid].id).emit('hp_update', { hp: 100 });
                 }
 
                 spawnWave(socket.currentRoom);
@@ -507,8 +535,8 @@ io.on('connection', (socket) => {
 
     socket.on('bot_hit_player', (data) => {
         const room = rooms[socket.currentRoom];
-        if (!room) return;
-        const p = room.players[socket.id];
+        if (!room || room.wiped) return;
+        const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
         p.hp -= data.damage || 15;
@@ -519,19 +547,26 @@ io.on('connection', (socket) => {
             const roomIdAtDeath = socket.currentRoom;
             setTimeout(() => {
                 const r = rooms[roomIdAtDeath];
-                if (!r) return;
+                if (!r || r.wiped) return;
+                
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
                 if (allDead && Object.keys(r.players).length > 0) {
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
+                    
+                    for (const uid in r.players) {
+                        wipedRoomsLog.add(uid);
+                    }
+                    
                     endRoom(roomIdAtDeath);
                     return;
                 }
-                if (r.players[socket.id]) {
+                
+                if (r.players[socket.uid]) {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
-                    r.players[socket.id].x = sp.x;
-                    r.players[socket.id].y = sp.y;
-                    r.players[socket.id].hp = 100;
+                    r.players[socket.uid].x = sp.x;
+                    r.players[socket.uid].y = sp.y;
+                    r.players[socket.uid].hp = 100;
                     io.to(socket.id).emit('player_respawned', { x: sp.x, y: sp.y });
                 }
             }, RESPAWN_MS);
@@ -553,12 +588,11 @@ function leaveRoom(socket, immediate) {
     const room = rooms[roomId];
     if (!room) return;
 
-    const player = room.players[socket.id];
+    const player = room.players[socket.uid];
     if (!player) return;
 
     if (immediate) {
-        if (player.disconnectTimeout) clearTimeout(player.disconnectTimeout);
-        delete room.players[socket.id];
+        delete room.players[socket.uid];
         io.to(roomId).emit('player_left', { id: socket.id });
         socket.leave(roomId);
         socket.currentRoom = null;
@@ -569,29 +603,13 @@ function leaveRoom(socket, immediate) {
     } else {
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
-
-        player.disconnectTimeout = setTimeout(() => {
-            const r = rooms[roomId];
-            if (r && r.players[socket.id]) {
-                delete r.players[socket.id];
-                console.log(`🚨 Player ${player.name} removed after 60s timeout.`);
-                if (Object.keys(r.players).length === 0) {
-                    endRoom(roomId);
-                }
-            }
-        }, RECONNECT_GRACE_MS);
     }
 }
 
 function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
-
-    for (const pid in room.players) {
-        if (room.players[pid].disconnectTimeout) {
-            clearTimeout(room.players[pid].disconnectTimeout);
-        }
-    }
+    room.wiped = true;
 
     if (room.botTickInterval) clearInterval(room.botTickInterval);
     delete rooms[roomId];
@@ -600,10 +618,12 @@ function endRoom(roomId) {
 
 setInterval(() => {
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
+        if (Object.keys(rooms[id].players).length === 0) {
+            endRoom(id);
+        }
     }
-}, 30000);
+}, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.5 running on port ${PORT}`);
+    console.log(`🚀 Co-op server v14.7 running on port ${PORT}`);
 });
