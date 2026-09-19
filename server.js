@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.7 - Stable Session Recovery
+// Grand3D Co-op Server v14.8 - Anti-Exploit Session Recovery
 // =====================================================
 
 const express = require('express');
@@ -34,7 +34,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.7 - Persistent Session Recovery Active');
+    res.send('Grand3D Co-op Server v14.8 - Anti-Exploit Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -118,7 +118,8 @@ function startBotTick(roomId) {
     room.botTickInterval = setInterval(() => {
         const r = rooms[roomId];
         if (!r || r.wiped) return;
-        
+
+        // ✅ البوتات تطارد online فقط (اللاعبون الحاضرون فعلاً)
         const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
             io.to(roomId).emit('bots_update', []);
@@ -307,6 +308,18 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
+// ✅ دالة مساعدة: أنهِ الغرفة مع تسجيل كل من فيها
+function wipeRoomWithLog(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    for (const uid in room.players) {
+        wipedRoomsLog.add(uid);
+    }
+
+    endRoom(roomId);
+}
+
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -320,7 +333,7 @@ io.on('connection', (socket) => {
         for (const roomId in rooms) {
             const room = rooms[roomId];
             if (room.wiped) continue;
-            
+
             const player = room.players[uid];
             if (player) {
                 const anyAlive = Object.values(room.players).some(p => p.hp > 0);
@@ -391,7 +404,7 @@ io.on('connection', (socket) => {
 
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
-        
+
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
@@ -523,7 +536,9 @@ io.on('connection', (socket) => {
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
 
                 for (const uid in room.players) {
-                    io.to(room.players[uid].id).emit('hp_update', { hp: 100 });
+                    if (room.players[uid].online) {
+                        io.to(room.players[uid].id).emit('hp_update', { hp: 100 });
+                    }
                 }
 
                 spawnWave(socket.currentRoom);
@@ -548,20 +563,39 @@ io.on('connection', (socket) => {
             setTimeout(() => {
                 const r = rooms[roomIdAtDeath];
                 if (!r || r.wiped) return;
-                
+
+                // ═══════════════════════════════════════════════════════
+                // ✅ Anti-Exploit: إذا مات آخر online → اقتل كل offline
+                // ═══════════════════════════════════════════════════════
+                const onlineAlive = Object.values(r.players)
+                    .filter(pl => pl.online && pl.hp > 0);
+
+                if (onlineAlive.length === 0) {
+                    // لا يوجد online حي → كل offline يُقتل
+                    for (const uid in r.players) {
+                        const pl = r.players[uid];
+                        if (pl.hp > 0) {
+                            pl.hp = 0;
+                            console.log(`💀 ${pl.name} killed (last online died)`);
+                        }
+                    }
+                }
+
+                // تحقق: هل الجميع ميت؟
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
                 if (allDead && Object.keys(r.players).length > 0) {
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
-                    
+
                     for (const uid in r.players) {
                         wipedRoomsLog.add(uid);
                     }
-                    
+
                     endRoom(roomIdAtDeath);
                     return;
                 }
-                
+
+                // إعادة الإحياء العادي للاعب الذي مات
                 if (r.players[socket.uid]) {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
                     r.players[socket.uid].x = sp.x;
@@ -603,6 +637,26 @@ function leaveRoom(socket, immediate) {
     } else {
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
+
+        // ═══════════════════════════════════════════════════════
+        // ✅ Anti-Exploit: إذا كان آخر online يخرج → اقتل كل offline
+        // ═══════════════════════════════════════════════════════
+        const onlineAlive = Object.values(room.players)
+            .filter(pl => pl.online && pl.hp > 0);
+
+        if (onlineAlive.length === 0) {
+            // لا يوجد online حي → كل من في الغرفة يُقتل ويُسجَّل
+            console.log(`⚠️ Last online left ${roomId} → wiping room`);
+
+            for (const uid in room.players) {
+                const pl = room.players[uid];
+                if (pl.hp > 0) pl.hp = 0;
+                wipedRoomsLog.add(uid);
+            }
+
+            flushWaveStats(roomId);
+            endRoom(roomId);
+        }
     }
 }
 
@@ -625,5 +679,6 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.7 running on port ${PORT}`);
+    console.log(`🚀 Co-op server v14.8 running on port ${PORT}`);
+    console.log(`🛡️  Anti-Exploit: enabled`);
 });
