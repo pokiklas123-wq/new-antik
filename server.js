@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.2 - Far Spawn + Wave-end Stats + Full Heal
+// Grand3D Co-op Server v14.3 - Advanced Reconnection & Session Recovery
 // =====================================================
 
 const express = require('express');
@@ -10,8 +10,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 25000,
-    pingTimeout: 60000
+    pingInterval: 10000, // تقليل وقت الفحص لاكتشاف الانقطاع بسرعة
+    pingTimeout: 30000
 });
 
 const PORT = process.env.PORT || 3000;
@@ -24,8 +24,8 @@ const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
 const TICK_MS = 50;
+const RECONNECT_GRACE_MS = 15000; // فترة سماح 15 ثانية للعودة عند الخروج المؤقت
 
-// ✅ نطاق ظهور البوتات — بعيد جداً عن اللاعب
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
@@ -33,7 +33,7 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.2');
+    res.send('Grand3D Co-op Server v14.3 - Active with Session Recovery');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -115,9 +115,9 @@ function startBotTick(roomId) {
     room.botTickInterval = setInterval(() => {
         const r = rooms[roomId];
         if (!r) return;
-        if (Object.keys(r.players).length === 0) return;
-
-        const playersList = Object.values(r.players).filter(p => p.hp > 0);
+        
+        // تصفية اللاعبين المتصلين فقط لتتبعهم البوتات
+        const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
             io.to(roomId).emit('bots_update', []);
             return;
@@ -197,7 +197,6 @@ function startBotTick(roomId) {
     }, TICK_MS);
 }
 
-// ✅ spawnWave: بوتات بعيدة جداً
 function spawnWave(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -206,7 +205,6 @@ function spawnWave(roomId) {
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
 
-    // متوسط موقع كل اللاعبين
     let cx = 0, cy = 0, n = 0;
     for (const pid in room.players) {
         cx += room.players[pid].x;
@@ -217,7 +215,6 @@ function spawnWave(roomId) {
     else { cx = WORLD_SIZE / 2; cy = WORLD_SIZE / 2; }
 
     for (let i = 0; i < count; i++) {
-        // ✅ 3500 - 6000 وحدة بعيداً
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
         room.bots[id] = {
@@ -228,7 +225,7 @@ function spawnWave(roomId) {
         };
     }
 
-    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots spawned FAR (3.5k-6k)`);
+    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots spawned FAR`);
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
@@ -290,7 +287,6 @@ function pushUserStatsAsync(uid, kills, level) {
     lastFetch = 0;
 }
 
-// ✅ دالة موحدة: عند نهاية الموجة تُرسل كل الإحصائيات مرة واحدة
 function flushWaveStats(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -299,17 +295,28 @@ function flushWaveStats(roomId) {
         const pl = room.players[pid];
         if (!pl.uid) continue;
 
-        // جلب القتلات القديمة + إضافة قتلات هذه الموجة
         fetchUserKills(pl.uid, (oldKills) => {
             const newTotal = oldKills + (pl.kills || 0);
             pushUserStatsAsync(pl.uid, newTotal, pl.level);
-            // تصفير قتلات الموجة بعد ما راحت لفيرباس
             pl.kills = 0;
             console.log(`💾 Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
         });
     }
-
     sendLeaderboard(roomId);
+}
+
+// البحث عن جلسة لاعب غير متصل لإعادة ربطه
+function findOfflinePlayerSession(uid) {
+    for (const roomId in rooms) {
+        const room = rooms[roomId];
+        for (const pid in room.players) {
+            const p = room.players[pid];
+            if (p.uid === uid && !p.online) {
+                return { room, player: p, oldSocketId: pid };
+            }
+        }
+    }
+    return null;
 }
 
 io.on('connection', (socket) => {
@@ -317,8 +324,67 @@ io.on('connection', (socket) => {
 
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
+        
+        if (!uid) {
+            socket.emit('mode_rejected');
+            return;
+        }
+
+        // 1. فحص ما إذا كان هذا اللاعب يحاول إعادة الاتصال بجلسة نشطة
+        const recovered = findOfflinePlayerSession(uid);
+        if (recovered) {
+            const { room, player, oldSocketId } = recovered;
+            console.log(`🔄 Recovering session for ${player.name} in room ${room.id}`);
+            
+            // إلغاء مؤقت الحذف التلقائي
+            if (player.reconnectTimer) {
+                clearTimeout(player.reconnectTimer);
+                player.reconnectTimer = null;
+            }
+
+            // نقل البيانات للمعرّف الجديد
+            player.online = true;
+            room.players[socket.id] = player;
+            delete room.players[oldSocketId];
+
+            socket.join(room.id);
+            socket.currentRoom = room.id;
+            socket.username = player.name;
+            socket.uid = player.uid;
+            socket.mode = room.mode;
+
+            // إعلام اللاعبين الآخرين باستبدال المعرّف القديم بالجديد
+            socket.to(room.id).emit('player_left', { id: oldSocketId });
+            socket.to(room.id).emit('player_joined', {
+                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading
+            });
+
+            // إرسال حالة اللعبة الكاملة للاعب العائد فوراً لمنع التجمد
+            socket.emit('match_found', {
+                matchId: room.id,
+                role: 'Player',
+                spawnX: player.x, spawnY: player.y, spawnHeading: player.heading,
+                opponentId: '',
+                serverId: socket.id,
+                wave: room.wave,
+                mode: room.mode,
+                islands: room.islands || []
+            });
+
+            const existing = Object.values(room.players)
+                .filter(p => p.id !== socket.id)
+                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
+            socket.emit('room_state', { players: existing, wave: room.wave });
+            socket.emit('bots_update', Object.values(room.bots));
+            socket.emit('hp_update', { hp: player.hp });
+            
+            sendLeaderboard(room.id);
+            return;
+        }
+
+        // 2. الانضمام الطبيعي كلاعب جديد
         socket.username = username || 'Commander';
-        socket.uid = uid || '';
+        socket.uid = uid;
         socket.mode = mode || '4VBOT';
         socket.startLevel = Math.max(1, level || 1);
 
@@ -333,7 +399,6 @@ io.on('connection', (socket) => {
         }
 
         const room = rooms[roomId];
-
         if (islands && Array.isArray(islands) && islands.length > 0) {
             room.islands = islands;
         }
@@ -345,7 +410,6 @@ io.on('connection', (socket) => {
             room.wave = socket.startLevel;
         }
 
-        // ✅ لاعب جديد يظهر بعيد عن البوتات قدر الإمكان
         let sx = WORLD_SIZE / 2, sy = WORLD_SIZE / 2;
         let bestDist = -1;
         for (let attempt = 0; attempt < 40; attempt++) {
@@ -367,7 +431,9 @@ io.on('connection', (socket) => {
             x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel
+            level: socket.startLevel,
+            online: true,
+            reconnectTimer: null
         };
 
         socket.emit('match_found', {
@@ -409,7 +475,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ✅ hit_bot: لا Firebase هنا — فقط زيادة العداد المحلي
     socket.on('hit_bot', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room) return;
@@ -421,7 +486,7 @@ io.on('connection', (socket) => {
         if (bot.hp <= 0) {
             delete room.bots[data.botId];
             const p = room.players[socket.id];
-            if (p) p.kills += 1;   // ← يُحفظ في الذاكرة فقط
+            if (p) p.kills += 1;
 
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
@@ -429,22 +494,18 @@ io.on('connection', (socket) => {
                 byName: p ? p.name : '?'
             });
 
-            // ✅ نهاية الموجة
             if (Object.keys(room.bots).length === 0) {
                 room.wave += 1;
 
-                // ✅ دفع الإحصائيات لفيرباس مرة واحدة + زيادة المستوى + استرجاع HP
                 for (const pid in room.players) {
                     const pl = room.players[pid];
                     if (pl.level < room.wave) pl.level = room.wave;
-                    pl.hp = 100;   // ← استرجاع كامل للـ HP
+                    pl.hp = 100;
                 }
 
                 flushWaveStats(socket.currentRoom);
-
                 io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
 
-                // إبلاغ اللاعبين باسترجاع HP
                 for (const pid in room.players) {
                     io.to(pid).emit('hp_update', { hp: 100 });
                 }
@@ -473,7 +534,6 @@ io.on('connection', (socket) => {
                 if (!r) return;
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
                 if (allDead && Object.keys(r.players).length > 0) {
-                    // ✅ كل الفريق مات — ادفع الإحصائيات قبل الإنهاء
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
                     endRoom(roomIdAtDeath);
@@ -492,26 +552,48 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('leave_match', () => leaveRoom(socket));
+    socket.on('leave_match', () => leaveRoom(socket, true)); // مغادرة صريحة (حذف فوري)
+    
     socket.on('disconnect', () => {
-        console.log('Disconnected:', socket.id);
-        leaveRoom(socket);
+        console.log('Disconnected (Temporary):', socket.id);
+        leaveRoom(socket, false); // انقطاع غير متوقع (تفعيل فترة السماح)
     });
 });
 
-function leaveRoom(socket) {
+function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
     if (!roomId) return;
     const room = rooms[roomId];
     if (!room) return;
 
-    delete room.players[socket.id];
-    io.to(roomId).emit('player_left', { id: socket.id });
-    socket.leave(roomId);
-    socket.currentRoom = null;
+    const player = room.players[socket.id];
+    if (!player) return;
 
-    if (Object.keys(room.players).length === 0) {
-        endRoom(roomId);
+    if (immediate) {
+        // حذف فوري عند الضغط على زر الخروج من اللعبة عمداً
+        delete room.players[socket.id];
+        io.to(roomId).emit('player_left', { id: socket.id });
+        socket.leave(roomId);
+        socket.currentRoom = null;
+        if (Object.keys(room.players).length === 0) {
+            endRoom(roomId);
+        }
+    } else {
+        // تفعيل فترة السماح عند الخروج المؤقت (Home button / Call / Notification)
+        player.online = false;
+        console.log(`⏳ Player ${player.name} went offline. Grace period started.`);
+        
+        player.reconnectTimer = setTimeout(() => {
+            console.log(`🚨 Grace period expired for ${player.name}. Removing player.`);
+            const activeRoom = rooms[roomId];
+            if (activeRoom && activeRoom.players[socket.id]) {
+                delete activeRoom.players[socket.id];
+                io.to(roomId).emit('player_left', { id: socket.id });
+                if (Object.keys(activeRoom.players).length === 0) {
+                    endRoom(roomId);
+                }
+            }
+        }, RECONNECT_GRACE_MS);
     }
 }
 
@@ -525,13 +607,15 @@ function endRoom(roomId) {
 
 setInterval(() => {
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
+        const activePlayers = Object.values(rooms[id].players).filter(p => p.online);
+        if (activePlayers.length === 0) {
+            // إذا لم يكن هناك أي لاعب متصل فعلياً في الغرفة لأكثر من 30 ثانية، يتم إنهاؤها
+            endRoom(id);
+        }
     }
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.2 running on port ${PORT}`);
-    console.log(`👁️  Bots spawn FAR: ${BOT_SPAWN_MIN_DIST}-${BOT_SPAWN_MAX_DIST} units away`);
-    console.log(`💾 Stats saved only at wave end`);
-    console.log(`❤️  Full HP restore each wave`);
+    console.log(`🚀 Co-op server v14.3 running on port ${PORT}`);
+    console.log(`🔄 Session Recovery enabled with ${RECONNECT_GRACE_MS / 1000}s grace period`);
 });
