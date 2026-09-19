@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v15.3 - Dual Display (Wave + Level)
+// Grand3D Co-op Server v16.0 - Advanced Progression & Sync
 // =====================================================
 
 const express = require('express');
@@ -23,7 +23,7 @@ const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
-const TICK_MS = 50;
+const TICK_MS = 50; 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
@@ -33,7 +33,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v15.3 - Dual Display');
+    res.send('Grand3D Co-op Server v16.0 - Advanced Progression & Sync');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -44,10 +44,10 @@ function dist2(ax, ay, bx, by) {
 }
 
 function botSpeedForWave(wave) {
-    let base = 12.0;
+    let base = 12.0; 
     if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.6;
     else base += BOT_SPEED_WAVE_CAP * 0.4;
-    return Math.min(base, 20.0);
+    return Math.min(base, 20.0); 
 }
 
 function botHPForWave(wave) {
@@ -106,7 +106,8 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        wave: Math.max(1, startWave || 1),
+        // 🔴 تصحيح الخطأ 1: الغرفة يجب أن تبدأ بموجة = مستوى المنشئ + 1
+        wave: Math.max(1, (startWave || 1) + 1),
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
@@ -314,22 +315,6 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
-// ✅ دالة موحدة: أرسل حالة الغرفة واللاعب لكل شخص
-function broadcastRoomState(roomId, eventName) {
-    const room = rooms[roomId];
-    if (!room) return;
-
-    for (const uid in room.players) {
-        const pl = room.players[uid];
-        if (pl.online && pl.id) {
-            io.to(pl.id).emit(eventName, {
-                wave: room.wave,
-                level: pl.level
-            });
-        }
-    }
-}
-
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -396,7 +381,6 @@ io.on('connection', (socket) => {
             socket.uid = player.uid;
             socket.mode = room.mode;
 
-            // ✅ أرسل wave (الغرفة) + level (اللاعب)
             socket.emit('session_recovered', {
                 wave: room.wave,
                 level: player.level,
@@ -499,7 +483,6 @@ io.on('connection', (socket) => {
             deathTimer: null
         };
 
-        // ✅ أرسل wave (الغرفة) + playerLevel (الشخصي)
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
@@ -528,7 +511,6 @@ io.on('connection', (socket) => {
         }
 
         sendLeaderboard(roomId);
-        console.log(`👤 ${socket.username} (level=${socket.startLevel}) joined ${roomId} (wave=${room.wave})`);
     });
 
     socket.on('player_moved', (data) => {
@@ -561,20 +543,19 @@ io.on('connection', (socket) => {
             });
 
             if (Object.keys(room.bots).length === 0) {
-                const clearedWave = room.wave;
-                room.wave += 1;
+                const clearedWave = room.wave; 
+                room.wave += 1; 
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    if (pl.level <= clearedWave) {
+                    if (clearedWave >= pl.level) {
                         pl.level += 1;
                     }
-                    pl.hp = 100;
+                    pl.hp = 100; 
                 }
 
                 flushWaveStats(socket.currentRoom);
 
-                // ✅ أرسل لكل لاعب: wave (نفس) + level (شخصي)
                 for (const uid in room.players) {
                     const pl = room.players[uid];
                     if (pl.online && pl.id) {
@@ -582,12 +563,7 @@ io.on('connection', (socket) => {
                             wave: room.wave,
                             level: pl.level
                         });
-                    }
-                }
-
-                for (const uid in room.players) {
-                    if (room.players[uid].online) {
-                        io.to(room.players[uid].id).emit('hp_update', { hp: 100 });
+                        io.to(pl.id).emit('hp_update', { hp: 100 });
                     }
                 }
 
@@ -614,15 +590,12 @@ io.on('connection', (socket) => {
                 const r = rooms[roomIdAtDeath];
                 if (!r || r.wiped) return;
 
-                const onlineAlive = Object.values(r.players)
-                    .filter(pl => pl.online && pl.hp > 0);
+                const onlineAlive = Object.values(r.players).filter(pl => pl.online && pl.hp > 0);
 
                 if (onlineAlive.length === 0) {
                     for (const uid in r.players) {
                         const pl = r.players[uid];
-                        if (pl.hp > 0) {
-                            pl.hp = 0;
-                        }
+                        if (pl.hp > 0) pl.hp = 0;
                     }
                 }
 
@@ -660,7 +633,6 @@ io.on('connection', (socket) => {
 
     socket.on('leave_match', () => leaveRoom(socket, true));
     socket.on('disconnect', () => {
-        console.log('Disconnected:', socket.id);
         leaveRoom(socket, false);
     });
 });
@@ -682,13 +654,32 @@ function leaveRoom(socket, immediate) {
 
     if (immediate) {
         if (player.deathTimer) clearTimeout(player.deathTimer);
-        delete room.players[socket.uid];
-        io.to(roomId).emit('player_left', { id: socket.id });
-        socket.leave(roomId);
-        cleanSocket(socket);
+        
+        // 🔴 تصحيح الخطأ 2: حفظ المستوى والقتلات في Firebase قبل الحذف الفعلي للاعب
+        if (player.uid) {
+            fetchUserKills(player.uid, (oldKills) => {
+                const newTotal = oldKills + (player.kills || 0);
+                pushUserStatsAsync(player.uid, newTotal, player.level);
+                console.log(`💾 Saved on immediate leave ${player.name}: kills=${newTotal}, level=${player.level}`);
+                
+                delete room.players[socket.uid];
+                io.to(roomId).emit('player_left', { id: socket.id });
+                socket.leave(roomId);
+                cleanSocket(socket);
 
-        if (Object.keys(room.players).length === 0) {
-            endRoom(roomId);
+                if (Object.keys(room.players).length === 0) {
+                    endRoom(roomId);
+                }
+            });
+        } else {
+            delete room.players[socket.uid];
+            io.to(roomId).emit('player_left', { id: socket.id });
+            socket.leave(roomId);
+            cleanSocket(socket);
+
+            if (Object.keys(room.players).length === 0) {
+                endRoom(roomId);
+            }
         }
     } else {
         player.online = false;
@@ -745,6 +736,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v15.3 running on port ${PORT}`);
-    console.log(`📊 Dual Display: wave (room) + level (player)`);
+    console.log(`🚀 Co-op server v16.0 running on port ${PORT}`);
 });
