@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.9 - Full Cleanup + Anti-Exploit
+// Grand3D Co-op Server v15.0 - Full Cleanup + Offline Death Timer
 // =====================================================
 
 const express = require('express');
@@ -28,13 +28,16 @@ const TICK_MS = 50;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
+// ✅ الجديد الوحيد: مهلة 60 ثانية قبل قتل offline
+const OFFLINE_DEATH_MS = 60000;
+
 let rooms = {};
 let nextRoomId = 1;
 
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.9 - Clean Session');
+    res.send('Grand3D Co-op Server v15.0 - Offline Death Timer');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -369,6 +372,13 @@ io.on('connection', (socket) => {
 
         const player = room.players[uid];
         if (player) {
+            // ✅ ألغِ timer القتل (اللاعب عاد قبل 60 ثانية)
+            if (player.deathTimer) {
+                clearTimeout(player.deathTimer);
+                player.deathTimer = null;
+                console.log(`⏱️ Cancelled offline death timer for ${player.name}`);
+            }
+
             player.online = true;
             player.id = socket.id;
 
@@ -402,14 +412,14 @@ io.on('connection', (socket) => {
     socket.on('join_match', (data) => {
         const { mode, username, uid, level, total_kills, islands } = data || {};
 
-        // ═══════════════════════════════════════════════════════
-        // ✅ التنظيف الشامل قبل الانضمام الجديد
-        // ═══════════════════════════════════════════════════════
-
-        // 1) نظّف socket من أي غرفة قديمة يشير إليها
+        // 1) نظّف socket من أي غرفة قديمة
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
             if (oldRoom && socket.uid && oldRoom.players[socket.uid]) {
+                // ✅ ألغِ timer القتل
+                if (oldRoom.players[socket.uid].deathTimer) {
+                    clearTimeout(oldRoom.players[socket.uid].deathTimer);
+                }
                 delete oldRoom.players[socket.uid];
                 io.to(socket.currentRoom).emit('player_left', { id: socket.id });
                 if (Object.keys(oldRoom.players).length === 0) {
@@ -425,6 +435,9 @@ io.on('connection', (socket) => {
             const r = rooms[rId];
             if (r.players[uid]) {
                 console.log(`🧹 Removing stale player uid=${uid} from ${rId}`);
+                if (r.players[uid].deathTimer) {
+                    clearTimeout(r.players[uid].deathTimer);
+                }
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: socket.id });
                 if (Object.keys(r.players).length === 0) {
@@ -482,7 +495,8 @@ io.on('connection', (socket) => {
             hp: 100,
             kills: 0,
             level: socket.startLevel,
-            online: true
+            online: true,
+            deathTimer: null
         };
 
         socket.emit('match_found', {
@@ -634,7 +648,6 @@ function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
 
-    // ✅ إذا الغرفة محذوفة أو لا توجد → نظّف socket فقط
     if (!room) {
         cleanSocket(socket);
         return;
@@ -647,6 +660,8 @@ function leaveRoom(socket, immediate) {
     }
 
     if (immediate) {
+        // ✅ خروج عمدي
+        if (player.deathTimer) clearTimeout(player.deathTimer);
         delete room.players[socket.uid];
         io.to(roomId).emit('player_left', { id: socket.id });
         socket.leave(roomId);
@@ -656,29 +671,39 @@ function leaveRoom(socket, immediate) {
             endRoom(roomId);
         }
     } else {
+        // ✅ انقطاع (Home / شبكة)
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
 
-        // ✅ Anti-Exploit: إذا كان آخر online يخرج → اقتل كل offline
-        const onlineAlive = Object.values(room.players)
-            .filter(pl => pl.online && pl.hp > 0);
+        console.log(`💤 ${player.name} offline in ${roomId} — 60s death timer started`);
 
-        if (onlineAlive.length === 0) {
-            console.log(`⚠️ Last online left ${roomId} → wiping room`);
+        // ✅ الجديد الوحيد: timer 60 ثانية
+        player.deathTimer = setTimeout(() => {
+            const r = rooms[roomId];
+            if (!r || r.wiped) return;
 
-            for (const uid in room.players) {
-                const pl = room.players[uid];
-                if (pl.hp > 0) pl.hp = 0;
-                wipedRoomsLog.add(uid);
+            const p = r.players[socket.uid];
+            if (!p || p.online) return;   // ← عاد قبل انتهاء المهلة
+
+            console.log(`⏰ 60s expired for ${p.name} → killing`);
+
+            // ✅ اقتل اللاعب
+            p.hp = 0;
+            p.deathTimer = null;
+
+            // ✅ أخرجه من الغرفة
+            delete r.players[socket.uid];
+
+            // ✅ إذا لم يبقَ أحد → أغلق الغرفة
+            if (Object.keys(r.players).length === 0) {
+                console.log(`🛑 No players left in ${roomId} → closing`);
+                flushWaveStats(roomId);
+                endRoom(roomId);
             }
-
-            flushWaveStats(roomId);
-            endRoom(roomId);
-        }
+        }, OFFLINE_DEATH_MS);
     }
 }
 
-// ✅ endRoom ينظّف كل sockets المرتبطة بالغرفة
 function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -686,9 +711,9 @@ function endRoom(roomId) {
 
     if (room.botTickInterval) clearInterval(room.botTickInterval);
 
-    // ✅ نظّف كل socket مرتبط بهذه الغرفة
     for (const uid in room.players) {
         const p = room.players[uid];
+        if (p.deathTimer) clearTimeout(p.deathTimer);
         if (!p.id) continue;
         const s = io.sockets.sockets.get(p.id);
         if (s) {
@@ -711,6 +736,6 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.9 running on port ${PORT}`);
-    console.log(`🧹 Full cleanup enabled`);
+    console.log(`🚀 Co-op server v15.0 running on port ${PORT}`);
+    console.log(`⏱️  Offline death timer: 60 seconds`);
 });
