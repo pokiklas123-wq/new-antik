@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v14.3 - Advanced Reconnection & Session Recovery
+// Grand3D Co-op Server v14.5 - Stable Session Recovery
 // =====================================================
 
 const express = require('express');
@@ -10,8 +10,8 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
-    pingInterval: 10000, // تقليل وقت الفحص لاكتشاف الانقطاع بسرعة
-    pingTimeout: 30000
+    pingInterval: 25000,
+    pingTimeout: 60000
 });
 
 const PORT = process.env.PORT || 3000;
@@ -24,7 +24,7 @@ const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
 const TICK_MS = 50;
-const RECONNECT_GRACE_MS = 15000; // فترة سماح 15 ثانية للعودة عند الخروج المؤقت
+const RECONNECT_GRACE_MS = 60000; // مهلة 60 ثانية لاستعادة الجلسة
 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
@@ -33,7 +33,7 @@ let rooms = {};
 let nextRoomId = 1;
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v14.3 - Active with Session Recovery');
+    res.send('Grand3D Co-op Server v14.5 - Active with Session Recovery');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -116,7 +116,6 @@ function startBotTick(roomId) {
         const r = rooms[roomId];
         if (!r) return;
         
-        // تصفية اللاعبين المتصلين فقط لتتبعهم البوتات
         const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
             io.to(roomId).emit('bots_update', []);
@@ -305,70 +304,59 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
-// البحث عن جلسة لاعب غير متصل لإعادة ربطه
-function findOfflinePlayerSession(uid) {
-    for (const roomId in rooms) {
-        const room = rooms[roomId];
-        for (const pid in room.players) {
-            const p = room.players[pid];
-            if (p.uid === uid && !p.online) {
-                return { room, player: p, oldSocketId: pid };
-            }
-        }
-    }
-    return null;
-}
-
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
-    socket.on('join_match', (data) => {
-        const { mode, username, uid, level, total_kills, islands } = data || {};
-        
-        if (!uid) {
-            socket.emit('mode_rejected');
+    // معالجة استعادة الجلسة الذكية
+    socket.on('reconnect_session', (data) => {
+        const { uid, roomId, x, y, heading } = data || {};
+        const room = rooms[roomId];
+        if (!room) {
+            socket.emit('session_recovery_failed');
             return;
         }
 
-        // 1. فحص ما إذا كان هذا اللاعب يحاول إعادة الاتصال بجلسة نشطة
-        const recovered = findOfflinePlayerSession(uid);
-        if (recovered) {
-            const { room, player, oldSocketId } = recovered;
-            console.log(`🔄 Recovering session for ${player.name} in room ${room.id}`);
-            
-            // إلغاء مؤقت الحذف التلقائي
-            if (player.reconnectTimer) {
-                clearTimeout(player.reconnectTimer);
-                player.reconnectTimer = null;
+        let oldSocketId = null;
+        let player = null;
+        for (const pid in room.players) {
+            if (room.players[pid].uid === uid) {
+                player = room.players[pid];
+                oldSocketId = pid;
+                break;
+            }
+        }
+
+        // التحقق من الشروط: الغرفة موجودة، اللاعب موجود، وصديقه (أو أي لاعب آخر) لا يزال حياً أو الغرفة نشطة
+        if (player) {
+            if (player.disconnectTimeout) {
+                clearTimeout(player.disconnectTimeout);
+                player.disconnectTimeout = null;
             }
 
-            // نقل البيانات للمعرّف الجديد
             player.online = true;
-            room.players[socket.id] = player;
-            delete room.players[oldSocketId];
+            player.id = socket.id;
+            if (x !== undefined) player.x = x;
+            if (y !== undefined) player.y = y;
+            if (heading !== undefined) player.heading = heading;
 
-            socket.join(room.id);
-            socket.currentRoom = room.id;
+            delete room.players[oldSocketId];
+            room.players[socket.id] = player;
+
+            socket.join(roomId);
+            socket.currentRoom = roomId;
             socket.username = player.name;
             socket.uid = player.uid;
             socket.mode = room.mode;
 
-            // إعلام اللاعبين الآخرين باستبدال المعرّف القديم بالجديد
-            socket.to(room.id).emit('player_left', { id: oldSocketId });
-            socket.to(room.id).emit('player_joined', {
-                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading
+            console.log(`🔄 Session recovered for ${player.name} in room ${roomId}`);
+
+            socket.emit('session_recovered', {
+                wave: room.wave,
+                hp: player.hp
             });
 
-            // إرسال حالة اللعبة الكاملة للاعب العائد فوراً لمنع التجمد
-            socket.emit('match_found', {
-                matchId: room.id,
-                role: 'Player',
-                spawnX: player.x, spawnY: player.y, spawnHeading: player.heading,
-                opponentId: '',
-                serverId: socket.id,
-                wave: room.wave,
-                mode: room.mode,
-                islands: room.islands || []
+            socket.to(roomId).emit('player_joined', {
+                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading
             });
 
             const existing = Object.values(room.players)
@@ -376,15 +364,15 @@ io.on('connection', (socket) => {
                 .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
             socket.emit('room_state', { players: existing, wave: room.wave });
             socket.emit('bots_update', Object.values(room.bots));
-            socket.emit('hp_update', { hp: player.hp });
-            
-            sendLeaderboard(room.id);
-            return;
+        } else {
+            socket.emit('session_recovery_failed');
         }
+    });
 
-        // 2. الانضمام الطبيعي كلاعب جديد
+    socket.on('join_match', (data) => {
+        const { mode, username, uid, level, total_kills, islands } = data || {};
         socket.username = username || 'Commander';
-        socket.uid = uid;
+        socket.uid = uid || '';
         socket.mode = mode || '4VBOT';
         socket.startLevel = Math.max(1, level || 1);
 
@@ -433,7 +421,7 @@ io.on('connection', (socket) => {
             kills: 0,
             level: socket.startLevel,
             online: true,
-            reconnectTimer: null
+            disconnectTimeout: null
         };
 
         socket.emit('match_found', {
@@ -552,11 +540,10 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('leave_match', () => leaveRoom(socket, true)); // مغادرة صريحة (حذف فوري)
-    
+    socket.on('leave_match', () => leaveRoom(socket, true));
     socket.on('disconnect', () => {
-        console.log('Disconnected (Temporary):', socket.id);
-        leaveRoom(socket, false); // انقطاع غير متوقع (تفعيل فترة السماح)
+        console.log('Disconnected:', socket.id);
+        leaveRoom(socket, false);
     });
 });
 
@@ -570,26 +557,25 @@ function leaveRoom(socket, immediate) {
     if (!player) return;
 
     if (immediate) {
-        // حذف فوري عند الضغط على زر الخروج من اللعبة عمداً
+        if (player.disconnectTimeout) clearTimeout(player.disconnectTimeout);
         delete room.players[socket.id];
         io.to(roomId).emit('player_left', { id: socket.id });
         socket.leave(roomId);
         socket.currentRoom = null;
+
         if (Object.keys(room.players).length === 0) {
             endRoom(roomId);
         }
     } else {
-        // تفعيل فترة السماح عند الخروج المؤقت (Home button / Call / Notification)
         player.online = false;
-        console.log(`⏳ Player ${player.name} went offline. Grace period started.`);
-        
-        player.reconnectTimer = setTimeout(() => {
-            console.log(`🚨 Grace period expired for ${player.name}. Removing player.`);
-            const activeRoom = rooms[roomId];
-            if (activeRoom && activeRoom.players[socket.id]) {
-                delete activeRoom.players[socket.id];
-                io.to(roomId).emit('player_left', { id: socket.id });
-                if (Object.keys(activeRoom.players).length === 0) {
+        io.to(roomId).emit('player_left', { id: socket.id });
+
+        player.disconnectTimeout = setTimeout(() => {
+            const r = rooms[roomId];
+            if (r && r.players[socket.id]) {
+                delete r.players[socket.id];
+                console.log(`🚨 Player ${player.name} removed after 60s timeout.`);
+                if (Object.keys(r.players).length === 0) {
                     endRoom(roomId);
                 }
             }
@@ -600,6 +586,13 @@ function leaveRoom(socket, immediate) {
 function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
+
+    for (const pid in room.players) {
+        if (room.players[pid].disconnectTimeout) {
+            clearTimeout(room.players[pid].disconnectTimeout);
+        }
+    }
+
     if (room.botTickInterval) clearInterval(room.botTickInterval);
     delete rooms[roomId];
     console.log('Room ended:', roomId);
@@ -607,15 +600,10 @@ function endRoom(roomId) {
 
 setInterval(() => {
     for (const id in rooms) {
-        const activePlayers = Object.values(rooms[id].players).filter(p => p.online);
-        if (activePlayers.length === 0) {
-            // إذا لم يكن هناك أي لاعب متصل فعلياً في الغرفة لأكثر من 30 ثانية، يتم إنهاؤها
-            endRoom(id);
-        }
+        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
     }
 }, 30000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v14.3 running on port ${PORT}`);
-    console.log(`🔄 Session Recovery enabled with ${RECONNECT_GRACE_MS / 1000}s grace period`);
+    console.log(`🚀 Co-op server v14.5 running on port ${PORT}`);
 });
