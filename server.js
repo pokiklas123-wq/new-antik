@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v15.2 - Anti-Exploit Level System
+// Grand3D Co-op Server v15.3 - Dual Display (Wave + Level)
 // =====================================================
 
 const express = require('express');
@@ -24,19 +24,16 @@ const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
 const TICK_MS = 50;
-
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
-
 const OFFLINE_DEATH_MS = 60000;
 
 let rooms = {};
 let nextRoomId = 1;
-
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v15.2 - Anti-Exploit Level System Active');
+    res.send('Grand3D Co-op Server v15.3 - Dual Display');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -71,7 +68,6 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
         let y = cy + Math.sin(a) * d;
         x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
         y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
-
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
@@ -118,7 +114,7 @@ function createRoom(mode, startWave) {
         wiped: false
     };
     startBotTick(id);
-    console.log(`✅ Room created: ${id} (${mode}) at Wave ${rooms[id].wave}`);
+    console.log(`✅ Room created: ${id} (${mode}) Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -238,7 +234,7 @@ function spawnWave(roomId) {
         };
     }
 
-    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots spawned FAR`);
+    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots`);
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
@@ -318,6 +314,22 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
+// ✅ دالة موحدة: أرسل حالة الغرفة واللاعب لكل شخص
+function broadcastRoomState(roomId, eventName) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    for (const uid in room.players) {
+        const pl = room.players[uid];
+        if (pl.online && pl.id) {
+            io.to(pl.id).emit(eventName, {
+                wave: room.wave,
+                level: pl.level
+            });
+        }
+    }
+}
+
 io.on('connection', (socket) => {
     console.log('Connected:', socket.id);
 
@@ -336,10 +348,10 @@ io.on('connection', (socket) => {
             if (player) {
                 const anyAlive = Object.values(room.players).some(p => p.hp > 0);
                 if (anyAlive) {
-                    console.log(`🔍 Active session found for UID: ${uid} in Room: ${roomId}`);
                     socket.emit('active_session_found', {
                         roomId: roomId,
                         wave: room.wave,
+                        level: player.level,
                         hp: player.hp,
                         x: player.x,
                         y: player.y,
@@ -384,10 +396,10 @@ io.on('connection', (socket) => {
             socket.uid = player.uid;
             socket.mode = room.mode;
 
-            console.log(`🔄 Player ${player.name} reconnected to Room ${roomId}`);
-
+            // ✅ أرسل wave (الغرفة) + level (اللاعب)
             socket.emit('session_recovered', {
                 wave: room.wave,
+                level: player.level,
                 hp: player.hp
             });
 
@@ -427,7 +439,6 @@ io.on('connection', (socket) => {
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
-                console.log(`🧹 Removing stale player uid=${uid} from ${rId}`);
                 if (r.players[uid].deathTimer) {
                     clearTimeout(r.players[uid].deathTimer);
                 }
@@ -488,6 +499,7 @@ io.on('connection', (socket) => {
             deathTimer: null
         };
 
+        // ✅ أرسل wave (الغرفة) + playerLevel (الشخصي)
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
@@ -495,6 +507,7 @@ io.on('connection', (socket) => {
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
+            playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
             islands: room.islands || []
         });
@@ -553,18 +566,24 @@ io.on('connection', (socket) => {
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    // ✅ نظام مكافحة الثغرات: يرتفع المستوى فقط إذا كان مستوى اللاعب الحالي أقل من أو يساوي مستوى الموجة التي تم تخطيها
                     if (pl.level <= clearedWave) {
                         pl.level += 1;
-                    } else {
-                        console.log(`🛡️ Anti-exploit: ${pl.name} (level ${pl.level}) did not level up in Wave ${clearedWave}`);
                     }
                     pl.hp = 100;
                 }
 
                 flushWaveStats(socket.currentRoom);
 
-                io.to(socket.currentRoom).emit('level_up', { wave: room.wave });
+                // ✅ أرسل لكل لاعب: wave (نفس) + level (شخصي)
+                for (const uid in room.players) {
+                    const pl = room.players[uid];
+                    if (pl.online && pl.id) {
+                        io.to(pl.id).emit('level_up', {
+                            wave: room.wave,
+                            level: pl.level
+                        });
+                    }
+                }
 
                 for (const uid in room.players) {
                     if (room.players[uid].online) {
@@ -603,7 +622,6 @@ io.on('connection', (socket) => {
                         const pl = r.players[uid];
                         if (pl.hp > 0) {
                             pl.hp = 0;
-                            console.log(`💀 ${pl.name} killed (last online died)`);
                         }
                     }
                 }
@@ -614,7 +632,6 @@ io.on('connection', (socket) => {
                     for (const uid in r.players) {
                         const pl = r.players[uid];
                         pl.level = Math.max(1, pl.level - 1);
-                        console.log(`📉 ${pl.name} → level ${pl.level} (team wipe)`);
                     }
 
                     flushWaveStats(roomIdAtDeath);
@@ -677,8 +694,6 @@ function leaveRoom(socket, immediate) {
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
 
-        console.log(`💤 ${player.name} offline in ${roomId} — 60s death timer started`);
-
         player.deathTimer = setTimeout(() => {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
@@ -686,15 +701,12 @@ function leaveRoom(socket, immediate) {
             const p = r.players[socket.uid];
             if (!p || p.online) return;
 
-            console.log(`⏰ 60s expired for ${p.name} → killing`);
-
             p.hp = 0;
             p.deathTimer = null;
 
             delete r.players[socket.uid];
 
             if (Object.keys(r.players).length === 0) {
-                console.log(`🛑 No players left in ${roomId} → closing`);
                 flushWaveStats(roomId);
                 endRoom(roomId);
             }
@@ -717,12 +729,11 @@ function endRoom(roomId) {
         if (s) {
             s.leave(roomId);
             cleanSocket(s);
-            console.log(`🧹 Cleaned socket ${s.id} (uid=${uid}) from ${roomId}`);
         }
     }
 
     delete rooms[roomId];
-    console.log('Room ended:', roomId);
+    console.log('🛑 Room ended:', roomId);
 }
 
 setInterval(() => {
@@ -734,6 +745,6 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v15.2 running on port ${PORT}`);
-    console.log(`📊 Personal Level System: Anti-Exploit Active`);
+    console.log(`🚀 Co-op server v15.3 running on port ${PORT}`);
+    console.log(`📊 Dual Display: wave (room) + level (player)`);
 });
