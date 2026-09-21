@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v16.0 - Advanced Progression & Sync
+// Grand3D Co-op Server v16.0 - Advanced Progression & Sync (Skins Synced)
 // =====================================================
 
 const express = require('express');
@@ -33,7 +33,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v16.0 - Advanced Progression & Sync');
+    res.send('Grand3D Co-op Server v16.0 - Skins Synced Successfully');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -106,7 +106,6 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        // 🔴 تصحيح الخطأ 1: الغرفة يجب أن تبدأ بموجة = مستوى المنشئ + 1
         wave: Math.max(1, (startWave || 1) + 1),
         bots: {},
         botIdCounter: 1,
@@ -115,7 +114,7 @@ function createRoom(mode, startWave) {
         wiped: false
     };
     startBotTick(id);
-    console.log(`✅ Room created: ${id} (${mode}) Wave ${rooms[id].wave}`);
+    console.log(`\u2705 Room created: ${id} (${mode}) Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -235,7 +234,7 @@ function spawnWave(roomId) {
         };
     }
 
-    console.log(`🌊 [${roomId}] Wave ${room.wave} - ${count} bots`);
+    console.log(`\u1F30A [${roomId}] Wave ${room.wave} - ${count} bots`);
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
@@ -308,7 +307,7 @@ function flushWaveStats(roomId) {
         fetchUserKills(pl.uid, (oldKills) => {
             const newTotal = oldKills + (pl.kills || 0);
             pushUserStatsAsync(pl.uid, newTotal, pl.level);
-            console.log(`💾 Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
+            console.log(`\u{1F4BE} Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
             pl.kills = 0;
         });
     }
@@ -341,7 +340,8 @@ io.on('connection', (socket) => {
                         x: player.x,
                         y: player.y,
                         heading: player.heading,
-                        islands: room.islands
+                        islands: room.islands,
+                        skinPath: player.skinPath // مزامنة السكن عند استعادة الجلسة
                     });
                     return;
                 }
@@ -358,7 +358,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('reconnect_session', (data) => {
-        const { uid, roomId } = data || {};
+        const { uid, roomId, skinPath } = data || {};
         const room = rooms[roomId];
         if (!room || room.wiped) {
             socket.emit('session_recovery_failed');
@@ -374,6 +374,7 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
+            if (skinPath) player.skinPath = skinPath; // تحديث السكن عند إعادة الاتصال
 
             socket.join(roomId);
             socket.currentRoom = roomId;
@@ -384,16 +385,17 @@ io.on('connection', (socket) => {
             socket.emit('session_recovered', {
                 wave: room.wave,
                 level: player.level,
-                hp: player.hp
+                hp: player.hp,
+                skinPath: player.skinPath
             });
 
             socket.to(roomId).emit('player_joined', {
-                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading
+                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading, skinPath: player.skinPath
             });
 
             const existing = Object.values(room.players)
                 .filter(p => p.uid !== uid)
-                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
+                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath }));
             socket.emit('room_state', { players: existing, wave: room.wave });
             socket.emit('bots_update', Object.values(room.bots));
         } else {
@@ -402,7 +404,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join_match', (data) => {
-        const { mode, username, uid, level, total_kills, islands } = data || {};
+        const { mode, username, uid, level, total_kills, islands, skinPath } = data || {};
 
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
@@ -480,7 +482,8 @@ io.on('connection', (socket) => {
             kills: 0,
             level: socket.startLevel,
             online: true,
-            deathTimer: null
+            deathTimer: null,
+            skinPath: skinPath || 'bt/bt.png' // حفظ مسار السكن في بيانات اللاعب بالسيرفر
         };
 
         socket.emit('match_found', {
@@ -492,16 +495,17 @@ io.on('connection', (socket) => {
             wave: room.wave,
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
-            islands: room.islands || []
+            islands: room.islands || [],
+            skinPath: room.players[socket.uid].skinPath
         });
 
         const existing = Object.values(room.players)
             .filter(p => p.uid !== socket.uid)
-            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading }));
+            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0
+            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0, skinPath: room.players[socket.uid].skinPath
         });
 
         socket.emit('bots_update', Object.values(room.bots));
@@ -518,8 +522,10 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
+        if (data.skinPath) p.skinPath = data.skinPath; // تحديث السكن ديناميكياً إذا تغير
+        
         socket.to(socket.currentRoom).emit('player_moved', {
-            id: socket.id, x: p.x, y: p.y, heading: p.heading
+            id: socket.id, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath
         });
     });
 
@@ -655,12 +661,11 @@ function leaveRoom(socket, immediate) {
     if (immediate) {
         if (player.deathTimer) clearTimeout(player.deathTimer);
         
-        // 🔴 تصحيح الخطأ 2: حفظ المستوى والقتلات في Firebase قبل الحذف الفعلي للاعب
         if (player.uid) {
             fetchUserKills(player.uid, (oldKills) => {
                 const newTotal = oldKills + (player.kills || 0);
                 pushUserStatsAsync(player.uid, newTotal, player.level);
-                console.log(`💾 Saved on immediate leave ${player.name}: kills=${newTotal}, level=${player.level}`);
+                console.log(`\u{1F4BE} Saved on immediate leave ${player.name}: kills=${newTotal}, level=${player.level}`);
                 
                 delete room.players[socket.uid];
                 io.to(roomId).emit('player_left', { id: socket.id });
@@ -724,7 +729,7 @@ function endRoom(roomId) {
     }
 
     delete rooms[roomId];
-    console.log('🛑 Room ended:', roomId);
+    console.log('\u23F1 Room ended:', roomId);
 }
 
 setInterval(() => {
@@ -736,5 +741,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`🚀 Co-op server v16.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v16.0 running on port ${PORT}`);
 });
