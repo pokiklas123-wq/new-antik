@@ -1,5 +1,5 @@
 // =====================================================
-// Grand3D Co-op Server v16.0 - Advanced Progression & Sync (Skins Synced)
+// Grand3D Co-op Server v17.0 - Progression & Rating System
 // =====================================================
 
 const express = require('express');
@@ -28,12 +28,42 @@ const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
+// ═══════════════════════════════════════════════════════════════
+// نظام الفتح (Unlock System) - كل 10 مستويات = سفينة جديدة
+// ═══════════════════════════════════════════════════════════════
+const BOAT_UNLOCK_LEVELS = [
+    1,    // المستوى 1  → ORB_FORTRESS (مفتوحة من البداية)
+    10,   // المستوى 10 → MANTA_BLADE
+    20,   // المستوى 20 → TRIDENT_CROWN
+    30,   // المستوى 30 → SELECT_HYDRO
+    40,   // المستوى 40 → SUPREME_HYDRO
+    50,   // المستوى 50 → DEEPSEEK
+    // يمكنك إضافة المزيد لاحقاً
+];
+
+function unlockedBoatCount(level) {
+    let count = 0;
+    for (const lvl of BOAT_UNLOCK_LEVELS) {
+        if (level >= lvl) count++;
+    }
+    return count;
+}
+
+// ═══════════════════════════════════════════════════════════════
+// نظام التقييم (Rating System) - Logarithmic
+// ═══════════════════════════════════════════════════════════════
+function calculateRating(level, kills) {
+    if (kills <= 0) return level;
+    const logValue = Math.log(kills + 1) * 1000;
+    return Math.round(level * logValue);
+}
+
 let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v16.0 - Skins Synced Successfully');
+    res.send('Grand3D Co-op Server v17.0 - Progression System Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -255,9 +285,10 @@ async function fetchLeaderboard() {
         const arr = Object.values(data).map(u => ({
             name: u.username || "Commander",
             kills: u.total_kills || 0,
-            level: u.level || 1
+            level: u.level || 1,
+            rating: u.rating || 0
         }));
-        arr.sort((a, b) => b.level - a.level || b.kills - a.kills);
+        arr.sort((a, b) => b.rating - a.rating || b.level - a.level || b.kills - a.kills);
         cachedLeaderboard = arr.slice(0, 5);
         lastFetch = now;
         return cachedLeaderboard;
@@ -270,29 +301,54 @@ function sendLeaderboard(roomId) {
     }).catch(() => {});
 }
 
-function fetchUserKills(uid, callback) {
-    if (!uid) return callback(0);
-    fetch(DB_URL + "/users/" + uid + "/total_kills.json")
+function fetchUserData(uid, callback) {
+    if (!uid) return callback(null);
+    fetch(DB_URL + "/users/" + uid + ".json")
         .then(res => res.json())
-        .then(v => {
-            const current = (typeof v === 'number') ? v : 0;
-            callback(current);
-        })
-        .catch(() => callback(0));
+        .then(v => callback(v))
+        .catch(() => callback(null));
 }
 
+// ═══════════════════════════════════════════════════════════════
+// pushUserStats - تحديث القتلات والمستوى والتقييم
+// ═══════════════════════════════════════════════════════════════
 function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
-    if (kills != null) {
-        fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
-        }).catch(() => {});
-    }
-    if (level != null && level > 0) {
-        fetch(DB_URL + "/users/" + uid + "/level.json", {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
-        }).catch(() => {});
-    }
+
+    // جلب البيانات الحالية
+    fetch(DB_URL + "/users/" + uid + ".json")
+        .then(res => res.json())
+        .then(userData => {
+            const oldKills = (userData && typeof userData.total_kills === 'number') ? userData.total_kills : 0;
+            const oldLevel = (userData && typeof userData.level === 'number') ? userData.level : 1;
+
+            const newKills = (kills != null) ? (oldKills + kills) : oldKills;
+            const newLevel = (level != null && level > oldLevel) ? level : oldLevel;
+
+            // حساب التقييم الجديد
+            const newRating = calculateRating(newLevel, newKills);
+
+            // حساب عدد السفن المفتوحة
+            const unlockedBoats = unlockedBoatCount(newLevel);
+
+            // رفع كل شيء لـ Firebase
+            const updates = {
+                total_kills: newKills,
+                level: newLevel,
+                rating: newRating,
+                unlocked_boats: unlockedBoats,
+                last_updated: Date.now()
+            };
+
+            fetch(DB_URL + "/users/" + uid + ".json", {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(updates)
+            }).catch(() => {});
+
+            console.log(`\u{1F4BE} ${uid}: L=${newLevel} K=${newKills} R=${newRating} Boats=${unlockedBoats}`);
+        })
+        .catch(() => {});
     lastFetch = 0;
 }
 
@@ -303,13 +359,8 @@ function flushWaveStats(roomId) {
     for (const uid in room.players) {
         const pl = room.players[uid];
         if (!pl.uid) continue;
-
-        fetchUserKills(pl.uid, (oldKills) => {
-            const newTotal = oldKills + (pl.kills || 0);
-            pushUserStatsAsync(pl.uid, newTotal, pl.level);
-            console.log(`\u{1F4BE} Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
-            pl.kills = 0;
-        });
+        pushUserStatsAsync(pl.uid, pl.kills || 0, pl.level);
+        pl.kills = 0;
     }
     sendLeaderboard(roomId);
 }
@@ -319,10 +370,7 @@ io.on('connection', (socket) => {
 
     socket.on('check_active_session', (data) => {
         const { uid } = data || {};
-        if (!uid) {
-            socket.emit('no_active_session');
-            return;
-        }
+        if (!uid) { socket.emit('no_active_session'); return; }
 
         for (const roomId in rooms) {
             const room = rooms[roomId];
@@ -337,11 +385,9 @@ io.on('connection', (socket) => {
                         wave: room.wave,
                         level: player.level,
                         hp: player.hp,
-                        x: player.x,
-                        y: player.y,
-                        heading: player.heading,
+                        x: player.x, y: player.y, heading: player.heading,
                         islands: room.islands,
-                        skinPath: player.skinPath // مزامنة السكن عند استعادة الجلسة
+                        skinPath: player.skinPath
                     });
                     return;
                 }
@@ -360,21 +406,14 @@ io.on('connection', (socket) => {
     socket.on('reconnect_session', (data) => {
         const { uid, roomId, skinPath } = data || {};
         const room = rooms[roomId];
-        if (!room || room.wiped) {
-            socket.emit('session_recovery_failed');
-            return;
-        }
+        if (!room || room.wiped) { socket.emit('session_recovery_failed'); return; }
 
         const player = room.players[uid];
         if (player) {
-            if (player.deathTimer) {
-                clearTimeout(player.deathTimer);
-                player.deathTimer = null;
-            }
-
+            if (player.deathTimer) { clearTimeout(player.deathTimer); player.deathTimer = null; }
             player.online = true;
             player.id = socket.id;
-            if (skinPath) player.skinPath = skinPath; // تحديث السكن عند إعادة الاتصال
+            if (skinPath) player.skinPath = skinPath;
 
             socket.join(roomId);
             socket.currentRoom = roomId;
@@ -383,10 +422,7 @@ io.on('connection', (socket) => {
             socket.mode = room.mode;
 
             socket.emit('session_recovered', {
-                wave: room.wave,
-                level: player.level,
-                hp: player.hp,
-                skinPath: player.skinPath
+                wave: room.wave, level: player.level, hp: player.hp, skinPath: player.skinPath
             });
 
             socket.to(roomId).emit('player_joined', {
@@ -414,9 +450,7 @@ io.on('connection', (socket) => {
                 }
                 delete oldRoom.players[socket.uid];
                 io.to(socket.currentRoom).emit('player_left', { id: socket.id });
-                if (Object.keys(oldRoom.players).length === 0) {
-                    endRoom(socket.currentRoom);
-                }
+                if (Object.keys(oldRoom.players).length === 0) endRoom(socket.currentRoom);
             }
             socket.leave(socket.currentRoom);
         }
@@ -425,14 +459,10 @@ io.on('connection', (socket) => {
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
-                if (r.players[uid].deathTimer) {
-                    clearTimeout(r.players[uid].deathTimer);
-                }
+                if (r.players[uid].deathTimer) clearTimeout(r.players[uid].deathTimer);
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: socket.id });
-                if (Object.keys(r.players).length === 0) {
-                    endRoom(rId);
-                }
+                if (Object.keys(r.players).length === 0) endRoom(rId);
             }
         }
 
@@ -447,9 +477,7 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        if (!roomId) {
-            roomId = createRoom(socket.mode, socket.startLevel);
-        }
+        if (!roomId) roomId = createRoom(socket.mode, socket.startLevel);
 
         const room = rooms[roomId];
         if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
@@ -474,25 +502,17 @@ io.on('connection', (socket) => {
         }
 
         room.players[socket.uid] = {
-            id: socket.id,
-            uid: socket.uid,
-            name: socket.username,
+            id: socket.id, uid: socket.uid, name: socket.username,
             x: sx, y: sy, heading: 0,
-            hp: 100,
-            kills: 0,
-            level: socket.startLevel,
-            online: true,
-            deathTimer: null,
-            skinPath: skinPath || 'bt/bt.png' // حفظ مسار السكن في بيانات اللاعب بالسيرفر
+            hp: 100, kills: 0, level: socket.startLevel,
+            online: true, deathTimer: null,
+            skinPath: skinPath || 'bt/bt.png'
         };
 
         socket.emit('match_found', {
-            matchId: roomId,
-            role: 'Player',
-            spawnX: sx, spawnY: sy, spawnHeading: 0,
-            opponentId: '',
-            serverId: socket.id,
-            wave: room.wave,
+            matchId: roomId, role: 'Player',
+            spawnX: sx, spawnY: sy, spawnHeading: 0, opponentId: '',
+            serverId: socket.id, wave: room.wave,
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
             islands: room.islands || [],
@@ -510,9 +530,7 @@ io.on('connection', (socket) => {
 
         socket.emit('bots_update', Object.values(room.bots));
 
-        if (Object.keys(room.bots).length === 0) {
-            spawnWave(roomId);
-        }
+        if (Object.keys(room.bots).length === 0) spawnWave(roomId);
 
         sendLeaderboard(roomId);
     });
@@ -522,8 +540,8 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
-        if (data.skinPath) p.skinPath = data.skinPath; // تحديث السكن ديناميكياً إذا تغير
-        
+        if (data.skinPath) p.skinPath = data.skinPath;
+
         socket.to(socket.currentRoom).emit('player_moved', {
             id: socket.id, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath
         });
@@ -543,9 +561,7 @@ io.on('connection', (socket) => {
             if (p) p.kills += 1;
 
             io.to(socket.currentRoom).emit('bot_killed', {
-                botId: data.botId,
-                byId: socket.id,
-                byName: p ? p.name : '?'
+                botId: data.botId, byId: socket.id, byName: p ? p.name : '?'
             });
 
             if (Object.keys(room.bots).length === 0) {
@@ -554,9 +570,7 @@ io.on('connection', (socket) => {
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    if (clearedWave >= pl.level) {
-                        pl.level += 1;
-                    }
+                    if (clearedWave >= pl.level) pl.level += 1;
                     pl.hp = 100; 
                 }
 
@@ -565,10 +579,7 @@ io.on('connection', (socket) => {
                 for (const uid in room.players) {
                     const pl = room.players[uid];
                     if (pl.online && pl.id) {
-                        io.to(pl.id).emit('level_up', {
-                            wave: room.wave,
-                            level: pl.level
-                        });
+                        io.to(pl.id).emit('level_up', { wave: room.wave, level: pl.level });
                         io.to(pl.id).emit('hp_update', { hp: 100 });
                     }
                 }
@@ -597,7 +608,6 @@ io.on('connection', (socket) => {
                 if (!r || r.wiped) return;
 
                 const onlineAlive = Object.values(r.players).filter(pl => pl.online && pl.hp > 0);
-
                 if (onlineAlive.length === 0) {
                     for (const uid in r.players) {
                         const pl = r.players[uid];
@@ -606,20 +616,16 @@ io.on('connection', (socket) => {
                 }
 
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
-
                 if (allDead && Object.keys(r.players).length > 0) {
+                    // ⬇️ خسارة العشيرة → reset كامل
                     for (const uid in r.players) {
                         const pl = r.players[uid];
-                        pl.level = Math.max(1, pl.level - 1);
+                        // ⬇️ reset المستوى إلى 1 والقتلات إلى 0
+                        pushUserStatsAsync(pl.uid, 0, 1);
                     }
 
-                    flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
-
-                    for (const uid in r.players) {
-                        wipedRoomsLog.add(uid);
-                    }
-
+                    for (const uid in r.players) wipedRoomsLog.add(uid);
                     endRoom(roomIdAtDeath);
                     return;
                 }
@@ -638,70 +644,38 @@ io.on('connection', (socket) => {
     });
 
     socket.on('leave_match', () => leaveRoom(socket, true));
-    socket.on('disconnect', () => {
-        leaveRoom(socket, false);
-    });
+    socket.on('disconnect', () => leaveRoom(socket, false));
 });
 
 function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
-
-    if (!room) {
-        cleanSocket(socket);
-        return;
-    }
+    if (!room) { cleanSocket(socket); return; }
 
     const player = room.players[socket.uid];
-    if (!player) {
-        cleanSocket(socket);
-        return;
-    }
+    if (!player) { cleanSocket(socket); return; }
 
     if (immediate) {
         if (player.deathTimer) clearTimeout(player.deathTimer);
-        
         if (player.uid) {
-            fetchUserKills(player.uid, (oldKills) => {
-                const newTotal = oldKills + (player.kills || 0);
-                pushUserStatsAsync(player.uid, newTotal, player.level);
-                console.log(`\u{1F4BE} Saved on immediate leave ${player.name}: kills=${newTotal}, level=${player.level}`);
-                
-                delete room.players[socket.uid];
-                io.to(roomId).emit('player_left', { id: socket.id });
-                socket.leave(roomId);
-                cleanSocket(socket);
-
-                if (Object.keys(room.players).length === 0) {
-                    endRoom(roomId);
-                }
-            });
-        } else {
-            delete room.players[socket.uid];
-            io.to(roomId).emit('player_left', { id: socket.id });
-            socket.leave(roomId);
-            cleanSocket(socket);
-
-            if (Object.keys(room.players).length === 0) {
-                endRoom(roomId);
-            }
+            pushUserStatsAsync(player.uid, player.kills || 0, player.level);
         }
+        delete room.players[socket.uid];
+        io.to(roomId).emit('player_left', { id: socket.id });
+        socket.leave(roomId);
+        cleanSocket(socket);
+        if (Object.keys(room.players).length === 0) endRoom(roomId);
     } else {
         player.online = false;
         io.to(roomId).emit('player_left', { id: socket.id });
-
         player.deathTimer = setTimeout(() => {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
-
             const p = r.players[socket.uid];
             if (!p || p.online) return;
-
             p.hp = 0;
             p.deathTimer = null;
-
             delete r.players[socket.uid];
-
             if (Object.keys(r.players).length === 0) {
                 flushWaveStats(roomId);
                 endRoom(roomId);
@@ -714,7 +688,6 @@ function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
-
     if (room.botTickInterval) clearInterval(room.botTickInterval);
 
     for (const uid in room.players) {
@@ -722,24 +695,19 @@ function endRoom(roomId) {
         if (p.deathTimer) clearTimeout(p.deathTimer);
         if (!p.id) continue;
         const s = io.sockets.sockets.get(p.id);
-        if (s) {
-            s.leave(roomId);
-            cleanSocket(s);
-        }
+        if (s) { s.leave(roomId); cleanSocket(s); }
     }
-
     delete rooms[roomId];
     console.log('\u23F1 Room ended:', roomId);
 }
 
 setInterval(() => {
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length === 0) {
-            endRoom(id);
-        }
+        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
     }
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v16.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v17.0 running on port ${PORT}`);
+    console.log(`   Boat unlock levels: ${BOAT_UNLOCK_LEVELS.join(', ')}`);
 });
