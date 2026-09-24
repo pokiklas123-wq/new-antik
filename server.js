@@ -29,7 +29,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v17.0 - Full Sync Active');
+    res.send('Grand3D Co-op Server v19.0 - Skins and Waves Fully Synced');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -447,7 +447,6 @@ io.on('connection', (socket) => {
 
         let roomId = findOpenRoom(socket.mode);
         if (!roomId) {
-            // ✅ السيرفر سيحدد مستوى الموجة بناءً على أول شخص يدخل الغرفة
             roomId = createRoom(socket.mode, socket.startLevel);
         }
 
@@ -744,5 +743,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v18.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v19.0 running on port ${PORT}`);
 });
