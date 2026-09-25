@@ -1,5 +1,3 @@
-
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -31,7 +29,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v16.0 - Skins Synced Successfully');
+    res.send('Grand3D Co-op Server v20.0 - Memory Safe Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -104,7 +102,7 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        wave: Math.max(1, (startWave || 1) + 1),
+        wave: Math.max(1, (startWave || 1)),
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
@@ -339,7 +337,8 @@ io.on('connection', (socket) => {
                         y: player.y,
                         heading: player.heading,
                         islands: room.islands,
-                        skinPath: player.skinPath // مزامنة السكن عند استعادة الجلسة
+                        hullId: player.hullId,
+                        skinPath: player.skinPath
                     });
                     return;
                 }
@@ -356,7 +355,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('reconnect_session', (data) => {
-        const { uid, roomId, skinPath } = data || {};
+        const { uid, roomId, hullId, skinPath } = data || {};
         const room = rooms[roomId];
         if (!room || room.wiped) {
             socket.emit('session_recovery_failed');
@@ -372,7 +371,8 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
-            if (skinPath) player.skinPath = skinPath; // تحديث السكن عند إعادة الاتصال
+            if (hullId) player.hullId = hullId;
+            if (skinPath) player.skinPath = skinPath;
 
             socket.join(roomId);
             socket.currentRoom = roomId;
@@ -384,16 +384,17 @@ io.on('connection', (socket) => {
                 wave: room.wave,
                 level: player.level,
                 hp: player.hp,
+                hullId: player.hullId,
                 skinPath: player.skinPath
             });
 
             socket.to(roomId).emit('player_joined', {
-                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading, skinPath: player.skinPath
+                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading, hullId: player.hullId, skinPath: player.skinPath
             });
 
             const existing = Object.values(room.players)
                 .filter(p => p.uid !== uid)
-                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath }));
+                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath }));
             socket.emit('room_state', { players: existing, wave: room.wave });
             socket.emit('bots_update', Object.values(room.bots));
         } else {
@@ -402,7 +403,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join_match', (data) => {
-        const { mode, username, uid, level, total_kills, islands, skinPath } = data || {};
+        const { mode, username, uid, level, total_kills, islands, hullId, skinPath } = data || {};
 
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
@@ -481,7 +482,8 @@ io.on('connection', (socket) => {
             level: socket.startLevel,
             online: true,
             deathTimer: null,
-            skinPath: skinPath || 'bt/bt.png' // حفظ مسار السكن في بيانات اللاعب بالسيرفر
+            hullId: hullId || 'bot',
+            skinPath: skinPath || 'bt/bot/bot.png'
         };
 
         socket.emit('match_found', {
@@ -494,16 +496,17 @@ io.on('connection', (socket) => {
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
             islands: room.islands || [],
+            hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
         });
 
         const existing = Object.values(room.players)
             .filter(p => p.uid !== socket.uid)
-            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath }));
+            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0, skinPath: room.players[socket.uid].skinPath
+            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0, hullId: room.players[socket.uid].hullId, skinPath: room.players[socket.uid].skinPath
         });
 
         socket.emit('bots_update', Object.values(room.bots));
@@ -520,10 +523,11 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
-        if (data.skinPath) p.skinPath = data.skinPath; // تحديث السكن ديناميكياً إذا تغير
+        if (data.hullId) p.hullId = data.hullId;
+        if (data.skinPath) p.skinPath = data.skinPath; 
         
         socket.to(socket.currentRoom).emit('player_moved', {
-            id: socket.id, x: p.x, y: p.y, heading: p.heading, skinPath: p.skinPath
+            id: socket.id, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath
         });
     });
 
@@ -739,5 +743,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v16.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v20.0 running on port ${PORT}`);
 });
