@@ -29,7 +29,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v20.0 - Memory Safe Active');
+    res.send('Grand3D Co-op Server v21.0 - Strict Leveling & Sync Active');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -102,7 +102,7 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        wave: Math.max(1, (startWave || 1)),
+        wave: Math.max(1, startWave), // الـ wave يبدأ بناءً على مستوى أول لاعب
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
@@ -479,7 +479,7 @@ io.on('connection', (socket) => {
             x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel,
+            level: socket.startLevel, // المستوى الشخصي
             online: true,
             deathTimer: null,
             hullId: hullId || 'bot',
@@ -492,8 +492,8 @@ io.on('connection', (socket) => {
             spawnX: sx, spawnY: sy, spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
-            wave: room.wave,
-            playerLevel: room.players[socket.uid].level,
+            wave: room.wave, // يرسل الـ wave الخاص بالغرفة
+            playerLevel: room.players[socket.uid].level, // يرسل المستوى الشخصي
             mode: socket.mode,
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
@@ -551,11 +551,13 @@ io.on('connection', (socket) => {
             });
 
             if (Object.keys(room.bots).length === 0) {
+                // ✅ نظام الترقية الصارم
                 const clearedWave = room.wave; 
-                room.wave += 1; 
+                room.wave += 1; // ترقية الموجة للغرفة كلها
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
+                    // يترقى اللاعب فقط إذا كان الويف مساوياً أو أعلى من مستواه
                     if (clearedWave >= pl.level) {
                         pl.level += 1;
                     }
@@ -610,6 +612,7 @@ io.on('connection', (socket) => {
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
 
                 if (allDead && Object.keys(r.players).length > 0) {
+                    // ✅ عند الخسارة، الجميع ينقص مستواه بغض النظر عن الويف
                     for (const uid in r.players) {
                         const pl = r.players[uid];
                         pl.level = Math.max(1, pl.level - 1);
@@ -743,5 +746,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v20.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v21.0 running on port ${PORT}`);
 });
