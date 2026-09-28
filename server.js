@@ -19,7 +19,8 @@ const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
-const TICK_MS = 50; 
+// التحسين الأول: تخفيف الضغط على المعالج (Render يفضل هذا الرقم)
+const TICK_MS = 100; 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
@@ -29,7 +30,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v24.0 - Finisher Sync & Secure Respawn');
+    res.send('Grand3D Co-op Server v25.0 - Render Optimized');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -110,7 +111,6 @@ function createRoom(mode, startWave) {
         wiped: false
     };
     startBotTick(id);
-    console.log(`\u2705 Room created: ${id} (${mode}) Wave ${rooms[id].wave}`);
     return id;
 }
 
@@ -150,7 +150,8 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
-            const step = speed;
+            const step = speed * (TICK_MS / 50);
+
 
             let nx = bot.x + (dx / len) * step;
             let ny = bot.y + (dy / len) * step;
@@ -184,19 +185,26 @@ function startBotTick(roomId) {
 
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
-            bot.fireTimer = (bot.fireTimer || 0) + 0.1;
+            bot.fireTimer = (bot.fireTimer || 0) + 0.12; // تم تعديلها لتناسب الـ TICK_MS الجديد
             if (bot.fireTimer > 2.0 && closestD2 < 1800 * 1800) {
                 bot.fireTimer = 0;
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
-                    x: bot.x, y: bot.y,
-                    targetX: closest.x, targetY: closest.y
+                    x: Math.round(bot.x), 
+                    y: Math.round(bot.y),
+                    targetX: Math.round(closest.x), 
+                    targetY: Math.round(closest.y)
                 });
             }
         }
 
+        // التحسين الثاني: تقريب القيم لتخفيف استهلاك الإنترنت على Render
         const botsPayload = Object.values(r.bots).map(b => ({
-            id: b.id, x: b.x, y: b.y, heading: b.heading, hp: b.hp
+            id: b.id, 
+            x: Math.round(b.x), 
+            y: Math.round(b.y), 
+            heading: Math.round(b.heading), 
+            hp: b.hp
         }));
         io.to(roomId).emit('bots_update', botsPayload);
     }, TICK_MS);
@@ -230,9 +238,13 @@ function spawnWave(roomId) {
         };
     }
 
-    console.log(`\u1F30A [${roomId}] Wave ${room.wave} - ${count} bots`);
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
-    io.to(roomId).emit('bots_update', Object.values(room.bots));
+    
+    // تقريب القيم هنا أيضاً
+    const botsPayload = Object.values(room.bots).map(b => ({
+        id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+    }));
+    io.to(roomId).emit('bots_update', botsPayload);
 }
 
 let cachedLeaderboard = [];
@@ -302,7 +314,6 @@ function flushWaveStats(roomId) {
         fetchUserKills(pl.uid, (oldKills) => {
             const newTotal = oldKills + (pl.kills || 0);
             pushUserStatsAsync(pl.uid, newTotal, pl.level);
-            console.log(`\u{1F4BE} Saved ${pl.name}: kills=${newTotal}, level=${pl.level}`);
             pl.kills = 0;
         });
     }
@@ -310,7 +321,6 @@ function flushWaveStats(roomId) {
 }
 
 io.on('connection', (socket) => {
-    console.log('Connected:', socket.id);
 
     socket.on('check_active_session', (data) => {
         const { uid } = data || {};
@@ -332,9 +342,9 @@ io.on('connection', (socket) => {
                         wave: room.wave,
                         level: player.level,
                         hp: player.hp,
-                        x: player.x,
-                        y: player.y,
-                        heading: player.heading,
+                        x: Math.round(player.x),
+                        y: Math.round(player.y),
+                        heading: Math.round(player.heading),
                         islands: room.islands,
                         hullId: player.hullId,
                         skinPath: player.skinPath
@@ -389,15 +399,26 @@ io.on('connection', (socket) => {
             });
 
             socket.to(roomId).emit('player_joined', {
-                id: socket.id, name: player.name, x: player.x, y: player.y, heading: player.heading, 
+                id: socket.id, name: player.name, 
+                x: Math.round(player.x), y: Math.round(player.y), 
+                heading: Math.round(player.heading), 
                 hullId: player.hullId, skinPath: player.skinPath, finisherId: player.finisherId
             });
 
             const existing = Object.values(room.players)
                 .filter(p => p.uid !== uid)
-                .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId }));
+                .map(p => ({ 
+                    id: p.id, name: p.name, 
+                    x: Math.round(p.x), y: Math.round(p.y), 
+                    heading: Math.round(p.heading), 
+                    hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId 
+                }));
             socket.emit('room_state', { players: existing, wave: room.wave });
-            socket.emit('bots_update', Object.values(room.bots));
+            
+            const botsPayload = Object.values(room.bots).map(b => ({
+                id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+            }));
+            socket.emit('bots_update', botsPayload);
         } else {
             socket.emit('session_recovery_failed');
         }
@@ -491,7 +512,9 @@ io.on('connection', (socket) => {
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
-            spawnX: sx, spawnY: sy, spawnHeading: 0,
+            spawnX: Math.round(sx), 
+            spawnY: Math.round(sy), 
+            spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
@@ -504,14 +527,26 @@ io.on('connection', (socket) => {
 
         const existing = Object.values(room.players)
             .filter(p => p.uid !== socket.uid)
-            .map(p => ({ id: p.id, name: p.name, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId }));
+            .map(p => ({ 
+                id: p.id, name: p.name, 
+                x: Math.round(p.x), y: Math.round(p.y), 
+                heading: Math.round(p.heading), 
+                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId 
+            }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username, x: sx, y: sy, heading: 0, hullId: room.players[socket.uid].hullId, skinPath: room.players[socket.uid].skinPath, finisherId: room.players[socket.uid].finisherId
+            id: socket.id, name: socket.username, 
+            x: Math.round(sx), y: Math.round(sy), 
+            heading: 0, hullId: room.players[socket.uid].hullId, 
+            skinPath: room.players[socket.uid].skinPath, 
+            finisherId: room.players[socket.uid].finisherId
         });
 
-        socket.emit('bots_update', Object.values(room.bots));
+        const botsPayload = Object.values(room.bots).map(b => ({
+            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+        }));
+        socket.emit('bots_update', botsPayload);
 
         if (Object.keys(room.bots).length === 0) {
             spawnWave(roomId);
@@ -530,7 +565,11 @@ io.on('connection', (socket) => {
         if (data.finisherId) p.finisherId = data.finisherId;
         
         socket.to(socket.currentRoom).emit('player_moved', {
-            id: socket.id, x: p.x, y: p.y, heading: p.heading, hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
+            id: socket.id, 
+            x: Math.round(p.x), 
+            y: Math.round(p.y), 
+            heading: Math.round(p.heading), 
+            hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
         });
     });
 
@@ -547,10 +586,8 @@ io.on('connection', (socket) => {
             const p = room.players[socket.uid];
             if (p) p.kills += 1;
 
-            // 🌟 تحديد هل البوت المقتول حالياً هو آخر بوت في الغرفة أم لا
             const isLastBot = (Object.keys(room.bots).length === 0);
 
-            // 🌟 إرسال متغير isLastBot للعملاء لمنع تكرار تأثير القاضية
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
@@ -568,7 +605,7 @@ io.on('connection', (socket) => {
                     if (clearedWave >= pl.level) {
                         pl.level += 1;
                     }
-                    pl.hp = 100; // إحياء جميع اللاعبين بالكامل
+                    pl.hp = 100;
                 }
 
                 flushWaveStats(socket.currentRoom);
@@ -581,7 +618,6 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                // تأخير الموجة 2.5 ثانية لرؤية التأثير بوضوح
                 setTimeout(() => {
                     spawnWave(socket.currentRoom);
                 }, 2500);
@@ -644,7 +680,10 @@ io.on('connection', (socket) => {
                     currentPlayer.y = sp.y;
                     currentPlayer.hp = 100;
                     if (currentPlayer.online && currentPlayer.id) {
-                        io.to(currentPlayer.id).emit('player_respawned', { x: sp.x, y: sp.y });
+                        io.to(currentPlayer.id).emit('player_respawned', { 
+                            x: Math.round(sp.x), 
+                            y: Math.round(sp.y) 
+                        });
                     }
                 }
             }, RESPAWN_MS);
@@ -755,5 +794,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v24.0 running on port ${PORT}`);
+    // تم إلغاء الكونسول الزائد لكي لا يستهلك طاقة المعالج في Render
 });
