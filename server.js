@@ -14,12 +14,11 @@ const PORT = process.env.PORT || 3000;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
-const BOT_SPEED_WAVE_CAP = 20;
 const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
 
-// التحسين الأول: تخفيف الضغط على المعالج (Render يفضل هذا الرقم)
+// التحسين لأجل Render (تحديثات أقل ضغطاً على المعالج)
 const TICK_MS = 100; 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
@@ -30,7 +29,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v25.0 - Render Optimized');
+    res.send('Grand3D Co-op Server v26.0 - Smart AI & Render Optimized');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -40,22 +39,24 @@ function dist2(ax, ay, bx, by) {
     return dx * dx + dy * dy;
 }
 
+// --- نظام القوى المنطقي والتصاعدي ---
 function botSpeedForWave(wave) {
-    let base = 12.0; 
-    if (wave <= BOT_SPEED_WAVE_CAP) base += wave * 0.6;
-    else base += BOT_SPEED_WAVE_CAP * 0.4;
-    return Math.min(base, 20.0); 
+    // السرعة القصوى 16 (أسرع من اللاعب بقليل لكن ليس تعجيزي)
+    return Math.min(10.0 + (wave * 0.1), 16.0); 
 }
 
 function botHPForWave(wave) {
-    if (wave >= 70) return 3;
-    if (wave >= 40) return 2;
+    if (wave > 150) return 4;
+    if (wave > 80) return 3;
+    if (wave > 30) return 2;
     return 1;
 }
 
 function botCountForWave(wave) {
-    return Math.min(3 + wave * 2, 40);
+    // 30 بوت كحد أقصى للحفاظ على الأداء الممتاز للسيرفر والهاتف
+    return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
+// ----------------------------------
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -128,10 +129,19 @@ function startBotTick(roomId) {
             return;
         }
 
+        // حساب سرعة واتجاه اللاعبين من أجل التصويب الاستباقي
+        for (let i = 0; i < playersList.length; i++) {
+            const p = playersList[i];
+            p.vx = p.x - (p.lastX || p.x);
+            p.vy = p.y - (p.lastY || p.y);
+            p.lastX = p.x;
+            p.lastY = p.y;
+        }
+
         const islands = r.islands || [];
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
-            r100sq: (i.radius + 100) * (i.radius + 100)
+            r100sq: (i.radius + 150) * (i.radius + 150) // مسافة أمان لتجنب الجزر
         }));
 
         for (const botId in r.bots) {
@@ -146,15 +156,36 @@ function startBotTick(roomId) {
             }
             if (!closest) continue;
 
-            const speed = botSpeedForWave(r.wave);
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
-            const step = speed * (TICK_MS / 50);
+            const speed = botSpeedForWave(r.wave);
+            const step = speed * (TICK_MS / 50); // الحفاظ على السرعة الحقيقية بغض النظر عن TICK_MS
 
+            // --- 1. نظام الحركة الذكي (التطويق والمناورة) ---
+            let moveDx = 0, moveDy = 0;
+            
+            if (len > 1800) {
+                // هجوم مباشر إذا كان اللاعب بعيداً
+                moveDx = dx; 
+                moveDy = dy;
+            } else if (len < 900) {
+                // تراجع تكتيكي إذا اقترب اللاعب (Kiting)
+                moveDx = -dx; 
+                moveDy = -dy;
+            } else {
+                // دوران حول اللاعب للتطويق (Strafe)
+                const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
+                moveDx = dy * circleDirection; 
+                moveDy = -dx * circleDirection;
+                // اندفاع خفيف نحو الداخل أثناء الدوران
+                moveDx += dx * 0.15;
+                moveDy += dy * 0.15;
+            }
 
-            let nx = bot.x + (dx / len) * step;
-            let ny = bot.y + (dy / len) * step;
+            const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
+            let nx = bot.x + (moveDx / moveLen) * step;
+            let ny = bot.y + (moveDy / moveLen) * step;
 
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
@@ -166,7 +197,8 @@ function startBotTick(roomId) {
             if (!blocked) {
                 bot.x = nx; bot.y = ny;
             } else {
-                const perp = Math.atan2(dy, dx) + Math.PI / 2;
+                // الانزلاق حول الجزيرة بذكاء
+                const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
                 const tX = bot.x + Math.cos(perp) * step;
                 const tY = bot.y + Math.sin(perp) * step;
                 let b2 = false;
@@ -178,27 +210,34 @@ function startBotTick(roomId) {
                 if (!b2) { bot.x = tX; bot.y = tY; }
             }
 
-            if (bot.x < WORLD_MIN) bot.x = WORLD_MIN;
-            else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
-            if (bot.y < WORLD_MIN) bot.y = WORLD_MIN;
-            else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
+            if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
+            if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
-            bot.fireTimer = (bot.fireTimer || 0) + 0.12; // تم تعديلها لتناسب الـ TICK_MS الجديد
-            if (bot.fireTimer > 2.0 && closestD2 < 1800 * 1800) {
+            // --- 2. نظام التصويب الاستباقي الذكي (Predictive Aiming) ---
+            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015)); // سرعة إطلاق نار متصاعدة
+            bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
+
+            if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
                 bot.fireTimer = 0;
+                
+                // حساب مكان اللاعب المستقبلي بناءً على سرعته الحالية
+                const predictionFactor = (len / 100); 
+                const targetX = closest.x + (closest.vx * predictionFactor);
+                const targetY = closest.y + (closest.vy * predictionFactor);
+
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
                     x: Math.round(bot.x), 
                     y: Math.round(bot.y),
-                    targetX: Math.round(closest.x), 
-                    targetY: Math.round(closest.y)
+                    targetX: Math.round(targetX), 
+                    targetY: Math.round(targetY)
                 });
             }
         }
 
-        // التحسين الثاني: تقريب القيم لتخفيف استهلاك الإنترنت على Render
+        // إرسال البيانات بشكل مقرب (Math.round) لتقليل استهلاك الإنترنت
         const botsPayload = Object.values(r.bots).map(b => ({
             id: b.id, 
             x: Math.round(b.x), 
@@ -240,7 +279,6 @@ function spawnWave(roomId) {
 
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     
-    // تقريب القيم هنا أيضاً
     const botsPayload = Object.values(room.bots).map(b => ({
         id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
     }));
@@ -794,5 +832,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    // تم إلغاء الكونسول الزائد لكي لا يستهلك طاقة المعالج في Render
+    // Render Server Running
 });
