@@ -29,7 +29,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v21.0 - Strict Leveling & Sync Active');
+    res.send('Grand3D Co-op Server v22.0 - Finisher Sync & Wave Delay');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -102,7 +102,7 @@ function createRoom(mode, startWave) {
     rooms[id] = {
         id, mode,
         players: {},
-        wave: Math.max(1, startWave), // الـ wave يبدأ بناءً على مستوى أول لاعب
+        wave: Math.max(1, startWave),
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
@@ -235,7 +235,6 @@ function spawnWave(roomId) {
     io.to(roomId).emit('bots_update', Object.values(room.bots));
 }
 
-// ============= Firebase =============
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 10000;
@@ -479,7 +478,7 @@ io.on('connection', (socket) => {
             x: sx, y: sy, heading: 0,
             hp: 100,
             kills: 0,
-            level: socket.startLevel, // المستوى الشخصي
+            level: socket.startLevel,
             online: true,
             deathTimer: null,
             hullId: hullId || 'bot',
@@ -492,8 +491,8 @@ io.on('connection', (socket) => {
             spawnX: sx, spawnY: sy, spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
-            wave: room.wave, // يرسل الـ wave الخاص بالغرفة
-            playerLevel: room.players[socket.uid].level, // يرسل المستوى الشخصي
+            wave: room.wave,
+            playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
@@ -544,20 +543,20 @@ io.on('connection', (socket) => {
             const p = room.players[socket.uid];
             if (p) p.kills += 1;
 
+            // 🌟 إرسال نوع تاثير القاتل للجميع ليتم عرضه بشكل موحد (Glacier M4 Logic)
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
-                byName: p ? p.name : '?'
+                byName: p ? p.name : '?',
+                finisherId: data.finisherId || 'none'
             });
 
             if (Object.keys(room.bots).length === 0) {
-                // ✅ نظام الترقية الصارم
                 const clearedWave = room.wave; 
-                room.wave += 1; // ترقية الموجة للغرفة كلها
+                room.wave += 1;
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    // يترقى اللاعب فقط إذا كان الويف مساوياً أو أعلى من مستواه
                     if (clearedWave >= pl.level) {
                         pl.level += 1;
                     }
@@ -577,7 +576,10 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                spawnWave(socket.currentRoom);
+                // 🌟 تأخير 2.5 ثانية قبل إنزال البوتات الجديدة ليتمتع الجميع بالتاثير
+                setTimeout(() => {
+                    spawnWave(socket.currentRoom);
+                }, 2500);
             }
         } else {
             io.to(socket.currentRoom).emit('bot_hp', { botId: data.botId, hp: bot.hp });
@@ -612,7 +614,6 @@ io.on('connection', (socket) => {
                 const allDead = Object.values(r.players).every(pl => pl.hp <= 0);
 
                 if (allDead && Object.keys(r.players).length > 0) {
-                    // ✅ عند الخسارة، الجميع ينقص مستواه بغض النظر عن الويف
                     for (const uid in r.players) {
                         const pl = r.players[uid];
                         pl.level = Math.max(1, pl.level - 1);
@@ -746,5 +747,5 @@ setInterval(() => {
 }, 60000);
 
 server.listen(PORT, () => {
-    console.log(`\u{1F680} Co-op server v21.0 running on port ${PORT}`);
+    console.log(`\u{1F680} Co-op server v22.0 running on port ${PORT}`);
 });
