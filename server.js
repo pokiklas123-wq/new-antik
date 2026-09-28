@@ -547,15 +547,19 @@ io.on('connection', (socket) => {
             const p = room.players[socket.uid];
             if (p) p.kills += 1;
 
-            // 🌟 إرسال نوع التاثير القاضي للقاتل إلى جميع اللاعبين حرفياً!
+            // 🌟 تحديد هل البوت المقتول حالياً هو آخر بوت في الغرفة أم لا
+            const isLastBot = (Object.keys(room.bots).length === 0);
+
+            // 🌟 إرسال متغير isLastBot للعملاء لمنع تكرار تأثير القاضية
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id,
                 byName: p ? p.name : '?',
-                finisherId: data.finisherId || 'none'
+                finisherId: data.finisherId || 'none',
+                isLastBot: isLastBot
             });
 
-            if (Object.keys(room.bots).length === 0) {
+            if (isLastBot) {
                 const clearedWave = room.wave; 
                 room.wave += 1;
 
@@ -564,7 +568,7 @@ io.on('connection', (socket) => {
                     if (clearedWave >= pl.level) {
                         pl.level += 1;
                     }
-                    pl.hp = 100; // 🌟 إحياء جميع اللاعبين بالكامل
+                    pl.hp = 100; // إحياء جميع اللاعبين بالكامل
                 }
 
                 flushWaveStats(socket.currentRoom);
@@ -577,7 +581,7 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                // 🌟 تأخير الموجة 2.5 ثانية لرؤية التأثير بوضوح
+                // تأخير الموجة 2.5 ثانية لرؤية التأثير بوضوح
                 setTimeout(() => {
                     spawnWave(socket.currentRoom);
                 }, 2500);
@@ -598,7 +602,6 @@ io.on('connection', (socket) => {
             p.hp = 0;
             io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
 
-            // 🌟 تحديد UID الخاص باللاعب الميت للبحث عنه بدقة حتى لو انقطع اتصاله وتغير الـ socket.id
             const roomIdAtDeath = socket.currentRoom;
             const uidAtDeath = socket.uid;
 
@@ -634,7 +637,6 @@ io.on('connection', (socket) => {
                     return;
                 }
 
-                // 🌟 صمام الأمان: إرسال الـ Respawn للـ socket.id الجديد الخاص باللاعب (إن وجد)
                 const currentPlayer = r.players[uidAtDeath];
                 if (currentPlayer && currentPlayer.hp <= 0) {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
