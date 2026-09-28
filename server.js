@@ -17,19 +17,43 @@ const RESPAWN_MS = 3000;
 const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
-
-// التحسين لأجل Render (تحديثات أقل ضغطاً على المعالج)
 const TICK_MS = 100; 
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
+
+// 🌟 القاموس المحدث بأسماء سفنك الفعلية
+// قمت بوضع أرقام افتراضية تصاعدية، ويمكنك الآن تعديل hp و speed لكل سفينة براحتك
+const SHIPS_CONFIG = {
+    'bot':             { hp: 100, speed: 10.0 }, // Level 1
+    'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
+    'devilsfangs':     { hp: 150, speed: 12.0 }, // Level 20
+    'finish':          { hp: 140, speed: 18.5 }, // Level 30
+    'proskin':         { hp: 140, speed: 19.5 }, // Level 40
+    'suphigh':         { hp: 110, speed: 20.0 }, // Level 50
+    'suplis':          { hp: 110, speed: 20.5 }, // Level 60
+    'suplis2':         { hp: 120, speed: 20.5 }, // Level 70
+    'gemini':          { hp: 300, speed: 17.0 }, // Level 80
+    'war':             { hp: 250, speed: 20.0 }, // Level 90
+    'geminiprosimple': { hp: 300, speed: 19.0 }, // Level 100
+    'deepseek':        { hp: 280, speed: 20.5 }, // Level 110
+    'geminipro':       { hp: 300, speed: 21.0 }, // Level 120
+    'legendary':       { hp: 350, speed: 20.0 }  // Level 130
+};
+
+
+// دالة لمعرفة قدرات السفينة بناءً على اسمها
+function getShipStats(hullId) {
+    // إذا كان اسم السفينة موجوداً في القاموس نعطيه قدراتها، وإلا نعطيه القدرات الافتراضية 'bot'
+    return SHIPS_CONFIG[hullId.toLowerCase()] || SHIPS_CONFIG['bot'];
+}
 
 let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v26.0 - Smart AI & Render Optimized');
+    res.send('Grand3D Co-op Server v27.0 - Server-Authoritative Ships');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -39,9 +63,7 @@ function dist2(ax, ay, bx, by) {
     return dx * dx + dy * dy;
 }
 
-// --- نظام القوى المنطقي والتصاعدي ---
 function botSpeedForWave(wave) {
-    // السرعة القصوى 16 (أسرع من اللاعب بقليل لكن ليس تعجيزي)
     return Math.min(10.0 + (wave * 0.1), 16.0); 
 }
 
@@ -53,10 +75,8 @@ function botHPForWave(wave) {
 }
 
 function botCountForWave(wave) {
-    // 30 بوت كحد أقصى للحفاظ على الأداء الممتاز للسيرفر والهاتف
     return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
-// ----------------------------------
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     for (let attempt = 0; attempt < 40; attempt++) {
@@ -129,7 +149,6 @@ function startBotTick(roomId) {
             return;
         }
 
-        // حساب سرعة واتجاه اللاعبين من أجل التصويب الاستباقي
         for (let i = 0; i < playersList.length; i++) {
             const p = playersList[i];
             p.vx = p.x - (p.lastX || p.x);
@@ -141,7 +160,7 @@ function startBotTick(roomId) {
         const islands = r.islands || [];
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
-            r100sq: (i.radius + 150) * (i.radius + 150) // مسافة أمان لتجنب الجزر
+            r100sq: (i.radius + 150) * (i.radius + 150) 
         }));
 
         for (const botId in r.bots) {
@@ -160,25 +179,19 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
             const speed = botSpeedForWave(r.wave);
-            const step = speed * (TICK_MS / 50); // الحفاظ على السرعة الحقيقية بغض النظر عن TICK_MS
+            const step = speed * (TICK_MS / 50); 
 
-            // --- 1. نظام الحركة الذكي (التطويق والمناورة) ---
             let moveDx = 0, moveDy = 0;
-            
             if (len > 1800) {
-                // هجوم مباشر إذا كان اللاعب بعيداً
                 moveDx = dx; 
                 moveDy = dy;
             } else if (len < 900) {
-                // تراجع تكتيكي إذا اقترب اللاعب (Kiting)
                 moveDx = -dx; 
                 moveDy = -dy;
             } else {
-                // دوران حول اللاعب للتطويق (Strafe)
                 const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
                 moveDx = dy * circleDirection; 
                 moveDy = -dx * circleDirection;
-                // اندفاع خفيف نحو الداخل أثناء الدوران
                 moveDx += dx * 0.15;
                 moveDy += dy * 0.15;
             }
@@ -197,7 +210,6 @@ function startBotTick(roomId) {
             if (!blocked) {
                 bot.x = nx; bot.y = ny;
             } else {
-                // الانزلاق حول الجزيرة بذكاء
                 const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
                 const tX = bot.x + Math.cos(perp) * step;
                 const tY = bot.y + Math.sin(perp) * step;
@@ -215,14 +227,12 @@ function startBotTick(roomId) {
 
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
-            // --- 2. نظام التصويب الاستباقي الذكي (Predictive Aiming) ---
-            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015)); // سرعة إطلاق نار متصاعدة
+            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
             if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
                 bot.fireTimer = 0;
                 
-                // حساب مكان اللاعب المستقبلي بناءً على سرعته الحالية
                 const predictionFactor = (len / 100); 
                 const targetX = closest.x + (closest.vx * predictionFactor);
                 const targetY = closest.y + (closest.vy * predictionFactor);
@@ -237,13 +247,8 @@ function startBotTick(roomId) {
             }
         }
 
-        // إرسال البيانات بشكل مقرب (Math.round) لتقليل استهلاك الإنترنت
         const botsPayload = Object.values(r.bots).map(b => ({
-            id: b.id, 
-            x: Math.round(b.x), 
-            y: Math.round(b.y), 
-            heading: Math.round(b.heading), 
-            hp: b.hp
+            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
         }));
         io.to(roomId).emit('bots_update', botsPayload);
     }, TICK_MS);
@@ -380,6 +385,8 @@ io.on('connection', (socket) => {
                         wave: room.wave,
                         level: player.level,
                         hp: player.hp,
+                        maxHp: player.maxHp, // إرسال الدم الأقصى للهاتف
+                        maxSpeed: player.maxSpeed, // إرسال السرعة القصوى للهاتف
                         x: Math.round(player.x),
                         y: Math.round(player.y),
                         heading: Math.round(player.heading),
@@ -418,7 +425,17 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
-            if (hullId) player.hullId = hullId;
+            
+            // تحديث القدرات إذا دخل اللاعب بسفينة جديدة
+            if (hullId && hullId !== player.hullId) {
+                player.hullId = hullId;
+                const stats = getShipStats(hullId);
+                player.maxHp = stats.hp;
+                player.maxSpeed = stats.speed;
+                // لا نزيد الدم الحالي أكثر من الأقصى
+                if (player.hp > player.maxHp) player.hp = player.maxHp; 
+            }
+            
             if (skinPath) player.skinPath = skinPath;
             if (finisherId) player.finisherId = finisherId;
 
@@ -432,6 +449,8 @@ io.on('connection', (socket) => {
                 wave: room.wave,
                 level: player.level,
                 hp: player.hp,
+                maxHp: player.maxHp, // إرسال البيانات المحدثة
+                maxSpeed: player.maxSpeed,
                 hullId: player.hullId,
                 skinPath: player.skinPath
             });
@@ -468,14 +487,10 @@ io.on('connection', (socket) => {
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
             if (oldRoom && socket.uid && oldRoom.players[socket.uid]) {
-                if (oldRoom.players[socket.uid].deathTimer) {
-                    clearTimeout(oldRoom.players[socket.uid].deathTimer);
-                }
+                if (oldRoom.players[socket.uid].deathTimer) clearTimeout(oldRoom.players[socket.uid].deathTimer);
                 delete oldRoom.players[socket.uid];
                 io.to(socket.currentRoom).emit('player_left', { id: socket.id });
-                if (Object.keys(oldRoom.players).length === 0) {
-                    endRoom(socket.currentRoom);
-                }
+                if (Object.keys(oldRoom.players).length === 0) endRoom(socket.currentRoom);
             }
             socket.leave(socket.currentRoom);
         }
@@ -484,14 +499,10 @@ io.on('connection', (socket) => {
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
-                if (r.players[uid].deathTimer) {
-                    clearTimeout(r.players[uid].deathTimer);
-                }
+                if (r.players[uid].deathTimer) clearTimeout(r.players[uid].deathTimer);
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: socket.id });
-                if (Object.keys(r.players).length === 0) {
-                    endRoom(rId);
-                }
+                if (Object.keys(r.players).length === 0) endRoom(rId);
             }
         }
 
@@ -506,9 +517,7 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        if (!roomId) {
-            roomId = createRoom(socket.mode, socket.startLevel);
-        }
+        if (!roomId) roomId = createRoom(socket.mode, socket.startLevel);
 
         const room = rooms[roomId];
         if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
@@ -532,17 +541,22 @@ io.on('connection', (socket) => {
             if (bestDist > 4000 * 4000) break;
         }
 
+        const validHullId = hullId || 'bot';
+        const stats = getShipStats(validHullId);
+
         room.players[socket.uid] = {
             id: socket.id,
             uid: socket.uid,
             name: socket.username,
             x: sx, y: sy, heading: 0,
-            hp: 100,
+            maxHp: stats.hp,       // 🌟 تحديد الدم بناءً على السفينة
+            hp: stats.hp,          // 🌟 شحن الدم للحد الأقصى للسفينة
+            maxSpeed: stats.speed, // 🌟 تحديد سرعة السفينة القصوى
             kills: 0,
             level: socket.startLevel,
             online: true,
             deathTimer: null,
-            hullId: hullId || 'bot',
+            hullId: validHullId,
             skinPath: skinPath || 'bt/bot/bot.png',
             finisherId: finisherId || 'none'
         };
@@ -558,6 +572,8 @@ io.on('connection', (socket) => {
             wave: room.wave,
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
+            maxHp: stats.hp,       // إرسال الدم الأقصى للهاتف
+            maxSpeed: stats.speed, // إرسال السرعة للهاتف
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
@@ -586,9 +602,7 @@ io.on('connection', (socket) => {
         }));
         socket.emit('bots_update', botsPayload);
 
-        if (Object.keys(room.bots).length === 0) {
-            spawnWave(roomId);
-        }
+        if (Object.keys(room.bots).length === 0) spawnWave(roomId);
 
         sendLeaderboard(roomId);
     });
@@ -598,7 +612,10 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
-        if (data.hullId) p.hullId = data.hullId;
+        if (data.hullId && data.hullId !== p.hullId) {
+            p.hullId = data.hullId;
+            // لا نغير القدرات في اللحظة إلا إذا أردت تحديثها فورياً (يفضل تركها تتحدث مع بداية الماتش أو الدخول)
+        }
         if (data.skinPath) p.skinPath = data.skinPath; 
         if (data.finisherId) p.finisherId = data.finisherId;
         
@@ -640,10 +657,9 @@ io.on('connection', (socket) => {
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
-                    if (clearedWave >= pl.level) {
-                        pl.level += 1;
-                    }
-                    pl.hp = 100;
+                    if (clearedWave >= pl.level) pl.level += 1;
+                    // 🌟 هنا نعيد دم اللاعب إلى حده الأقصى وليس 100
+                    pl.hp = pl.maxHp; 
                 }
 
                 flushWaveStats(socket.currentRoom);
@@ -652,7 +668,7 @@ io.on('connection', (socket) => {
                     const pl = room.players[uid];
                     if (pl.online && pl.id) {
                         io.to(pl.id).emit('level_up', { wave: room.wave, level: pl.level });
-                        io.to(pl.id).emit('hp_update', { hp: 100 });
+                        io.to(pl.id).emit('hp_update', { hp: pl.hp }); // نرسل الدم الجديد
                     }
                 }
 
@@ -703,10 +719,7 @@ io.on('connection', (socket) => {
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
 
-                    for (const uid in r.players) {
-                        wipedRoomsLog.add(uid);
-                    }
-
+                    for (const uid in r.players) { wipedRoomsLog.add(uid); }
                     endRoom(roomIdAtDeath);
                     return;
                 }
@@ -716,7 +729,8 @@ io.on('connection', (socket) => {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
-                    currentPlayer.hp = 100;
+                    // 🌟 في حال العودة للحياة (Respawn)، نملأ دمه للحد الأقصى لسفينته
+                    currentPlayer.hp = currentPlayer.maxHp; 
                     if (currentPlayer.online && currentPlayer.id) {
                         io.to(currentPlayer.id).emit('player_respawned', { 
                             x: Math.round(sp.x), 
@@ -731,9 +745,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('leave_match', () => leaveRoom(socket, true));
-    socket.on('disconnect', () => {
-        leaveRoom(socket, false);
-    });
+    socket.on('disconnect', () => leaveRoom(socket, false));
 });
 
 function leaveRoom(socket, immediate) {
@@ -764,9 +776,7 @@ function leaveRoom(socket, immediate) {
                 socket.leave(roomId);
                 cleanSocket(socket);
 
-                if (Object.keys(room.players).length === 0) {
-                    endRoom(roomId);
-                }
+                if (Object.keys(room.players).length === 0) endRoom(roomId);
             });
         } else {
             delete room.players[socket.uid];
@@ -774,9 +784,7 @@ function leaveRoom(socket, immediate) {
             socket.leave(roomId);
             cleanSocket(socket);
 
-            if (Object.keys(room.players).length === 0) {
-                endRoom(roomId);
-            }
+            if (Object.keys(room.players).length === 0) endRoom(roomId);
         }
     } else {
         player.online = false;
@@ -793,7 +801,6 @@ function leaveRoom(socket, immediate) {
             p.deathTimer = null;
 
             delete r.players[socket.uid];
-
             if (Object.keys(r.players).length === 0) {
                 flushWaveStats(roomId);
                 endRoom(roomId);
@@ -819,18 +826,13 @@ function endRoom(roomId) {
             cleanSocket(s);
         }
     }
-
     delete rooms[roomId];
 }
 
 setInterval(() => {
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length === 0) {
-            endRoom(id);
-        }
+        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
     }
 }, 60000);
 
-server.listen(PORT, () => {
-    // Render Server Running
-});
+server.listen(PORT, () => { });
