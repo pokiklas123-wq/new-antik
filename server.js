@@ -22,21 +22,28 @@ const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
+// معامل تحويل السرعة: السيرفر 10Hz / العميل 60FPS = 6
+const FPS_RATIO = 6.0;
+// البوت المطارد أسرع بـ 30% من أسرع سفينة (عشان يلحقك فعلاً)
+const CHASER_SPEED_MULT = 1.3;
+// مضاعف الضرر على اللاعب
+const BOT_DAMAGE_MULT = 1.6;
+
 const SHIPS_CONFIG = {
-    'bot':             { hp: 100, speed: 10.0 }, // Level 1
-    'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
-    'devilsfangs':     { hp: 150, speed: 12.0 }, // Level 20
-    'finish':          { hp: 140, speed: 18.5 }, // Level 30
-    'proskin':         { hp: 140, speed: 19.5 }, // Level 40
-    'suphigh':         { hp: 110, speed: 20.0 }, // Level 50
-    'suplis':          { hp: 110, speed: 20.5 }, // Level 60
-    'suplis2':         { hp: 120, speed: 20.5 }, // Level 70
-    'gemini':          { hp: 300, speed: 17.0 }, // Level 80
-    'war':             { hp: 250, speed: 20.0 }, // Level 90
-    'geminiprosimple': { hp: 300, speed: 19.0 }, // Level 100
-    'deepseek':        { hp: 280, speed: 20.5 }, // Level 110
-    'geminipro':       { hp: 300, speed: 21.0 }, // Level 120
-    'legendary':       { hp: 350, speed: 20.0 }  // Level 130
+    'bot':             { hp: 100, speed: 10.0 },
+    'devilahorns':     { hp: 100, speed: 18.5 },
+    'devilsfangs':     { hp: 150, speed: 12.0 },
+    'finish':          { hp: 140, speed: 18.5 },
+    'proskin':         { hp: 140, speed: 19.5 },
+    'suphigh':         { hp: 110, speed: 20.0 },
+    'suplis':          { hp: 110, speed: 20.5 },
+    'suplis2':         { hp: 120, speed: 20.5 },
+    'gemini':          { hp: 300, speed: 17.0 },
+    'war':             { hp: 250, speed: 20.0 },
+    'geminiprosimple': { hp: 300, speed: 19.0 },
+    'deepseek':        { hp: 280, speed: 20.5 },
+    'geminipro':       { hp: 300, speed: 21.0 },
+    'legendary':       { hp: 350, speed: 20.0 }
 };
 
 function getShipStats(hullId) {
@@ -48,7 +55,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.8 - Fixed Chaser Speed');
+    res.send('Grand3D Co-op Server v29.0 - Aggressive Chasers');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -58,27 +65,30 @@ function dist2(ax, ay, bx, by) {
     return dx * dx + dy * dy;
 }
 
+// ✅ البوت العادي: سريع لكن يفضل أبطأ من أسرع سفينة
 function botSpeedForWave(wave) {
-    return Math.min(10.0 + (wave * 0.1), 16.0); 
+    return Math.min(8.0 + wave * 0.12, 17.0);
 }
 
 function botHPForWave(wave) {
-    if (wave > 150) return 4;
-    if (wave > 80) return 3;
+    if (wave > 150) return 6;
+    if (wave > 100) return 5;
+    if (wave > 60) return 4;
     if (wave > 30) return 2;
     return 1;
 }
 
 function botCountForWave(wave) {
-    return Math.min(5 + Math.floor(wave * 0.3), 30);
+    return Math.min(5 + Math.floor(wave * 0.4), 35);
 }
 
+// ✅ المطاردون يظهرون من الموجة 20 بدل 50
 function getChaserCountForWave(wave) {
-    if (wave < 50) return 0;
-    return 1 + Math.floor((wave - 50) / 10);
+    if (wave < 20) return 0;
+    return 1 + Math.floor((wave - 20) / 12);
 }
 
-// ✅ أسرع سرعة في الغرفة — تُحسب من SHIPS_CONFIG حسب hullId الحالي (ثابتة، لا تعتمد على السرعة الفعلية)
+// ✅ أسرع سرعة في الغرفة (من الـ config مباشرة حسب hullId الحالي)
 function getMaxSpeedInRoom(room) {
     let maxSpd = 10.0;
     for (const uid in room.players) {
@@ -177,7 +187,6 @@ function startBotTick(roomId) {
             r100sq: (i.radius + 150) * (i.radius + 150) 
         }));
 
-        // ✅ أسرع سرعة في الغرفة (من الـ config مباشرة كل تيك)
         const maxRoomSpeed = getMaxSpeedInRoom(r);
 
         for (const botId in r.bots) {
@@ -196,75 +205,58 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
+            // ✅ كل البوتات تطارد مباشرة (لا دوران ولا هروب)
+            let step;
             if (bot.isChaser) {
-                // ✅ سرعة ثابتة = أسرع سفينة في الغرفة × 6 (60FPS مقابل 10 تيكات/ثانية)
-                const step = maxRoomSpeed * 6.0;
-
-                if (len > 25) {
-                    bot.x += (dx / len) * step;
-                    bot.y += (dy / len) * step;
-                }
-
-                const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
-                let diff = targetHeading - bot.heading;
-                while (diff > 180) diff -= 360;
-                while (diff < -180) diff += 360;
-                bot.heading += diff * 0.4;
+                // المطارد أسرع من أسرع سفينة بـ 30% → يلحقك مهما فعلت
+                step = maxRoomSpeed * CHASER_SPEED_MULT * FPS_RATIO;
             } else {
-                const speed = botSpeedForWave(r.wave);
-                const step = speed * (TICK_MS / 50); 
+                step = botSpeedForWave(r.wave) * FPS_RATIO;
+            }
 
-                let moveDx = 0, moveDy = 0;
-                if (len > 1800) {
-                    moveDx = dx; 
-                    moveDy = dy;
-                } else if (len < 900) {
-                    moveDx = -dx; 
-                    moveDy = -dy;
-                } else {
-                    const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
-                    moveDx = dy * circleDirection; 
-                    moveDy = -dx * circleDirection;
-                    moveDx += dx * 0.15;
-                    moveDy += dy * 0.15;
+            let nx = bot.x + (dx / len) * step;
+            let ny = bot.y + (dy / len) * step;
+
+            let blocked = false;
+            for (let i = 0; i < islData.length; i++) {
+                if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                    blocked = true; break;
                 }
+            }
 
-                const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
-                let nx = bot.x + (moveDx / moveLen) * step;
-                let ny = bot.y + (moveDy / moveLen) * step;
-
-                let blocked = false;
+            if (!blocked) {
+                bot.x = nx; bot.y = ny;
+            } else {
+                const perp = Math.atan2(dy, dx) + Math.PI / 2;
+                const tX = bot.x + Math.cos(perp) * step;
+                const tY = bot.y + Math.sin(perp) * step;
+                let b2 = false;
                 for (let i = 0; i < islData.length; i++) {
-                    if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        blocked = true; break;
+                    if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        b2 = true; break;
                     }
                 }
-
-                if (!blocked) {
-                    bot.x = nx; bot.y = ny;
-                } else {
-                    const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                    const tX = bot.x + Math.cos(perp) * step;
-                    const tY = bot.y + Math.sin(perp) * step;
-                    let b2 = false;
-                    for (let i = 0; i < islData.length; i++) {
-                        if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                            b2 = true; break;
-                        }
-                    }
-                    if (!b2) { bot.x = tX; bot.y = tY; }
-                }
-
-                bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
+                if (!b2) { bot.x = tX; bot.y = tY; }
             }
 
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
+            const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (bot.isChaser) {
+                let diff = targetHeading - bot.heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                bot.heading += diff * 0.4;
+            } else {
+                bot.heading = targetHeading;
+            }
+
+            // ✅ إطلاق أسرع
+            const fireCooldown = Math.max(0.4, 1.8 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
-            if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
+            if (bot.fireTimer > fireCooldown && closestD2 < 2400 * 2400) {
                 bot.fireTimer = 0;
                 
                 const predictionFactor = (len / 100); 
@@ -276,13 +268,15 @@ function startBotTick(roomId) {
                     x: Math.round(bot.x), 
                     y: Math.round(bot.y),
                     targetX: Math.round(targetX), 
-                    targetY: Math.round(targetY)
+                    targetY: Math.round(targetY),
+                    isChaser: !!bot.isChaser
                 });
             }
         }
 
         const botsPayload = Object.values(r.bots).map(b => ({
-            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp,
+            isChaser: !!b.isChaser
         }));
         io.to(roomId).emit('bots_update', botsPayload);
     }, TICK_MS);
@@ -314,16 +308,17 @@ function spawnWave(roomId) {
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
             heading: rnd(0, 360),
-            hp: hpVal,
+            hp: hpVal + (isChaserBot ? 2 : 0),
             fireTimer: 0,
             isChaser: isChaserBot
         };
     }
 
-    io.to(roomId).emit('wave_start', { wave: room.wave, count });
+    io.to(roomId).emit('wave_start', { wave: room.wave, count, chasers: chaserCount });
     
     const botsPayload = Object.values(room.bots).map(b => ({
-        id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+        id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp,
+        isChaser: !!b.isChaser
     }));
     io.to(roomId).emit('bots_update', botsPayload);
 }
@@ -509,7 +504,8 @@ io.on('connection', (socket) => {
             socket.emit('room_state', { players: existing, wave: room.wave });
             
             const botsPayload = Object.values(room.bots).map(b => ({
-                id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+                id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp,
+                isChaser: !!b.isChaser
             }));
             socket.emit('bots_update', botsPayload);
         } else {
@@ -634,7 +630,8 @@ io.on('connection', (socket) => {
         });
 
         const botsPayload = Object.values(room.bots).map(b => ({
-            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp,
+            isChaser: !!b.isChaser
         }));
         socket.emit('bots_update', botsPayload);
 
@@ -726,7 +723,10 @@ io.on('connection', (socket) => {
         const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
-        p.hp -= data.damage || 15;
+        // ✅ زيادة الضرر
+        const dmg = Math.round((data.damage || 15) * BOT_DAMAGE_MULT);
+        p.hp -= dmg;
+
         if (p.hp <= 0) {
             p.hp = 0;
             io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
