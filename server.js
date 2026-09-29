@@ -23,20 +23,25 @@ const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
 // ═══════════════════════════════════════════════════════
-//  إعدادات توازن البوتات الجديدة
+//  إعدادات توازن البوتات
 // ═══════════════════════════════════════════════════════
-const FPS_RATIO = 6.0;              // تحويل 60FPS إلى 10Hz
-const BOT_MAX_SPEED = 15.0;         // سقف سرعة البوت العادي
-const CHASER_SPEED_RATIO = 0.9;     // المطارد = 90% من أسرع لاعب
-const BOT_BASE_SPEED = 8.0;         // سرعة البوت عند مستوى 1
-const BOT_SPEED_PER_LEVEL = 0.025;  // زيادة السرعة لكل مستوى
+const FPS_RATIO = 6.0;
+const BOT_MAX_SPEED = 15.0;
+const CHASER_SPEED_RATIO = 0.9;
+const BOT_BASE_SPEED = 8.0;
+const BOT_SPEED_PER_LEVEL = 0.025;
+
+// ⭐ سقوف جديدة لمنع القتل الفوري في المستويات العالية
+const BOT_DAMAGE_CAP = 28;          // أقصى ضرر لكل ضربة
+const MAX_CHASERS = 8;              // أقصى عدد مطاردين
+const SPAWN_INVULN_MS = 2500;       // حصانة عند الظهور/الإحياء
 
 // ═══════════════════════════════════════════════════════
-//  سرعة التوربيدات — أسرع من أسرع سفينة بنسبة معينة
+//  سرعة التوربيدات
 // ═══════════════════════════════════════════════════════
-const TORPEDO_SPEED_MULT = 1.4;     // التوربيد أسرع 40% من أسرع سفينة
-const TORPEDO_MIN_SPEED = 22.0;     // حد أدنى حتى لا يكون بطيئاً في المستويات المنخفضة
-const TORPEDO_MAX_SPEED = 32.0;     // حد أقصى لتجنب المبالغة
+const TORPEDO_SPEED_MULT = 1.4;
+const TORPEDO_MIN_SPEED = 22.0;
+const TORPEDO_MAX_SPEED = 32.0;
 
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 },
@@ -64,7 +69,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v31.0 - Smart Bot AI + Fast Torpedoes');
+    res.send('Grand3D Co-op Server v32.0 - Fair High-Level Balance');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -75,7 +80,7 @@ function dist2(ax, ay, bx, by) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  دوال حساب مستوى الغرفة وسرعتها
+//  دوال مستوى الغرفة وسرعتها
 // ═══════════════════════════════════════════════════════
 
 function getRoomAvgLevel(room) {
@@ -102,10 +107,6 @@ function getRoomMaxSpeed(room) {
     return maxSpd;
 }
 
-// ═══════════════════════════════════════════════════════
-//  سرعة التوربيد — تُحسب مرة لكل تيك حسب أسرع سفينة
-// ═══════════════════════════════════════════════════════
-
 function getTorpedoSpeed(room) {
     const maxSpd = getRoomMaxSpeed(room);
     let speed = maxSpd * TORPEDO_SPEED_MULT;
@@ -115,7 +116,7 @@ function getTorpedoSpeed(room) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  معادلات البوتات الجديدة (حسب مستوى الغرفة)
+//  معادلات البوتات
 // ═══════════════════════════════════════════════════════
 
 function botSpeedForRoom(room) {
@@ -129,10 +130,23 @@ function botHPForRoom(room) {
     return 1 + Math.floor(avg / 40) + Math.floor(wv / 60);
 }
 
+// ⭐ ضرر البوت — مسقوف عند BOT_DAMAGE_CAP
 function botDamageForRoom(room) {
     const avg = getRoomAvgLevel(room);
     const wv = room.wave || 1;
-    return 12 + Math.floor(avg / 30) + Math.floor(wv / 50);
+    const levelPart = Math.min(10, Math.floor(avg / 30));
+    const wavePart  = Math.min(6, Math.floor(wv / 80));
+    const dmg = 12 + levelPart + wavePart;
+    return Math.min(dmg, BOT_DAMAGE_CAP);
+}
+
+// ⭐ فاصل بين الضربات — يزداد مع المستوى
+function getPlayerDamageCooldownMs(room) {
+    const avg = getRoomAvgLevel(room);
+    if (avg > 500) return 400;
+    if (avg > 250) return 300;
+    if (avg > 100) return 200;
+    return 100;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -142,7 +156,7 @@ function botDamageForRoom(room) {
 function getPredictionTime(room) {
     const avg = getRoomAvgLevel(room);
     const accuracy = Math.min(1.0, avg / 200);
-    return 0.3 + accuracy * 0.3; // من 0.3 إلى 0.6 ثانية
+    return 0.3 + accuracy * 0.3;
 }
 
 function getMissChance(room) {
@@ -151,7 +165,7 @@ function getMissChance(room) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  تحديد دور البوت (تكتيكات جماعية)
+//  أدوار البوتات
 // ═══════════════════════════════════════════════════════
 
 function assignBotRole(index, total) {
@@ -163,10 +177,6 @@ function assignBotRole(index, total) {
     if (index < pusherCount + flankerCount + sniperCount) return 'sniper';
     return 'blocker';
 }
-
-// ═══════════════════════════════════════════════════════
-//  قدرات البوتات الخاصة حسب مستوى الغرفة
-// ═══════════════════════════════════════════════════════
 
 function getBotAbilityForRoom(room) {
     const avg = getRoomAvgLevel(room);
@@ -185,9 +195,11 @@ function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
 
+// ⭐ عدد المطاردين مسقوف عند MAX_CHASERS
 function getChaserCountForWave(wave) {
     if (wave < 20) return 0;
-    return 1 + Math.floor((wave - 20) / 12);
+    const count = 1 + Math.floor((wave - 20) / 15);
+    return Math.min(count, MAX_CHASERS);
 }
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
@@ -248,7 +260,7 @@ function createRoom(mode, startWave) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  المحرك الرئيسي لحركة البوتات
+//  المحرك الرئيسي
 // ═══════════════════════════════════════════════════════
 
 function startBotTick(roomId) {
@@ -265,7 +277,6 @@ function startBotTick(roomId) {
             return;
         }
 
-        // حساب سرعة اللاعب (vx, vy) لتوقّع الحركة
         for (let i = 0; i < playersList.length; i++) {
             const p = playersList[i];
             p.vx = p.x - (p.lastX || p.x);
@@ -280,21 +291,19 @@ function startBotTick(roomId) {
             r100sq: (i.radius + 150) * (i.radius + 150)
         }));
 
-        // ═══ قيم تُحسَب مرة واحدة لكل تيك ═══
         const roomMaxSpeed = getRoomMaxSpeed(r);
         const chaserSpeed = Math.min(roomMaxSpeed * CHASER_SPEED_RATIO, BOT_MAX_SPEED + 3);
         const normalSpeed = botSpeedForRoom(r);
         const predictionTime = getPredictionTime(r);
         const missChance = getMissChance(r);
         const botAbility = getBotAbilityForRoom(r);
-        const torpedoSpeed = getTorpedoSpeed(r);   // ⭐ سرعة التوربيد
+        const torpedoSpeed = getTorpedoSpeed(r);
         const now = Date.now();
 
         for (const botId in r.bots) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
-            // إيجاد أقرب لاعب
             let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
@@ -307,10 +316,8 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
-            // ═══ حساب السرعة حسب الدور ═══
             let speed = bot.isChaser ? chaserSpeed : normalSpeed;
 
-            // تطبيق قدرة الاندفاع
             if (botAbility !== 'none') {
                 if (bot.dashingUntil && now < bot.dashingUntil) {
                     speed *= 2.0;
@@ -319,7 +326,6 @@ function startBotTick(roomId) {
 
             const step = speed * FPS_RATIO;
 
-            // ═══ سلوك حسب الدور ═══
             let moveDx = 0, moveDy = 0;
             const role = bot.role || 'pusher';
 
@@ -356,7 +362,6 @@ function startBotTick(roomId) {
             let nx = bot.x + (moveDx / moveLen) * step;
             let ny = bot.y + (moveDy / moveLen) * step;
 
-            // تفادي الجزر
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
                 if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -382,7 +387,6 @@ function startBotTick(roomId) {
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            // ═══ اتجاه البوت ═══
             const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
             if (bot.isChaser) {
                 let diff = targetHeading - bot.heading;
@@ -393,7 +397,7 @@ function startBotTick(roomId) {
                 bot.heading = targetHeading;
             }
 
-            // ═══ القدرات الخاصة ═══
+            // القدرات الخاصة
             bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
@@ -415,7 +419,7 @@ function startBotTick(roomId) {
                                 x: Math.round(bot.x), y: Math.round(bot.y),
                                 targetX: Math.round(tx + rnd(-80, 80)),
                                 targetY: Math.round(ty + rnd(-80, 80)),
-                                speed: torpedoSpeed   // ⭐
+                                speed: torpedoSpeed
                             });
                         }, k * 150);
                     }
@@ -434,7 +438,7 @@ function startBotTick(roomId) {
                 }
             }
 
-            // ═══ إطلاق النار مع توقّع الحركة ═══
+            // إطلاق النار
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
@@ -457,12 +461,11 @@ function startBotTick(roomId) {
                     y: Math.round(bot.y),
                     targetX: Math.round(targetX),
                     targetY: Math.round(targetY),
-                    speed: torpedoSpeed   // ⭐ سرعة التوربيد المحسوبة
+                    speed: torpedoSpeed
                 });
             }
         }
 
-        // ═══ إرسال حالة البوتات ═══
         const botsPayload = Object.values(r.bots).map(b => ({
             id: b.id,
             x: Math.round(b.x), y: Math.round(b.y),
@@ -476,10 +479,6 @@ function startBotTick(roomId) {
 
     }, TICK_MS);
 }
-
-// ═══════════════════════════════════════════════════════
-//  إنشاء موجة جديدة
-// ═══════════════════════════════════════════════════════
 
 function spawnWave(roomId) {
     const room = rooms[roomId];
@@ -520,7 +519,7 @@ function spawnWave(roomId) {
     }
 
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
-    
+
     const botsPayload = Object.values(room.bots).map(b => ({
         id: b.id,
         x: Math.round(b.x), y: Math.round(b.y),
@@ -668,6 +667,8 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
+            // ⭐ حصانة عند إعادة الاتصال
+            player.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
 
             if (hullId && hullId !== player.hullId) {
                 player.hullId = hullId;
@@ -692,7 +693,7 @@ io.on('connection', (socket) => {
                 hp: player.hp,
                 maxHp: player.maxHp,
                 maxSpeed: player.maxSpeed,
-                torpedoSpeed: getTorpedoSpeed(room),  // ⭐
+                torpedoSpeed: getTorpedoSpeed(room),
                 hullId: player.hullId,
                 skinPath: player.skinPath
             });
@@ -804,7 +805,10 @@ io.on('connection', (socket) => {
             skinPath: skinPath || 'bt/bot/bot.png',
             finisherId: finisherId || 'none',
             vx: 0, vy: 0,
-            lastX: sx, lastY: sy
+            lastX: sx, lastY: sy,
+            // ⭐ حصانة عند الظهور لأول مرة
+            invulnerableUntil: Date.now() + SPAWN_INVULN_MS,
+            lastDamageTime: 0
         };
 
         socket.emit('match_found', {
@@ -820,7 +824,7 @@ io.on('connection', (socket) => {
             mode: socket.mode,
             maxHp: stats.hp,
             maxSpeed: stats.speed,
-            torpedoSpeed: getTorpedoSpeed(room),   // ⭐ سرعة التوربيد للاعب
+            torpedoSpeed: getTorpedoSpeed(room),
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
@@ -933,13 +937,44 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ⭐ المعالج المعدَّل لضرر البوت على اللاعب
     socket.on('bot_hit_player', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
         const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
-        const serverDamage = botDamageForRoom(room);
+        const now = Date.now();
+
+        // دالة مساعدة لمزامنة العميل
+        const syncHp = () => io.to(socket.id).emit('hp_update', { hp: p.hp });
+
+        // ⭐ 1) فحص حصانة الظهور
+        if (p.invulnerableUntil && now < p.invulnerableUntil) {
+            syncHp();
+            return;
+        }
+
+        // ⭐ 2) فحص فاصل الضرر
+        const cooldown = getPlayerDamageCooldownMs(room);
+        if (p.lastDamageTime && (now - p.lastDamageTime) < cooldown) {
+            syncHp();
+            return;
+        }
+
+        // ⭐ 3) تحديد قيمة الضرر
+        const clientDamage = data.damage || 15;
+        let serverDamage;
+
+        if (clientDamage > 50) {
+            // ضرر الجزيرة (قيمة كبيرة من العميل)
+            serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
+        } else {
+            // ضرر التوربيد — نستخدم صيغة السيرفر
+            serverDamage = botDamageForRoom(room);
+        }
+
+        p.lastDamageTime = now;
         p.hp -= serverDamage;
 
         if (p.hp <= 0) {
@@ -984,6 +1019,9 @@ io.on('connection', (socket) => {
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
                     currentPlayer.hp = currentPlayer.maxHp;
+                    // ⭐ حصانة عند الإحياء
+                    currentPlayer.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
+                    currentPlayer.lastDamageTime = 0;
                     if (currentPlayer.online && currentPlayer.id) {
                         io.to(currentPlayer.id).emit('player_respawned', {
                             x: Math.round(sp.x),
@@ -993,7 +1031,7 @@ io.on('connection', (socket) => {
                 }
             }, RESPAWN_MS);
         } else {
-            io.to(socket.id).emit('hp_update', { hp: p.hp });
+            syncHp();
         }
     });
 
