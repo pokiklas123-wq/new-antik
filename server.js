@@ -48,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.4 - Smooth Chaser Bots');
+    res.send('Grand3D Co-op Server v28.5 - Synchronized Chaser Speed');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -193,8 +193,9 @@ function startBotTick(roomId) {
             const len = Math.sqrt(closestD2) || 1;
 
             if (bot.isChaser) {
+                // 🌟 ضرب السرعة في 6 لتتطابق بدقة مع سرعة العميل (60 FPS مقابل 10 تيكات للسيرفر)
                 let speed = maxRoomSpeed;
-                let step = speed * (TICK_MS / 50);
+                let step = speed * 6.0;
 
                 if (len > 25) {
                     bot.x += (dx / len) * step;
