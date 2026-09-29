@@ -22,7 +22,6 @@ const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
-// 🌟 القاموس المحدث بأسماء سفنك الفعلية
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 }, // Level 1
     'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
@@ -40,7 +39,6 @@ const SHIPS_CONFIG = {
     'legendary':       { hp: 350, speed: 20.0 }  // Level 130
 };
 
-// دالة لمعرفة قدرات السفينة بناءً على اسمها
 function getShipStats(hullId) {
     return SHIPS_CONFIG[hullId.toLowerCase()] || SHIPS_CONFIG['bot'];
 }
@@ -50,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.2 - Original Bots + Chaser System');
+    res.send('Grand3D Co-op Server v28.3 - Smooth Chaser Bots');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -60,7 +58,6 @@ function dist2(ax, ay, bx, by) {
     return dx * dx + dy * dy;
 }
 
-// 🌟 سرعة البوتات العادية كما كانت تماماً دون أي تعديل أو زيادة
 function botSpeedForWave(wave) {
     return Math.min(10.0 + (wave * 0.1), 16.0); 
 }
@@ -76,13 +73,11 @@ function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
 
-// 🌟 حساب عدد البوتات المطاردة: تبدأ من مستوى 50 (بوت واحد)، وكل 10 مستويات يزيد بوت
 function getChaserCountForWave(wave) {
     if (wave < 50) return 0;
     return 1 + Math.floor((wave - 50) / 10);
 }
 
-// 🌟 معرفة سرعة أقوى سفينة موجودة في الغرفة حالياً
 function getMaxSpeedInRoom(room) {
     let maxSpd = 10.0;
     for (const uid in room.players) {
@@ -197,22 +192,29 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
-            // 🌟 تحديد السرعة: البوت العادي يتبع سرعته القديمة، والبوت المطارد يتبع سرعة أقوى سفينة في الغرفة
-            let speed = botSpeedForWave(r.wave);
             if (bot.isChaser) {
-                speed = maxRoomSpeed;
-            }
+                // 🌟 البوت المطارد (الغبي والمباشر): يتحرك بخط مستقيم نحوك وبسرعة أقوى سفينة دون دوران أو اهتزاز
+                let speed = maxRoomSpeed;
+                let step = speed * (TICK_MS / 50);
 
-            const step = speed * (TICK_MS / 50); 
+                if (len > 25) {
+                    bot.x += (dx / len) * step;
+                    bot.y += (dy / len) * step;
+                }
 
-            let moveDx = 0, moveDy = 0;
-            
-            if (bot.isChaser) {
-                // 🌟 البوت المطارد يتبع اللاعب مباشرة أينما ذهب
-                moveDx = dx;
-                moveDy = dy;
+                // تنعيم زاوية التوجيه لمنع أي اهتزاز أو التفاف مفاجئ
+                const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
+                let diff = targetHeading - bot.heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                bot.heading += diff * 0.4;
+
             } else {
-                // 🌟 البوت العادي يعود لطريقته الأصلية تماماً دون أي تغيير
+                // 🌟 البوتات العادية تبقى على حالها تماماً دون أي مساس
+                const speed = botSpeedForWave(r.wave);
+                const step = speed * (TICK_MS / 50); 
+
+                let moveDx = 0, moveDy = 0;
                 if (len > 1800) {
                     moveDx = dx; 
                     moveDy = dy;
@@ -226,40 +228,39 @@ function startBotTick(roomId) {
                     moveDx += dx * 0.15;
                     moveDy += dy * 0.15;
                 }
-            }
 
-            const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
-            let nx = bot.x + (moveDx / moveLen) * step;
-            let ny = bot.y + (moveDy / moveLen) * step;
+                const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
+                let nx = bot.x + (moveDx / moveLen) * step;
+                let ny = bot.y + (moveDy / moveLen) * step;
 
-            let blocked = false;
-            for (let i = 0; i < islData.length; i++) {
-                if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                    blocked = true; break;
-                }
-            }
-
-            if (!blocked) {
-                bot.x = nx; bot.y = ny;
-            } else {
-                const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                const tX = bot.x + Math.cos(perp) * step;
-                const tY = bot.y + Math.sin(perp) * step;
-                let b2 = false;
+                let blocked = false;
                 for (let i = 0; i < islData.length; i++) {
-                    if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        b2 = true; break;
+                    if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        blocked = true; break;
                     }
                 }
-                if (!b2) { bot.x = tX; bot.y = tY; }
+
+                if (!blocked) {
+                    bot.x = nx; bot.y = ny;
+                } else {
+                    const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
+                    const tX = bot.x + Math.cos(perp) * step;
+                    const tY = bot.y + Math.sin(perp) * step;
+                    let b2 = false;
+                    for (let i = 0; i < islData.length; i++) {
+                        if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                            b2 = true; break;
+                        }
+                    }
+                    if (!b2) { bot.x = tX; bot.y = tY; }
+                }
+
+                bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
             }
 
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
-
-            // 🌟 معدل إطلاق النار الأصلي تماماً دون أي تغيير
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
@@ -294,7 +295,7 @@ function spawnWave(roomId) {
     room.bots = {};
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
-    const chaserCount = getChaserCountForWave(room.wave); // عدد البوتات المطاردة حسب الموجة
+    const chaserCount = getChaserCountForWave(room.wave);
 
     let cx = 0, cy = 0, n = 0;
     for (const uid in room.players) {
@@ -308,8 +309,6 @@ function spawnWave(roomId) {
     for (let i = 0; i < count; i++) {
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
-        
-        // أول (chaserCount) من البوتات سيكونون بوتات مطاردة تلاحق اللاعب
         const isChaserBot = (i < chaserCount);
 
         room.bots[id] = {
@@ -554,7 +553,6 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        // 🌟 منع التكرار: الموجة تبدأ متقدمة بدرجة عن مستواه الحالي (startLevel + 1)
         if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const room = rooms[roomId];
@@ -784,6 +782,7 @@ io.on('connection', (socket) => {
 });
 
 function leaveRoom(socket, immediate) {
+    TheRoom: // label just for comment if needed
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
 
@@ -847,7 +846,6 @@ function leaveRoom(socket, immediate) {
 function endRoom(roomId) {
     const room = rooms[roomId];
     if (!room) return;
-    room.wiped =` true; // wait, let's fix that typo right here: room.wiped = true; `
     room.wiped = true;
 
     if (room.botTickInterval) clearInterval(room.botTickInterval);
