@@ -1,4 +1,3 @@
-
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
@@ -18,34 +17,38 @@ const RESPAWN_MS = 3000;
 const WORLD_SIZE = 10000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
-const TICK_MS = 100; 
+const TICK_MS = 100;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
-// 🌟 القاموس المحدث بأسماء سفنك الفعلية
-// قمت بوضع أرقام افتراضية تصاعدية، ويمكنك الآن تعديل hp و speed لكل سفينة براحتك
+// ═══════════════════════════════════════════════════════
+//  إعدادات توازن البوتات الجديدة
+// ═══════════════════════════════════════════════════════
+const FPS_RATIO = 6.0;              // تحويل 60FPS إلى 10Hz
+const BOT_MAX_SPEED = 15.0;         // سقف سرعة البوت العادي
+const CHASER_SPEED_RATIO = 0.9;     // المطارد = 90% من أسرع لاعب
+const BOT_BASE_SPEED = 8.0;         // سرعة البوت عند مستوى 1
+const BOT_SPEED_PER_LEVEL = 0.025;  // زيادة السرعة لكل مستوى
+
 const SHIPS_CONFIG = {
-    'bot':             { hp: 100, speed: 10.0 }, // Level 1
-    'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
-    'devilsfangs':     { hp: 150, speed: 12.0 }, // Level 20
-    'finish':          { hp: 140, speed: 18.5 }, // Level 30
-    'proskin':         { hp: 140, speed: 19.5 }, // Level 40
-    'suphigh':         { hp: 110, speed: 20.0 }, // Level 50
-    'suplis':          { hp: 110, speed: 20.5 }, // Level 60
-    'suplis2':         { hp: 120, speed: 20.5 }, // Level 70
-    'gemini':          { hp: 300, speed: 17.0 }, // Level 80
-    'war':             { hp: 250, speed: 20.0 }, // Level 90
-    'geminiprosimple': { hp: 300, speed: 19.0 }, // Level 100
-    'deepseek':        { hp: 280, speed: 20.5 }, // Level 110
-    'geminipro':       { hp: 300, speed: 21.0 }, // Level 120
-    'legendary':       { hp: 350, speed: 20.0 }  // Level 130
+    'bot':             { hp: 100, speed: 10.0 },
+    'devilahorns':     { hp: 100, speed: 18.5 },
+    'devilsfangs':     { hp: 150, speed: 12.0 },
+    'finish':          { hp: 140, speed: 18.5 },
+    'proskin':         { hp: 140, speed: 19.5 },
+    'suphigh':         { hp: 110, speed: 20.0 },
+    'suplis':          { hp: 110, speed: 20.5 },
+    'suplis2':         { hp: 120, speed: 20.5 },
+    'gemini':          { hp: 300, speed: 17.0 },
+    'war':             { hp: 250, speed: 20.0 },
+    'geminiprosimple': { hp: 300, speed: 19.0 },
+    'deepseek':        { hp: 280, speed: 20.5 },
+    'geminipro':       { hp: 300, speed: 21.0 },
+    'legendary':       { hp: 350, speed: 20.0 }
 };
 
-
-// دالة لمعرفة قدرات السفينة بناءً على اسمها
 function getShipStats(hullId) {
-    // إذا كان اسم السفينة موجوداً في القاموس نعطيه قدراتها، وإلا نعطيه القدرات الافتراضية 'bot'
     return SHIPS_CONFIG[hullId.toLowerCase()] || SHIPS_CONFIG['bot'];
 }
 
@@ -54,7 +57,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v27.0 - Server-Authoritative Ships');
+    res.send('Grand3D Co-op Server v30.0 - Smart Bot AI');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -64,19 +67,108 @@ function dist2(ax, ay, bx, by) {
     return dx * dx + dy * dy;
 }
 
-function botSpeedForWave(wave) {
-    return Math.min(10.0 + (wave * 0.1), 16.0); 
+// ═══════════════════════════════════════════════════════
+//  دوال حساب مستوى الغرفة وسرعتها
+// ═══════════════════════════════════════════════════════
+
+function getRoomAvgLevel(room) {
+    let total = 0, count = 0;
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (p.online && p.hp > 0) {
+            total += (p.level || 1);
+            count++;
+        }
+    }
+    return count > 0 ? (total / count) : 1;
 }
 
-function botHPForWave(wave) {
-    if (wave > 150) return 4;
-    if (wave > 80) return 3;
-    if (wave > 30) return 2;
-    return 1;
+function getRoomMaxSpeed(room) {
+    let maxSpd = 10.0;
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (!p.online || !p.hp || p.hp <= 0) continue;
+        const hull = (p.hullId || 'bot').toLowerCase();
+        const stats = SHIPS_CONFIG[hull] || SHIPS_CONFIG['bot'];
+        if (stats.speed > maxSpd) maxSpd = stats.speed;
+    }
+    return maxSpd;
 }
+
+// ═══════════════════════════════════════════════════════
+//  معادلات البوتات الجديدة (حسب مستوى الغرفة)
+// ═══════════════════════════════════════════════════════
+
+function botSpeedForRoom(room) {
+    const avg = getRoomAvgLevel(room);
+    return Math.min(BOT_BASE_SPEED + avg * BOT_SPEED_PER_LEVEL, BOT_MAX_SPEED);
+}
+
+function botHPForRoom(room) {
+    const avg = getRoomAvgLevel(room);
+    const wv = room.wave || 1;
+    return 1 + Math.floor(avg / 40) + Math.floor(wv / 60);
+}
+
+function botDamageForRoom(room) {
+    const avg = getRoomAvgLevel(room);
+    const wv = room.wave || 1;
+    return 12 + Math.floor(avg / 30) + Math.floor(wv / 50);
+}
+
+// ═══════════════════════════════════════════════════════
+//  توقّع الحركة
+// ═══════════════════════════════════════════════════════
+
+function getPredictionTime(room) {
+    const avg = getRoomAvgLevel(room);
+    const accuracy = Math.min(1.0, avg / 200);
+    return 0.3 + accuracy * 0.3; // من 0.3 إلى 0.6 ثانية
+}
+
+function getMissChance(room) {
+    const avg = getRoomAvgLevel(room);
+    return Math.max(0, 0.4 - avg / 500);
+}
+
+// ═══════════════════════════════════════════════════════
+//  تحديد دور البوت (تكتيكات جماعية)
+// ═══════════════════════════════════════════════════════
+
+function assignBotRole(index, total) {
+    const pusherCount  = Math.floor(total * 0.4);
+    const flankerCount = Math.floor(total * 0.3);
+    const sniperCount  = Math.floor(total * 0.2);
+    if (index < pusherCount) return 'pusher';
+    if (index < pusherCount + flankerCount) return 'flanker';
+    if (index < pusherCount + flankerCount + sniperCount) return 'sniper';
+    return 'blocker';
+}
+
+// ═══════════════════════════════════════════════════════
+//  قدرات البوتات الخاصة حسب مستوى الغرفة
+// ═══════════════════════════════════════════════════════
+
+function getBotAbilityForRoom(room) {
+    const avg = getRoomAvgLevel(room);
+    if (avg >= 350) return 'teleport';
+    if (avg >= 200) return 'shield';
+    if (avg >= 100) return 'barrage';
+    if (avg >= 50)  return 'dash';
+    return 'none';
+}
+
+// ═══════════════════════════════════════════════════════
+//  أدوات مساعدة
+// ═══════════════════════════════════════════════════════
 
 function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
+}
+
+function getChaserCountForWave(wave) {
+    if (wave < 20) return 0;
+    return 1 + Math.floor((wave - 20) / 12);
 }
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
@@ -136,6 +228,10 @@ function createRoom(mode, startWave) {
     return id;
 }
 
+// ═══════════════════════════════════════════════════════
+//  المحرك الرئيسي لحركة البوتات
+// ═══════════════════════════════════════════════════════
+
 function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -150,6 +246,7 @@ function startBotTick(roomId) {
             return;
         }
 
+        // حساب سرعة اللاعب (vx, vy) لتوقّع الحركة
         for (let i = 0; i < playersList.length; i++) {
             const p = playersList[i];
             p.vx = p.x - (p.lastX || p.x);
@@ -161,13 +258,23 @@ function startBotTick(roomId) {
         const islands = r.islands || [];
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
-            r100sq: (i.radius + 150) * (i.radius + 150) 
+            r100sq: (i.radius + 150) * (i.radius + 150)
         }));
+
+        // ═══ قيم تُحسَب مرة واحدة لكل تيك ═══
+        const roomMaxSpeed = getRoomMaxSpeed(r);
+        const chaserSpeed = Math.min(roomMaxSpeed * CHASER_SPEED_RATIO, BOT_MAX_SPEED + 3);
+        const normalSpeed = botSpeedForRoom(r);
+        const predictionTime = getPredictionTime(r);
+        const missChance = getMissChance(r);
+        const botAbility = getBotAbilityForRoom(r);
+        const now = Date.now();
 
         for (const botId in r.bots) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
+            // إيجاد أقرب لاعب
             let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
@@ -179,28 +286,63 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
-            const speed = botSpeedForWave(r.wave);
-            const step = speed * (TICK_MS / 50); 
 
+            // ═══ حساب السرعة حسب الدور ═══
+            let speed = bot.isChaser ? chaserSpeed : normalSpeed;
+
+            // ═══ تطبيق قدرة الاندفاع ═══
+            if (botAbility === 'dash' || botAbility === 'barrage' || botAbility === 'shield' || botAbility === 'teleport') {
+                if (bot.dashingUntil && now < bot.dashingUntil) {
+                    speed *= 2.0;
+                }
+            }
+
+            const step = speed * FPS_RATIO;
+
+            // ═══ سلوك حسب الدور ═══
             let moveDx = 0, moveDy = 0;
-            if (len > 1800) {
-                moveDx = dx; 
-                moveDy = dy;
-            } else if (len < 900) {
-                moveDx = -dx; 
-                moveDy = -dy;
-            } else {
-                const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
-                moveDx = dy * circleDirection; 
-                moveDy = -dx * circleDirection;
-                moveDx += dx * 0.15;
-                moveDy += dy * 0.15;
+            const role = bot.role || 'pusher';
+
+            if (bot.isChaser) {
+                // المطارد يتبع مباشرة
+                moveDx = dx; moveDy = dy;
+            } else if (role === 'pusher') {
+                // مهاجم مباشر
+                moveDx = dx; moveDy = dy;
+            } else if (role === 'flanker') {
+                // مُطوِّق: يقترب من الجانب
+                const baseAngle = Math.atan2(dy, dx);
+                const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
+                if (len > 2500) {
+                    moveDx = dx; moveDy = dy;
+                } else {
+                    const fa = baseAngle + flankOffset;
+                    moveDx = Math.cos(fa) * len * 0.7 + dx * 0.3;
+                    moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
+                }
+            } else if (role === 'sniper') {
+                // قنّاص: يبقى بعيداً ويطلق
+                if (len > 1900) { moveDx = dx; moveDy = dy; }
+                else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
+                else {
+                    // يدور حول اللاعب
+                    const cd = (bot.id % 2 === 0) ? 1 : -1;
+                    moveDx = dy * cd + dx * 0.1;
+                    moveDy = -dx * cd + dy * 0.1;
+                }
+            } else if (role === 'blocker') {
+                // قاطع: يقطع طريق الهروب
+                const toPlayer = Math.atan2(dy, dx);
+                const blockAngle = toPlayer + Math.PI / 2;
+                moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
+                moveDy = Math.sin(blockAngle) * 0.65 + (dy / len) * 0.35;
             }
 
             const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
             let nx = bot.x + (moveDx / moveLen) * step;
             let ny = bot.y + (moveDy / moveLen) * step;
 
+            // ═══ تفادي الجزر ═══
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
                 if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -226,34 +368,106 @@ function startBotTick(roomId) {
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
 
-            bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
+            // ═══ اتجاه البوت ═══
+            const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (bot.isChaser) {
+                let diff = targetHeading - bot.heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                bot.heading += diff * 0.4;
+            } else {
+                bot.heading = targetHeading;
+            }
 
+            // ═══ القدرات الخاصة (يتم تفعيلها دورياً) ═══
+            bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
+
+            if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
+                bot.abilityTimer = 0;
+
+                if (botAbility === 'dash') {
+                    bot.dashingUntil = now + 500; // 0.5 ثانية
+                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'dash' });
+                } else if (botAbility === 'barrage') {
+                    // إطلاق 3 رصاصات سريعة
+                    const pTime = predictionTime;
+                    const tx = closest.x + (closest.vx * pTime * FPS_RATIO);
+                    const ty = closest.y + (closest.vy * pTime * FPS_RATIO);
+                    for (let k = 0; k < 3; k++) {
+                        setTimeout(() => {
+                            const rr = rooms[roomId];
+                            if (!rr || rr.wiped) return;
+                            io.to(roomId).emit('bot_fired', {
+                                botId: bot.id,
+                                x: Math.round(bot.x), y: Math.round(bot.y),
+                                targetX: Math.round(tx + rnd(-80, 80)),
+                                targetY: Math.round(ty + rnd(-80, 80))
+                            });
+                        }, k * 150);
+                    }
+                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'barrage' });
+                } else if (botAbility === 'shield') {
+                    bot.shieldUntil = now + 2000; // ثانيتان
+                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'shield' });
+                } else if (botAbility === 'teleport') {
+                    // الانتقال خلف اللاعب
+                    const backAngle = Math.atan2(-dy, -dx);
+                    const newX = closest.x + Math.cos(backAngle) * 600;
+                    const newY = closest.y + Math.sin(backAngle) * 600;
+                    if (newX > WORLD_MIN && newX < WORLD_MAX && newY > WORLD_MIN && newY < WORLD_MAX) {
+                        bot.x = newX; bot.y = newY;
+                        io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'teleport' });
+                    }
+                }
+            }
+
+            // ═══ إطلاق النار مع توقّع الحركة ═══
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
             if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
                 bot.fireTimer = 0;
-                
-                const predictionFactor = (len / 100); 
-                const targetX = closest.x + (closest.vx * predictionFactor);
-                const targetY = closest.y + (closest.vy * predictionFactor);
+
+                // توقّع مكان اللاعب + خطأ عشوائي حسب المستوى
+                const pTime = predictionTime * FPS_RATIO;
+                let targetX = closest.x + (closest.vx * pTime);
+                let targetY = closest.y + (closest.vy * pTime);
+
+                // إضافة خطأ عشوائي (يقل مع المستوى)
+                if (Math.random() < missChance) {
+                    const missAmount = 300;
+                    targetX += rnd(-missAmount, missAmount);
+                    targetY += rnd(-missAmount, missAmount);
+                }
 
                 io.to(roomId).emit('bot_fired', {
                     botId: bot.id,
-                    x: Math.round(bot.x), 
+                    x: Math.round(bot.x),
                     y: Math.round(bot.y),
-                    targetX: Math.round(targetX), 
+                    targetX: Math.round(targetX),
                     targetY: Math.round(targetY)
                 });
             }
         }
 
+        // ═══ إرسال حالة البوتات ═══
         const botsPayload = Object.values(r.bots).map(b => ({
-            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+            id: b.id,
+            x: Math.round(b.x), y: Math.round(b.y),
+            heading: Math.round(b.heading),
+            hp: b.hp,
+            role: b.role || 'pusher',
+            isChaser: !!b.isChaser,
+            shielded: !!(b.shieldUntil && now < b.shieldUntil)
         }));
         io.to(roomId).emit('bots_update', botsPayload);
+
     }, TICK_MS);
 }
+
+// ═══════════════════════════════════════════════════════
+//  إنشاء موجة جديدة
+// ═══════════════════════════════════════════════════════
 
 function spawnWave(roomId) {
     const room = rooms[roomId];
@@ -261,7 +475,8 @@ function spawnWave(roomId) {
 
     room.bots = {};
     const count = botCountForWave(room.wave);
-    const hpVal = botHPForWave(room.wave);
+    const hpVal = botHPForRoom(room);
+    const chaserCount = getChaserCountForWave(room.wave);
 
     let cx = 0, cy = 0, n = 0;
     for (const uid in room.players) {
@@ -272,21 +487,37 @@ function spawnWave(roomId) {
     if (n > 0) { cx /= n; cy /= n; }
     else { cx = WORLD_SIZE / 2; cy = WORLD_SIZE / 2; }
 
+    // إجمالي البوتات العادية (بدون المطاردين) لتوزيع الأدوار
+    const normalCount = count - chaserCount;
+
     for (let i = 0; i < count; i++) {
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
+        const isChaserBot = (i < chaserCount);
+
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
             heading: rnd(0, 360),
-            hp: hpVal,
-            fireTimer: 0
+            hp: hpVal + (isChaserBot ? 2 : 0),
+            fireTimer: 0,
+            isChaser: isChaserBot,
+            role: isChaserBot ? 'pusher' : assignBotRole(i - chaserCount, normalCount),
+            abilityTimer: rnd(0, 3),  // تأخير عشوائي لتفعيل القدرات
+            dashingUntil: 0,
+            shieldUntil: 0
         };
     }
 
     io.to(roomId).emit('wave_start', { wave: room.wave, count });
     
     const botsPayload = Object.values(room.bots).map(b => ({
-        id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+        id: b.id,
+        x: Math.round(b.x), y: Math.round(b.y),
+        heading: Math.round(b.heading),
+        hp: b.hp,
+        role: b.role,
+        isChaser: !!b.isChaser,
+        shielded: false
     }));
     io.to(roomId).emit('bots_update', botsPayload);
 }
@@ -386,8 +617,8 @@ io.on('connection', (socket) => {
                         wave: room.wave,
                         level: player.level,
                         hp: player.hp,
-                        maxHp: player.maxHp, // إرسال الدم الأقصى للهاتف
-                        maxSpeed: player.maxSpeed, // إرسال السرعة القصوى للهاتف
+                        maxHp: player.maxHp,
+                        maxSpeed: player.maxSpeed,
                         x: Math.round(player.x),
                         y: Math.round(player.y),
                         heading: Math.round(player.heading),
@@ -426,17 +657,15 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
-            
-            // تحديث القدرات إذا دخل اللاعب بسفينة جديدة
+
             if (hullId && hullId !== player.hullId) {
                 player.hullId = hullId;
                 const stats = getShipStats(hullId);
                 player.maxHp = stats.hp;
                 player.maxSpeed = stats.speed;
-                // لا نزيد الدم الحالي أكثر من الأقصى
-                if (player.hp > player.maxHp) player.hp = player.maxHp; 
+                if (player.hp > player.maxHp) player.hp = player.maxHp;
             }
-            
+
             if (skinPath) player.skinPath = skinPath;
             if (finisherId) player.finisherId = finisherId;
 
@@ -450,31 +679,33 @@ io.on('connection', (socket) => {
                 wave: room.wave,
                 level: player.level,
                 hp: player.hp,
-                maxHp: player.maxHp, // إرسال البيانات المحدثة
+                maxHp: player.maxHp,
                 maxSpeed: player.maxSpeed,
                 hullId: player.hullId,
                 skinPath: player.skinPath
             });
 
             socket.to(roomId).emit('player_joined', {
-                id: socket.id, name: player.name, 
-                x: Math.round(player.x), y: Math.round(player.y), 
-                heading: Math.round(player.heading), 
+                id: socket.id, name: player.name,
+                x: Math.round(player.x), y: Math.round(player.y),
+                heading: Math.round(player.heading),
                 hullId: player.hullId, skinPath: player.skinPath, finisherId: player.finisherId
             });
 
             const existing = Object.values(room.players)
                 .filter(p => p.uid !== uid)
-                .map(p => ({ 
-                    id: p.id, name: p.name, 
-                    x: Math.round(p.x), y: Math.round(p.y), 
-                    heading: Math.round(p.heading), 
-                    hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId 
+                .map(p => ({
+                    id: p.id, name: p.name,
+                    x: Math.round(p.x), y: Math.round(p.y),
+                    heading: Math.round(p.heading),
+                    hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
                 }));
             socket.emit('room_state', { players: existing, wave: room.wave });
-            
+
             const botsPayload = Object.values(room.bots).map(b => ({
-                id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+                id: b.id, x: Math.round(b.x), y: Math.round(b.y),
+                heading: Math.round(b.heading), hp: b.hp,
+                role: b.role, isChaser: !!b.isChaser, shielded: false
             }));
             socket.emit('bots_update', botsPayload);
         } else {
@@ -517,10 +748,8 @@ io.on('connection', (socket) => {
             return;
         }
 
-        
         let roomId = findOpenRoom(socket.mode);
-if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
-
+        if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const room = rooms[roomId];
         if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
@@ -552,31 +781,33 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
             uid: socket.uid,
             name: socket.username,
             x: sx, y: sy, heading: 0,
-            maxHp: stats.hp,       // 🌟 تحديد الدم بناءً على السفينة
-            hp: stats.hp,          // 🌟 شحن الدم للحد الأقصى للسفينة
-            maxSpeed: stats.speed, // 🌟 تحديد سرعة السفينة القصوى
+            maxHp: stats.hp,
+            hp: stats.hp,
+            maxSpeed: stats.speed,
             kills: 0,
             level: socket.startLevel,
             online: true,
             deathTimer: null,
             hullId: validHullId,
             skinPath: skinPath || 'bt/bot/bot.png',
-            finisherId: finisherId || 'none'
+            finisherId: finisherId || 'none',
+            vx: 0, vy: 0,
+            lastX: sx, lastY: sy
         };
 
         socket.emit('match_found', {
             matchId: roomId,
             role: 'Player',
-            spawnX: Math.round(sx), 
-            spawnY: Math.round(sy), 
+            spawnX: Math.round(sx),
+            spawnY: Math.round(sy),
             spawnHeading: 0,
             opponentId: '',
             serverId: socket.id,
             wave: room.wave,
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
-            maxHp: stats.hp,       // إرسال الدم الأقصى للهاتف
-            maxSpeed: stats.speed, // إرسال السرعة للهاتف
+            maxHp: stats.hp,
+            maxSpeed: stats.speed,
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
@@ -584,24 +815,26 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const existing = Object.values(room.players)
             .filter(p => p.uid !== socket.uid)
-            .map(p => ({ 
-                id: p.id, name: p.name, 
-                x: Math.round(p.x), y: Math.round(p.y), 
-                heading: Math.round(p.heading), 
-                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId 
+            .map(p => ({
+                id: p.id, name: p.name,
+                x: Math.round(p.x), y: Math.round(p.y),
+                heading: Math.round(p.heading),
+                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
             }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username, 
-            x: Math.round(sx), y: Math.round(sy), 
-            heading: 0, hullId: room.players[socket.uid].hullId, 
-            skinPath: room.players[socket.uid].skinPath, 
+            id: socket.id, name: socket.username,
+            x: Math.round(sx), y: Math.round(sy),
+            heading: 0, hullId: room.players[socket.uid].hullId,
+            skinPath: room.players[socket.uid].skinPath,
             finisherId: room.players[socket.uid].finisherId
         });
 
         const botsPayload = Object.values(room.bots).map(b => ({
-            id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
+            id: b.id, x: Math.round(b.x), y: Math.round(b.y),
+            heading: Math.round(b.heading), hp: b.hp,
+            role: b.role, isChaser: !!b.isChaser, shielded: false
         }));
         socket.emit('bots_update', botsPayload);
 
@@ -617,16 +850,15 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
         p.x = data.x; p.y = data.y; p.heading = data.heading;
         if (data.hullId && data.hullId !== p.hullId) {
             p.hullId = data.hullId;
-            // لا نغير القدرات في اللحظة إلا إذا أردت تحديثها فورياً (يفضل تركها تتحدث مع بداية الماتش أو الدخول)
         }
-        if (data.skinPath) p.skinPath = data.skinPath; 
+        if (data.skinPath) p.skinPath = data.skinPath;
         if (data.finisherId) p.finisherId = data.finisherId;
-        
+
         socket.to(socket.currentRoom).emit('player_moved', {
-            id: socket.id, 
-            x: Math.round(p.x), 
-            y: Math.round(p.y), 
-            heading: Math.round(p.heading), 
+            id: socket.id,
+            x: Math.round(p.x),
+            y: Math.round(p.y),
+            heading: Math.round(p.heading),
             hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
         });
     });
@@ -636,6 +868,12 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
         if (!room || room.wiped) return;
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
+
+        // ═══ فحص قدرة الدرع ═══
+        if (bot.shieldUntil && Date.now() < bot.shieldUntil) {
+            io.to(socket.id).emit('bot_shield_block', { botId: data.botId });
+            return;
+        }
 
         bot.hp -= 1;
 
@@ -655,14 +893,13 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
             });
 
             if (isLastBot) {
-                const clearedWave = room.wave; 
+                const clearedWave = room.wave;
                 room.wave += 1;
 
                 for (const uid in room.players) {
                     const pl = room.players[uid];
                     if (clearedWave >= pl.level) pl.level += 1;
-                    // 🌟 هنا نعيد دم اللاعب إلى حده الأقصى وليس 100
-                    pl.hp = pl.maxHp; 
+                    pl.hp = pl.maxHp;
                 }
 
                 flushWaveStats(socket.currentRoom);
@@ -671,7 +908,7 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
                     const pl = room.players[uid];
                     if (pl.online && pl.id) {
                         io.to(pl.id).emit('level_up', { wave: room.wave, level: pl.level });
-                        io.to(pl.id).emit('hp_update', { hp: pl.hp }); // نرسل الدم الجديد
+                        io.to(pl.id).emit('hp_update', { hp: pl.hp });
                     }
                 }
 
@@ -690,7 +927,10 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
         const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
-        p.hp -= data.damage || 15;
+        // ═══ الضرر يُحسَب من السيرفر حسب مستوى الغرفة ═══
+        const serverDamage = botDamageForRoom(room);
+        p.hp -= serverDamage;
+
         if (p.hp <= 0) {
             p.hp = 0;
             io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
@@ -732,12 +972,11 @@ if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
-                    // 🌟 في حال العودة للحياة (Respawn)، نملأ دمه للحد الأقصى لسفينته
-                    currentPlayer.hp = currentPlayer.maxHp; 
+                    currentPlayer.hp = currentPlayer.maxHp;
                     if (currentPlayer.online && currentPlayer.id) {
-                        io.to(currentPlayer.id).emit('player_respawned', { 
-                            x: Math.round(sp.x), 
-                            y: Math.round(sp.y) 
+                        io.to(currentPlayer.id).emit('player_respawned', {
+                            x: Math.round(sp.x),
+                            y: Math.round(sp.y)
                         });
                     }
                 }
@@ -768,12 +1007,12 @@ function leaveRoom(socket, immediate) {
 
     if (immediate) {
         if (player.deathTimer) clearTimeout(player.deathTimer);
-        
+
         if (player.uid) {
             fetchUserKills(player.uid, (oldKills) => {
                 const newTotal = oldKills + (player.kills || 0);
                 pushUserStatsAsync(player.uid, newTotal, player.level);
-                
+
                 delete room.players[socket.uid];
                 io.to(roomId).emit('player_left', { id: socket.id });
                 socket.leave(roomId);
