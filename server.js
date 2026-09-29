@@ -48,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.6 - Fixed Chaser Top Speed');
+    res.send('Grand3D Co-op Server v28.7 - Fixed Chaser Max Speed');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -78,13 +78,16 @@ function getChaserCountForWave(wave) {
     return 1 + Math.floor((wave - 50) / 10);
 }
 
+// ✅ الحل: نحسب أسرع سفينة في الغرفة مباشرة من SHIPS_CONFIG حسب hullId الحالي
 function getMaxSpeedInRoom(room) {
     let maxSpd = 10.0;
     for (const uid in room.players) {
         const p = room.players[uid];
-        if (p.maxSpeed && p.maxSpeed > maxSpd) {
-            maxSpd = p.maxSpeed;
-        }
+        if (!p.online) continue;
+        if (!p.hp || p.hp <= 0) continue;
+        const hull = (p.hullId || 'bot').toLowerCase();
+        const stats = SHIPS_CONFIG[hull] || SHIPS_CONFIG['bot'];
+        if (stats.speed > maxSpd) maxSpd = stats.speed;
     }
     return maxSpd;
 }
@@ -174,6 +177,7 @@ function startBotTick(roomId) {
             r100sq: (i.radius + 150) * (i.radius + 150) 
         }));
 
+        // ✅ نحسب أسرع سرعة في الغرفة من الـ config مباشرة كل تيك
         const maxRoomSpeed = getMaxSpeedInRoom(r);
 
         for (const botId in r.bots) {
@@ -192,15 +196,25 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
-            let speed = bot.isChaser ? maxRoomSpeed : botSpeedForWave(r.wave);
-            const step = speed * (TICK_MS / 50); 
-
-            let moveDx = 0, moveDy = 0;
-            
             if (bot.isChaser) {
-                moveDx = dx;
-                moveDy = dy;
+                // 🔒 سرعة ثابتة = أسرع سفينة في الغرفة (من الـ config)
+                const step = maxRoomSpeed * (TICK_MS / 50);
+
+                if (len > 25) {
+                    bot.x += (dx / len) * step;
+                    bot.y += (dy / len) * step;
+                }
+
+                const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
+                let diff = targetHeading - bot.heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                bot.heading += diff * 0.4;
             } else {
+                const speed = botSpeedForWave(r.wave);
+                const step = speed * (TICK_MS / 50); 
+
+                let moveDx = 0, moveDy = 0;
                 if (len > 1800) {
                     moveDx = dx; 
                     moveDy = dy;
@@ -214,46 +228,38 @@ function startBotTick(roomId) {
                     moveDx += dx * 0.15;
                     moveDy += dy * 0.15;
                 }
-            }
 
-            const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
-            let nx = bot.x + (moveDx / moveLen) * step;
-            let ny = bot.y + (moveDy / moveLen) * step;
+                const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
+                let nx = bot.x + (moveDx / moveLen) * step;
+                let ny = bot.y + (moveDy / moveLen) * step;
 
-            let blocked = false;
-            for (let i = 0; i < islData.length; i++) {
-                if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                    blocked = true; break;
-                }
-            }
-
-            if (!blocked) {
-                bot.x = nx; bot.y = ny;
-            } else {
-                const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                const tX = bot.x + Math.cos(perp) * step;
-                const tY = bot.y + Math.sin(perp) * step;
-                let b2 = false;
+                let blocked = false;
                 for (let i = 0; i < islData.length; i++) {
-                    if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        b2 = true; break;
+                    if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        blocked = true; break;
                     }
                 }
-                if (!b2) { bot.x = tX; bot.y = tY; }
+
+                if (!blocked) {
+                    bot.x = nx; bot.y = ny;
+                } else {
+                    const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
+                    const tX = bot.x + Math.cos(perp) * step;
+                    const tY = bot.y + Math.sin(perp) * step;
+                    let b2 = false;
+                    for (let i = 0; i < islData.length; i++) {
+                        if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                            b2 = true; break;
+                        }
+                    }
+                    if (!b2) { bot.x = tX; bot.y = tY; }
+                }
+
+                bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
             }
 
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
-
-            const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
-            if (bot.isChaser) {
-                let diff = targetHeading - bot.heading;
-                while (diff > 180) diff -= 360;
-                while (diff < -180) diff += 360;
-                bot.heading += diff * 0.4;
-            } else {
-                bot.heading = targetHeading;
-            }
 
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
@@ -642,8 +648,13 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
         p.x = data.x; p.y = data.y; p.heading = data.heading;
+
         if (data.hullId && data.hullId !== p.hullId) {
             p.hullId = data.hullId;
+            const stats = getShipStats(data.hullId);
+            p.maxHp = stats.hp;
+            p.maxSpeed = stats.speed;
+            if (p.hp > p.maxHp) p.hp = p.maxHp;
         }
         if (data.skinPath) p.skinPath = data.skinPath; 
         if (data.finisherId) p.finisherId = data.finisherId;
