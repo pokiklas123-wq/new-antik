@@ -48,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.7 - Fixed Chaser Max Speed');
+    res.send('Grand3D Co-op Server v28.8 - Fixed Chaser Speed');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -78,7 +78,7 @@ function getChaserCountForWave(wave) {
     return 1 + Math.floor((wave - 50) / 10);
 }
 
-// ✅ الحل: نحسب أسرع سفينة في الغرفة مباشرة من SHIPS_CONFIG حسب hullId الحالي
+// ✅ أسرع سرعة في الغرفة — تُحسب من SHIPS_CONFIG حسب hullId الحالي (ثابتة، لا تعتمد على السرعة الفعلية)
 function getMaxSpeedInRoom(room) {
     let maxSpd = 10.0;
     for (const uid in room.players) {
@@ -177,7 +177,7 @@ function startBotTick(roomId) {
             r100sq: (i.radius + 150) * (i.radius + 150) 
         }));
 
-        // ✅ نحسب أسرع سرعة في الغرفة من الـ config مباشرة كل تيك
+        // ✅ أسرع سرعة في الغرفة (من الـ config مباشرة كل تيك)
         const maxRoomSpeed = getMaxSpeedInRoom(r);
 
         for (const botId in r.bots) {
@@ -197,8 +197,8 @@ function startBotTick(roomId) {
             const len = Math.sqrt(closestD2) || 1;
 
             if (bot.isChaser) {
-                // 🔒 سرعة ثابتة = أسرع سفينة في الغرفة (من الـ config)
-                const step = maxRoomSpeed * (TICK_MS / 50);
+                // ✅ سرعة ثابتة = أسرع سفينة في الغرفة × 6 (60FPS مقابل 10 تيكات/ثانية)
+                const step = maxRoomSpeed * 6.0;
 
                 if (len > 25) {
                     bot.x += (dx / len) * step;
