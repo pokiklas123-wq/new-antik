@@ -1,7 +1,7 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
- 
+
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
@@ -14,27 +14,45 @@ const PORT = process.env.PORT || 3000;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
-const WORLD_SIZE = 10000;
+
+// ═══════════════════════════════════════════════════════
+//  ثوابت الخريطة — يجب أن تطابق العميل تمامًا
+// ═══════════════════════════════════════════════════════
+const WORLD_SIZE = 20000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
+
+const ISLAND_TARGET = 120;
+const ISLAND_MARGIN = 800;              // مسافة من الحواف
+const ISLAND_SAFE_RADIUS = 900;         // منطقة آمنة حول (3000,3000)
+const ISLAND_SPAWN_CENTER = 3000;       // نفس مركز العميل
+const ISLAND_CLASH_MARGIN = 400;        // نفس مسافة التباعد
+const ISLAND_R_MIN = 160, ISLAND_R_MAX = 380;
+const ISLAND_H_MIN = 140, ISLAND_H_MAX = 320;
+const ISLAND_SEED_BASE = 777;           // نفس seed العميل
+const ISLAND_MAX_ATTEMPTS = 8000;
+
+// ═══════════════════════════════════════════════════════
+//  إعدادات البوتات
+// ═══════════════════════════════════════════════════════
 const TICK_MS = 100;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
-// ═══════════════════════════════════════════════════════
-//  إعدادات توازن البوتات
-// ═══════════════════════════════════════════════════════
 const FPS_RATIO = 6.0;
 const BOT_MAX_SPEED = 15.0;
 const CHASER_SPEED_RATIO = 0.9;
 const BOT_BASE_SPEED = 8.0;
 const BOT_SPEED_PER_LEVEL = 0.025;
 
-// ⭐ سقوف جديدة لمنع القتل الفوري في المستويات العالية
-const BOT_DAMAGE_CAP = 28;          // أقصى ضرر لكل ضربة
-const MAX_CHASERS = 8;              // أقصى عدد مطاردين
-const SPAWN_INVULN_MS = 2500;       // حصانة عند الظهور/الإحياء
+const BOT_DAMAGE_CAP = 28;
+const MAX_CHASERS = 8;
+const SPAWN_INVULN_MS = 2500;
+
+// هامش إضافي حول الجزر حتى لا تصطدم البوتات بشكل غريب
+const ISLAND_BOT_MARGIN = 80;
+const ISLAND_BOT_MARGIN_SQ_FACTOR = 150; // نفس العميل تقريبًا
 
 // ═══════════════════════════════════════════════════════
 //  سرعة التوربيدات
@@ -69,7 +87,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v32.0 - Fair High-Level Balance');
+    res.send('Grand3D Co-op Server v33.0 - World Match (120 Islands)');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -80,7 +98,99 @@ function dist2(ax, ay, bx, by) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  دوال مستوى الغرفة وسرعتها
+//  مولّد أرقام عشوائية بنفس بذرة Java Random
+//  (تطابق new Random(seed).nextFloat() في العميل)
+// ═══════════════════════════════════════════════════════
+class JavaRandom {
+    constructor(seed) {
+        // Java Random يستخدم بذرة 48-bit
+        this.seed = (BigInt(seed) ^ 0x5DEECE66Dn) & ((1n << 48n) - 1n);
+        this.multiplier = 0x5DEECE66Dn;
+        this.addend = 0xBn;
+        this.mask = (1n << 48n) - 1n;
+    }
+
+    next(bits) {
+        this.seed = (this.seed * this.multiplier + this.addend) & this.mask;
+        return Number(this.seed >> BigInt(48 - bits));
+    }
+
+    nextFloat() {
+        return this.next(24) / (1 << 24);
+    }
+
+    nextInt(bound) {
+        if (bound <= 0) throw new Error("bound must be positive");
+        // محاكاة دقيقة لأسلوب java.util.Random.nextInt
+        if ((bound & -bound) === bound) {
+            return Number((BigInt(bound) * BigInt(this.next(31))) >> 31n);
+        }
+        let bits, val;
+        do {
+            bits = this.next(31);
+            val = bits % bound;
+        } while (bits - val + (bound - 1) < 0);
+        return val;
+    }
+}
+
+// ═══════════════════════════════════════════════════════
+//  توليد الجزر بنفس خوارزمية العميل
+// ═══════════════════════════════════════════════════════
+function generateWorldIslands() {
+    const islRng = new JavaRandom(ISLAND_SEED_BASE);
+    const islands = [];
+    let placed = 0, attempts = 0;
+
+    while (placed < ISLAND_TARGET && attempts < ISLAND_MAX_ATTEMPTS) {
+        attempts++;
+
+        const ix = ISLAND_MARGIN + islRng.nextFloat() * (WORLD_SIZE - ISLAND_MARGIN * 2);
+        const iy = ISLAND_MARGIN + islRng.nextFloat() * (WORLD_SIZE - ISLAND_MARGIN * 2);
+
+        // المنطقة الآمنة حول (3000,3000)
+        const safeDx = ix - ISLAND_SPAWN_CENTER;
+        const safeDy = iy - ISLAND_SPAWN_CENTER;
+        if (Math.sqrt(safeDx * safeDx + safeDy * safeDy) < ISLAND_SAFE_RADIUS) continue;
+
+        let clash = false;
+        for (const o of islands) {
+            const dx = ix - o.x, dy = iy - o.y;
+            if (Math.sqrt(dx * dx + dy * dy) < o.radius + ISLAND_CLASH_MARGIN) {
+                clash = true;
+                break;
+            }
+        }
+        if (clash) continue;
+
+        const r = ISLAND_R_MIN + islRng.nextFloat() * (ISLAND_R_MAX - ISLAND_R_MIN);
+        const h = ISLAND_H_MIN + islRng.nextFloat() * (ISLAND_H_MAX - ISLAND_H_MIN);
+        const seed = islRng.nextInt(9999);
+
+        islands.push({
+            x: Math.round(ix),
+            y: Math.round(iy),
+            radius: Math.round(r),
+            height: Math.round(h),
+            seed: seed,
+            islandIndex: placed
+        });
+        placed++;
+    }
+
+    console.log(`[ISLANDS] Generated ${placed} islands in ${attempts} attempts`);
+    return islands;
+}
+
+// نتجنب إعادة التوليد لكل غرفة — نفس البذرة تعطي نفس النتيجة
+let GLOBAL_ISLANDS = null;
+function getGlobalIslands() {
+    if (!GLOBAL_ISLANDS) GLOBAL_ISLANDS = generateWorldIslands();
+    return GLOBAL_ISLANDS;
+}
+
+// ═══════════════════════════════════════════════════════
+//  دوال مساعدة
 // ═══════════════════════════════════════════════════════
 
 function getRoomAvgLevel(room) {
@@ -115,10 +225,6 @@ function getTorpedoSpeed(room) {
     return speed;
 }
 
-// ═══════════════════════════════════════════════════════
-//  معادلات البوتات
-// ═══════════════════════════════════════════════════════
-
 function botSpeedForRoom(room) {
     const avg = getRoomAvgLevel(room);
     return Math.min(BOT_BASE_SPEED + avg * BOT_SPEED_PER_LEVEL, BOT_MAX_SPEED);
@@ -130,7 +236,6 @@ function botHPForRoom(room) {
     return 1 + Math.floor(avg / 40) + Math.floor(wv / 60);
 }
 
-// ⭐ ضرر البوت — مسقوف عند BOT_DAMAGE_CAP
 function botDamageForRoom(room) {
     const avg = getRoomAvgLevel(room);
     const wv = room.wave || 1;
@@ -140,7 +245,6 @@ function botDamageForRoom(room) {
     return Math.min(dmg, BOT_DAMAGE_CAP);
 }
 
-// ⭐ فاصل بين الضربات — يزداد مع المستوى
 function getPlayerDamageCooldownMs(room) {
     const avg = getRoomAvgLevel(room);
     if (avg > 500) return 400;
@@ -148,10 +252,6 @@ function getPlayerDamageCooldownMs(room) {
     if (avg > 100) return 200;
     return 100;
 }
-
-// ═══════════════════════════════════════════════════════
-//  توقّع الحركة
-// ═══════════════════════════════════════════════════════
 
 function getPredictionTime(room) {
     const avg = getRoomAvgLevel(room);
@@ -163,10 +263,6 @@ function getMissChance(room) {
     const avg = getRoomAvgLevel(room);
     return Math.max(0, 0.4 - avg / 500);
 }
-
-// ═══════════════════════════════════════════════════════
-//  أدوار البوتات
-// ═══════════════════════════════════════════════════════
 
 function assignBotRole(index, total) {
     const pusherCount  = Math.floor(total * 0.4);
@@ -187,21 +283,19 @@ function getBotAbilityForRoom(room) {
     return 'none';
 }
 
-// ═══════════════════════════════════════════════════════
-//  أدوات مساعدة
-// ═══════════════════════════════════════════════════════
-
 function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
 
-// ⭐ عدد المطاردين مسقوف عند MAX_CHASERS
 function getChaserCountForWave(wave) {
     if (wave < 20) return 0;
     const count = 1 + Math.floor((wave - 20) / 15);
     return Math.min(count, MAX_CHASERS);
 }
 
+// ═══════════════════════════════════════════════════════
+//  توليد موقع آمن للبوتات بعيدًا عن الجزر
+// ═══════════════════════════════════════════════════════
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     for (let attempt = 0; attempt < 40; attempt++) {
         const a = Math.random() * Math.PI * 2;
@@ -210,10 +304,12 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
         let y = cy + Math.sin(a) * d;
         x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
         y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
+
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
-                if (dist2(x, y, isl.x, isl.y) < (isl.radius + 250) * (isl.radius + 250)) {
+                const margin = isl.radius + 250;
+                if (dist2(x, y, isl.x, isl.y) < margin * margin) {
                     inside = true; break;
                 }
             }
@@ -252,7 +348,7 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: [],
+        islands: getGlobalIslands().slice(),  // نفس الجزر لكل غرفة
         wiped: false
     };
     startBotTick(id);
@@ -260,7 +356,7 @@ function createRoom(mode, startWave) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  المحرك الرئيسي
+//  محرك البوتات
 // ═══════════════════════════════════════════════════════
 
 function startBotTick(roomId) {
@@ -286,9 +382,10 @@ function startBotTick(roomId) {
         }
 
         const islands = r.islands || [];
+        // cache نصف قطر الاصطدام مرة واحدة
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
-            r100sq: (i.radius + 150) * (i.radius + 150)
+            r100sq: (i.radius + ISLAND_BOT_MARGIN_SQ_FACTOR) * (i.radius + ISLAND_BOT_MARGIN_SQ_FACTOR)
         }));
 
         const roomMaxSpeed = getRoomMaxSpeed(r);
@@ -397,7 +494,6 @@ function startBotTick(roomId) {
                 bot.heading = targetHeading;
             }
 
-            // القدرات الخاصة
             bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
@@ -438,7 +534,6 @@ function startBotTick(roomId) {
                 }
             }
 
-            // إطلاق النار
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
@@ -667,7 +762,6 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
-            // ⭐ حصانة عند إعادة الاتصال
             player.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
 
             if (hullId && hullId !== player.hullId) {
@@ -765,8 +859,11 @@ io.on('connection', (socket) => {
         if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const room = rooms[roomId];
-        if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
-            room.islands = islands;
+
+        // ⭐ السيرفر يستخدم الجزر المولّدة عالميًا (نفس العميل) ويتجاهل جزر العميل
+        //    هذا يضمن أن كل اللاعبين في نفس الغرفة يرون نفس الجزر
+        if (!room.islands || room.islands.length === 0) {
+            room.islands = getGlobalIslands().slice();
         }
 
         socket.join(roomId);
@@ -806,7 +903,6 @@ io.on('connection', (socket) => {
             finisherId: finisherId || 'none',
             vx: 0, vy: 0,
             lastX: sx, lastY: sy,
-            // ⭐ حصانة عند الظهور لأول مرة
             invulnerableUntil: Date.now() + SPAWN_INVULN_MS,
             lastDamageTime: 0
         };
@@ -937,7 +1033,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ⭐ المعالج المعدَّل لضرر البوت على اللاعب
     socket.on('bot_hit_player', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
@@ -946,31 +1041,25 @@ io.on('connection', (socket) => {
 
         const now = Date.now();
 
-        // دالة مساعدة لمزامنة العميل
         const syncHp = () => io.to(socket.id).emit('hp_update', { hp: p.hp });
 
-        // ⭐ 1) فحص حصانة الظهور
         if (p.invulnerableUntil && now < p.invulnerableUntil) {
             syncHp();
             return;
         }
 
-        // ⭐ 2) فحص فاصل الضرر
         const cooldown = getPlayerDamageCooldownMs(room);
         if (p.lastDamageTime && (now - p.lastDamageTime) < cooldown) {
             syncHp();
             return;
         }
 
-        // ⭐ 3) تحديد قيمة الضرر
         const clientDamage = data.damage || 15;
         let serverDamage;
 
         if (clientDamage > 50) {
-            // ضرر الجزيرة (قيمة كبيرة من العميل)
             serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
         } else {
-            // ضرر التوربيد — نستخدم صيغة السيرفر
             serverDamage = botDamageForRoom(room);
         }
 
@@ -1019,7 +1108,6 @@ io.on('connection', (socket) => {
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
                     currentPlayer.hp = currentPlayer.maxHp;
-                    // ⭐ حصانة عند الإحياء
                     currentPlayer.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
                     currentPlayer.lastDamageTime = 0;
                     if (currentPlayer.online && currentPlayer.id) {
