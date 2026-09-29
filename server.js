@@ -14,7 +14,6 @@ const PORT = process.env.PORT || 3000;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
-
 const WORLD_SIZE = 20000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
@@ -33,9 +32,8 @@ const BOT_SPEED_PER_LEVEL = 0.025;
 
 const BOT_DAMAGE_CAP = 28;
 const MAX_CHASERS = 8;
-const SPAWN_INVULN_MS = 2500;
 
-const CHASER_STICKY_DIST = 6000;
+// ⭐ عتبات التصاق البوتات السريعة
 const BOT_LEASH_DIST = 9000;
 const BOT_FREE_ROAM_RADIUS = 7000;
 
@@ -69,7 +67,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v34.0 - Server-Only Islands');
+    res.send('Grand3D Co-op Server');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -80,7 +78,7 @@ function dist2(ax, ay, bx, by) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  توليد جزر — نفس بذرة العميل (777) لضمان تطابق الشكل
+//  توليد الجزر — نفس بذرة العميل (777)
 // ═══════════════════════════════════════════════════════
 function generateIslands(count) {
     const islands = [];
@@ -269,7 +267,6 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        // ⭐ تعديل: نولّد الجزر فورًا مع إنشاء الغرفة
         islands: generateIslands(DEFAULT_ISLAND_COUNT),
         wiped: false
     };
@@ -344,6 +341,7 @@ function startBotTick(roomId) {
             const role = bot.role || 'pusher';
 
             if (bot.isChaser) {
+                // ⭐ Chaser: يلتصق باللاعب دائمًا مهما بعدت المسافة
                 moveDx = dx;
                 moveDy = dy;
                 speed = chaserSpeed;
@@ -694,7 +692,6 @@ io.on('connection', (socket) => {
 
             player.online = true;
             player.id = socket.id;
-            player.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
 
             if (hullId && hullId !== player.hullId) {
                 player.hullId = hullId;
@@ -713,7 +710,6 @@ io.on('connection', (socket) => {
             socket.uid = player.uid;
             socket.mode = room.mode;
 
-            // ⭐ تعديل: إرسال islands أيضًا في session_recovered
             socket.emit('session_recovered', {
                 wave: room.wave,
                 level: player.level,
@@ -794,9 +790,6 @@ io.on('connection', (socket) => {
 
         const room = rooms[roomId];
 
-        // ⭐ تعديل: تجاهل جزر العميل تمامًا — الغرفة عندها 120 جزيرة من createRoom
-        // (لا حاجة لأي كود إضافي هنا)
-
         socket.join(roomId);
         socket.currentRoom = roomId;
 
@@ -834,9 +827,7 @@ io.on('connection', (socket) => {
             finisherId: finisherId || 'none',
             vx: 0, vy: 0,
             lastX: sx, lastY: sy,
-            invulnerableUntil: Date.now() + SPAWN_INVULN_MS,
-            lastDamageTime: 0
-        };
+            lastDamageTime: 0        };
 
         socket.emit('match_found', {
             matchId: roomId,
@@ -971,17 +962,10 @@ io.on('connection', (socket) => {
         if (!p || p.hp <= 0) return;
 
         const now = Date.now();
-
-        const syncHp = () => io.to(socket.id).emit('hp_update', { hp: p.hp });
-
-        if (p.invulnerableUntil && now < p.invulnerableUntil) {
-            syncHp();
-            return;
-        }
-
         const cooldown = getPlayerDamageCooldownMs(room);
+
         if (p.lastDamageTime && (now - p.lastDamageTime) < cooldown) {
-            syncHp();
+            io.to(socket.id).emit('hp_update', { hp: p.hp });
             return;
         }
 
@@ -1039,7 +1023,6 @@ io.on('connection', (socket) => {
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
                     currentPlayer.hp = currentPlayer.maxHp;
-                    currentPlayer.invulnerableUntil = Date.now() + SPAWN_INVULN_MS;
                     currentPlayer.lastDamageTime = 0;
                     if (currentPlayer.online && currentPlayer.id) {
                         io.to(currentPlayer.id).emit('player_respawned', {
@@ -1050,7 +1033,7 @@ io.on('connection', (socket) => {
                 }
             }, RESPAWN_MS);
         } else {
-            syncHp();
+            io.to(socket.id).emit('hp_update', { hp: p.hp });
         }
     });
 
