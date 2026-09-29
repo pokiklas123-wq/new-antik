@@ -48,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.3 - Smooth Chaser Bots');
+    res.send('Grand3D Co-op Server v28.4 - Smooth Chaser Bots');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -193,7 +193,6 @@ function startBotTick(roomId) {
             const len = Math.sqrt(closestD2) || 1;
 
             if (bot.isChaser) {
-                // 🌟 البوت المطارد (الغبي والمباشر): يتحرك بخط مستقيم نحوك وبسرعة أقوى سفينة دون دوران أو اهتزاز
                 let speed = maxRoomSpeed;
                 let step = speed * (TICK_MS / 50);
 
@@ -202,7 +201,6 @@ function startBotTick(roomId) {
                     bot.y += (dy / len) * step;
                 }
 
-                // تنعيم زاوية التوجيه لمنع أي اهتزاز أو التفاف مفاجئ
                 const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
                 let diff = targetHeading - bot.heading;
                 while (diff > 180) diff -= 360;
@@ -210,7 +208,6 @@ function startBotTick(roomId) {
                 bot.heading += diff * 0.4;
 
             } else {
-                // 🌟 البوتات العادية تبقى على حالها تماماً دون أي مساس
                 const speed = botSpeedForWave(r.wave);
                 const step = speed * (TICK_MS / 50); 
 
@@ -782,7 +779,6 @@ io.on('connection', (socket) => {
 });
 
 function leaveRoom(socket, immediate) {
-    TheRoom: // label just for comment if needed
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
 
