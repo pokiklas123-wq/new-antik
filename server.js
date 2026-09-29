@@ -15,7 +15,6 @@ const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
 
-// ⭐ تم توحيد WORLD_SIZE مع العميل
 const WORLD_SIZE = 20000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
@@ -24,12 +23,8 @@ const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
-// عدد الجزر الافتراضي على السيرفر إذا لم يرسل العميل شيئًا
 const DEFAULT_ISLAND_COUNT = 120;
 
-// ═══════════════════════════════════════════════════════
-//  إعدادات توازن البوتات
-// ═══════════════════════════════════════════════════════
 const FPS_RATIO = 6.0;
 const BOT_MAX_SPEED = 15.0;
 const CHASER_SPEED_RATIO = 0.9;
@@ -40,14 +35,10 @@ const BOT_DAMAGE_CAP = 28;
 const MAX_CHASERS = 8;
 const SPAWN_INVULN_MS = 2500;
 
-// ⭐ عتبات الالتصاق والتبعية
-const CHASER_STICKY_DIST = 6000;       // مسافة الالتصاق الأقصى (Chaser يلتصق مهما بعد)
-const BOT_LEASH_DIST = 9000;           // أقصى بعد مسموح قبل أن يعود البوت مسرعًا
-const BOT_FREE_ROAM_RADIUS = 7000;     // نصف قطر التجول الحر حول اللاعب
+const CHASER_STICKY_DIST = 6000;
+const BOT_LEASH_DIST = 9000;
+const BOT_FREE_ROAM_RADIUS = 7000;
 
-// ═══════════════════════════════════════════════════════
-//  سرعة التوربيدات
-// ═══════════════════════════════════════════════════════
 const TORPEDO_SPEED_MULT = 1.4;
 const TORPEDO_MIN_SPEED = 22.0;
 const TORPEDO_MAX_SPEED = 32.0;
@@ -78,7 +69,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v33.0 - Free Roam Bots');
+    res.send('Grand3D Co-op Server v34.0 - Server-Only Islands');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -89,7 +80,7 @@ function dist2(ax, ay, bx, by) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  توليد جزر عشوائية على السيرفر (نفس منطق العميل)
+//  توليد جزر — نفس بذرة العميل (777) لضمان تطابق الشكل
 // ═══════════════════════════════════════════════════════
 function generateIslands(count) {
     const islands = [];
@@ -120,7 +111,6 @@ function generateIslands(count) {
     return islands;
 }
 
-// مولّد أرقام عشوائية بذرة ثابتة (مطابق لـ Java Random بشكل تقريبي)
 function seededRandom(seed) {
     let s = seed >>> 0;
     return function () {
@@ -128,10 +118,6 @@ function seededRandom(seed) {
         return s / 4294967296;
     };
 }
-
-// ═══════════════════════════════════════════════════════
-//  دوال مستوى الغرفة وسرعتها
-// ═══════════════════════════════════════════════════════
 
 function getRoomAvgLevel(room) {
     let total = 0, count = 0;
@@ -164,10 +150,6 @@ function getTorpedoSpeed(room) {
     if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
     return speed;
 }
-
-// ═══════════════════════════════════════════════════════
-//  معادلات البوتات
-// ═══════════════════════════════════════════════════════
 
 function botSpeedForRoom(room) {
     const avg = getRoomAvgLevel(room);
@@ -287,16 +269,13 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: [],   // ⭐ تُولَّد عند أول اتصال
+        // ⭐ تعديل: نولّد الجزر فورًا مع إنشاء الغرفة
+        islands: generateIslands(DEFAULT_ISLAND_COUNT),
         wiped: false
     };
     startBotTick(id);
     return id;
 }
-
-// ═══════════════════════════════════════════════════════
-//  المحرك الرئيسي
-// ═══════════════════════════════════════════════════════
 
 function startBotTick(roomId) {
     const room = rooms[roomId];
@@ -327,7 +306,6 @@ function startBotTick(roomId) {
         }));
 
         const roomMaxSpeed = getRoomMaxSpeed(r);
-        // ⭐ سرعة المطارد أعلى من أسرع سفينة لضمان الالتصاق
         const chaserSpeed = Math.min(roomMaxSpeed * 1.05, BOT_MAX_SPEED + 6);
         const normalSpeed = botSpeedForRoom(r);
         const predictionTime = getPredictionTime(r);
@@ -340,7 +318,6 @@ function startBotTick(roomId) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
-            // ⭐ اختيار أقرب لاعب
             let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
@@ -366,28 +343,19 @@ function startBotTick(roomId) {
             let moveDx = 0, moveDy = 0;
             const role = bot.role || 'pusher';
 
-            // ═══════════════════════════════════════════
-            //  ⭐ سلوك البوتات — حرية + التصاق
-            // ═══════════════════════════════════════════
             if (bot.isChaser) {
-                // Chaser: يلتصق دائمًا باللاعب مهما بعدت المسافة
                 moveDx = dx;
                 moveDy = dy;
                 speed = chaserSpeed;
             } else {
-                // إذا اللاعب بعيد جدًا (> LEASH_DIST) — البوت يسرّع للعودة
                 if (len > BOT_LEASH_DIST) {
                     moveDx = dx;
                     moveDy = dy;
                     speed *= 1.8;
-                }
-                // إذا اللاعب بعيد عن نصف قطر التجول — يقترب
-                else if (len > BOT_FREE_ROAM_RADIUS) {
+                } else if (len > BOT_FREE_ROAM_RADIUS) {
                     moveDx = dx;
                     moveDy = dy;
-                }
-                // إذا داخل نطاق التجول — يطبق دوره (حرية الحركة)
-                else {
+                } else {
                     if (role === 'pusher') {
                         moveDx = dx; moveDy = dy;
                     } else if (role === 'flanker') {
@@ -416,7 +384,6 @@ function startBotTick(roomId) {
                     }
                 }
             }
-            // ═══════════════════════════════════════════
 
             const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
             let nx = bot.x + (moveDx / moveLen) * step;
@@ -457,7 +424,6 @@ function startBotTick(roomId) {
                 bot.heading = targetHeading;
             }
 
-            // القدرات الخاصة
             bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
@@ -498,11 +464,9 @@ function startBotTick(roomId) {
                 }
             }
 
-            // إطلاق النار
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
-            // ⭐ نطاق إطلاق النار يزيد للمطاردين
             const fireRange = bot.isChaser ? 3000 : 2000;
 
             if (bot.fireTimer > fireCooldown && closestD2 < fireRange * fireRange) {
@@ -749,6 +713,7 @@ io.on('connection', (socket) => {
             socket.uid = player.uid;
             socket.mode = room.mode;
 
+            // ⭐ تعديل: إرسال islands أيضًا في session_recovered
             socket.emit('session_recovered', {
                 wave: room.wave,
                 level: player.level,
@@ -757,7 +722,8 @@ io.on('connection', (socket) => {
                 maxSpeed: player.maxSpeed,
                 torpedoSpeed: getTorpedoSpeed(room),
                 hullId: player.hullId,
-                skinPath: player.skinPath
+                skinPath: player.skinPath,
+                islands: room.islands
             });
 
             socket.to(roomId).emit('player_joined', {
@@ -789,7 +755,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join_match', (data) => {
-        const { mode, username, uid, level, total_kills, islands, hullId, skinPath, finisherId } = data || {};
+        const { mode, username, uid, level, total_kills, hullId, skinPath, finisherId } = data || {};
 
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
@@ -828,12 +794,8 @@ io.on('connection', (socket) => {
 
         const room = rooms[roomId];
 
-if (room.islands.length === 0) {
-    room.islands = generateIslands(DEFAULT_ISLAND_COUNT);
-} else {
-                room.islands = generateIslands(DEFAULT_ISLAND_COUNT);
-            }
-        }
+        // ⭐ تعديل: تجاهل جزر العميل تمامًا — الغرفة عندها 120 جزيرة من createRoom
+        // (لا حاجة لأي كود إضافي هنا)
 
         socket.join(roomId);
         socket.currentRoom = roomId;
