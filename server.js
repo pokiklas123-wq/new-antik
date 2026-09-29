@@ -48,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.5 - Synchronized Chaser Speed');
+    res.send('Grand3D Co-op Server v28.6 - Fixed Chaser Top Speed');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -192,27 +192,16 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
+            // 🌟 تثبيت سرعة البوت المطارد بناءً على أقصى سرعة لأقوى سفينة في الغرفة (سرعة ثابتة وليست متغيرة مع حركة اللاعب)
+            let speed = bot.isChaser ? maxRoomSpeed : botSpeedForWave(r.wave);
+            const step = speed * (TICK_MS / 50); 
+
+            let moveDx = 0, moveDy = 0;
+            
             if (bot.isChaser) {
-                // 🌟 ضرب السرعة في 6 لتتطابق بدقة مع سرعة العميل (60 FPS مقابل 10 تيكات للسيرفر)
-                let speed = maxRoomSpeed;
-                let step = speed * 6.0;
-
-                if (len > 25) {
-                    bot.x += (dx / len) * step;
-                    bot.y += (dy / len) * step;
-                }
-
-                const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
-                let diff = targetHeading - bot.heading;
-                while (diff > 180) diff -= 360;
-                while (diff < -180) diff += 360;
-                bot.heading += diff * 0.4;
-
+                moveDx = dx;
+                moveDy = dy;
             } else {
-                const speed = botSpeedForWave(r.wave);
-                const step = speed * (TICK_MS / 50); 
-
-                let moveDx = 0, moveDy = 0;
                 if (len > 1800) {
                     moveDx = dx; 
                     moveDy = dy;
@@ -226,38 +215,46 @@ function startBotTick(roomId) {
                     moveDx += dx * 0.15;
                     moveDy += dy * 0.15;
                 }
+            }
 
-                const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
-                let nx = bot.x + (moveDx / moveLen) * step;
-                let ny = bot.y + (moveDy / moveLen) * step;
+            const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
+            let nx = bot.x + (moveDx / moveLen) * step;
+            let ny = bot.y + (moveDy / moveLen) * step;
 
-                let blocked = false;
+            let blocked = false;
+            for (let i = 0; i < islData.length; i++) {
+                if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                    blocked = true; break;
+                }
+            }
+
+            if (!blocked) {
+                bot.x = nx; bot.y = ny;
+            } else {
+                const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
+                const tX = bot.x + Math.cos(perp) * step;
+                const tY = bot.y + Math.sin(perp) * step;
+                let b2 = false;
                 for (let i = 0; i < islData.length; i++) {
-                    if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        blocked = true; break;
+                    if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        b2 = true; break;
                     }
                 }
-
-                if (!blocked) {
-                    bot.x = nx; bot.y = ny;
-                } else {
-                    const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                    const tX = bot.x + Math.cos(perp) * step;
-                    const tY = bot.y + Math.sin(perp) * step;
-                    let b2 = false;
-                    for (let i = 0; i < islData.length; i++) {
-                        if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                            b2 = true; break;
-                        }
-                    }
-                    if (!b2) { bot.x = tX; bot.y = tY; }
-                }
-
-                bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
+                if (!b2) { bot.x = tX; bot.y = tY; }
             }
 
             if (bot.x < WORLD_MIN) bot.x = WORLD_MIN; else if (bot.x > WORLD_MAX) bot.x = WORLD_MAX;
             if (bot.y < WORLD_MIN) bot.y = WORLD_MIN; else if (bot.y > WORLD_MAX) bot.y = WORLD_MAX;
+
+            const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
+            if (bot.isChaser) {
+                let diff = targetHeading - bot.heading;
+                while (diff > 180) diff -= 360;
+                while (diff < -180) diff += 360;
+                bot.heading += diff * 0.4;
+            } else {
+                bot.heading = targetHeading;
+            }
 
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
@@ -631,7 +628,7 @@ io.on('connection', (socket) => {
             finisherId: room.players[socket.uid].finisherId
         });
 
-        const botsPayload = Object.values(room.bots).map(b => ({
+.botsPayload = Object.values(room.bots).map(b => ({
             id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
         }));
         socket.emit('bots_update', botsPayload);
@@ -841,6 +838,7 @@ function leaveRoom(socket, immediate) {
 }
 
 function endRoom(roomId) {
+    const resource = rooms[roomId]; // safe
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
