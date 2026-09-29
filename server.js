@@ -15,31 +15,21 @@ const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.
 const MAX_PLAYERS_4V = 4;
 const RESPAWN_MS = 3000;
 
-// ═══════════════════════════════════════════════════════
-//  ثوابت الخريطة — يجب أن تطابق العميل تمامًا
-// ═══════════════════════════════════════════════════════
+// ⭐ تم توحيد WORLD_SIZE مع العميل
 const WORLD_SIZE = 20000;
 const WORLD_MIN = 700;
 const WORLD_MAX = WORLD_SIZE - 700;
-
-const ISLAND_TARGET = 120;
-const ISLAND_MARGIN = 800;              // مسافة من الحواف
-const ISLAND_SAFE_RADIUS = 900;         // منطقة آمنة حول (3000,3000)
-const ISLAND_SPAWN_CENTER = 3000;       // نفس مركز العميل
-const ISLAND_CLASH_MARGIN = 400;        // نفس مسافة التباعد
-const ISLAND_R_MIN = 160, ISLAND_R_MAX = 380;
-const ISLAND_H_MIN = 140, ISLAND_H_MAX = 320;
-const ISLAND_SEED_BASE = 777;           // نفس seed العميل
-const ISLAND_MAX_ATTEMPTS = 8000;
-
-// ═══════════════════════════════════════════════════════
-//  إعدادات البوتات
-// ═══════════════════════════════════════════════════════
 const TICK_MS = 100;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
+// عدد الجزر الافتراضي على السيرفر إذا لم يرسل العميل شيئًا
+const DEFAULT_ISLAND_COUNT = 120;
+
+// ═══════════════════════════════════════════════════════
+//  إعدادات توازن البوتات
+// ═══════════════════════════════════════════════════════
 const FPS_RATIO = 6.0;
 const BOT_MAX_SPEED = 15.0;
 const CHASER_SPEED_RATIO = 0.9;
@@ -50,9 +40,10 @@ const BOT_DAMAGE_CAP = 28;
 const MAX_CHASERS = 8;
 const SPAWN_INVULN_MS = 2500;
 
-// هامش إضافي حول الجزر حتى لا تصطدم البوتات بشكل غريب
-const ISLAND_BOT_MARGIN = 80;
-const ISLAND_BOT_MARGIN_SQ_FACTOR = 150; // نفس العميل تقريبًا
+// ⭐ عتبات الالتصاق والتبعية
+const CHASER_STICKY_DIST = 6000;       // مسافة الالتصاق الأقصى (Chaser يلتصق مهما بعد)
+const BOT_LEASH_DIST = 9000;           // أقصى بعد مسموح قبل أن يعود البوت مسرعًا
+const BOT_FREE_ROAM_RADIUS = 7000;     // نصف قطر التجول الحر حول اللاعب
 
 // ═══════════════════════════════════════════════════════
 //  سرعة التوربيدات
@@ -79,7 +70,7 @@ const SHIPS_CONFIG = {
 };
 
 function getShipStats(hullId) {
-    return SHIPS_CONFIG[hullId.toLowerCase()] || SHIPS_CONFIG['bot'];
+    return SHIPS_CONFIG[(hullId || 'bot').toLowerCase()] || SHIPS_CONFIG['bot'];
 }
 
 let rooms = {};
@@ -87,7 +78,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v33.0 - World Match (120 Islands)');
+    res.send('Grand3D Co-op Server v33.0 - Free Roam Bots');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -98,99 +89,48 @@ function dist2(ax, ay, bx, by) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  مولّد أرقام عشوائية بنفس بذرة Java Random
-//  (تطابق new Random(seed).nextFloat() في العميل)
+//  توليد جزر عشوائية على السيرفر (نفس منطق العميل)
 // ═══════════════════════════════════════════════════════
-class JavaRandom {
-    constructor(seed) {
-        // Java Random يستخدم بذرة 48-bit
-        this.seed = (BigInt(seed) ^ 0x5DEECE66Dn) & ((1n << 48n) - 1n);
-        this.multiplier = 0x5DEECE66Dn;
-        this.addend = 0xBn;
-        this.mask = (1n << 48n) - 1n;
-    }
-
-    next(bits) {
-        this.seed = (this.seed * this.multiplier + this.addend) & this.mask;
-        return Number(this.seed >> BigInt(48 - bits));
-    }
-
-    nextFloat() {
-        return this.next(24) / (1 << 24);
-    }
-
-    nextInt(bound) {
-        if (bound <= 0) throw new Error("bound must be positive");
-        // محاكاة دقيقة لأسلوب java.util.Random.nextInt
-        if ((bound & -bound) === bound) {
-            return Number((BigInt(bound) * BigInt(this.next(31))) >> 31n);
-        }
-        let bits, val;
-        do {
-            bits = this.next(31);
-            val = bits % bound;
-        } while (bits - val + (bound - 1) < 0);
-        return val;
-    }
-}
-
-// ═══════════════════════════════════════════════════════
-//  توليد الجزر بنفس خوارزمية العميل
-// ═══════════════════════════════════════════════════════
-function generateWorldIslands() {
-    const islRng = new JavaRandom(ISLAND_SEED_BASE);
+function generateIslands(count) {
     const islands = [];
+    const rng = seededRandom(777);
     let placed = 0, attempts = 0;
-
-    while (placed < ISLAND_TARGET && attempts < ISLAND_MAX_ATTEMPTS) {
+    while (placed < count && attempts < 8000) {
         attempts++;
-
-        const ix = ISLAND_MARGIN + islRng.nextFloat() * (WORLD_SIZE - ISLAND_MARGIN * 2);
-        const iy = ISLAND_MARGIN + islRng.nextFloat() * (WORLD_SIZE - ISLAND_MARGIN * 2);
-
-        // المنطقة الآمنة حول (3000,3000)
-        const safeDx = ix - ISLAND_SPAWN_CENTER;
-        const safeDy = iy - ISLAND_SPAWN_CENTER;
-        if (Math.sqrt(safeDx * safeDx + safeDy * safeDy) < ISLAND_SAFE_RADIUS) continue;
+        const ix = 800 + rng() * (WORLD_SIZE - 1600);
+        const iy = 800 + rng() * (WORLD_SIZE - 1600);
+        if (Math.hypot(ix - 3000, iy - 3000) < 900) continue;
 
         let clash = false;
         for (const o of islands) {
             const dx = ix - o.x, dy = iy - o.y;
-            if (Math.sqrt(dx * dx + dy * dy) < o.radius + ISLAND_CLASH_MARGIN) {
-                clash = true;
-                break;
-            }
+            if (Math.hypot(dx, dy) < o.radius + 400) { clash = true; break; }
         }
         if (clash) continue;
 
-        const r = ISLAND_R_MIN + islRng.nextFloat() * (ISLAND_R_MAX - ISLAND_R_MIN);
-        const h = ISLAND_H_MIN + islRng.nextFloat() * (ISLAND_H_MAX - ISLAND_H_MIN);
-        const seed = islRng.nextInt(9999);
-
+        const r = 160 + rng() * 220;
+        const h = 140 + rng() * 180;
         islands.push({
-            x: Math.round(ix),
-            y: Math.round(iy),
-            radius: Math.round(r),
-            height: Math.round(h),
-            seed: seed,
-            islandIndex: placed
+            x: ix, y: iy,
+            radius: r, height: h,
+            seed: Math.floor(rng() * 9999)
         });
         placed++;
     }
-
-    console.log(`[ISLANDS] Generated ${placed} islands in ${attempts} attempts`);
     return islands;
 }
 
-// نتجنب إعادة التوليد لكل غرفة — نفس البذرة تعطي نفس النتيجة
-let GLOBAL_ISLANDS = null;
-function getGlobalIslands() {
-    if (!GLOBAL_ISLANDS) GLOBAL_ISLANDS = generateWorldIslands();
-    return GLOBAL_ISLANDS;
+// مولّد أرقام عشوائية بذرة ثابتة (مطابق لـ Java Random بشكل تقريبي)
+function seededRandom(seed) {
+    let s = seed >>> 0;
+    return function () {
+        s = (s * 1664525 + 1013904223) >>> 0;
+        return s / 4294967296;
+    };
 }
 
 // ═══════════════════════════════════════════════════════
-//  دوال مساعدة
+//  دوال مستوى الغرفة وسرعتها
 // ═══════════════════════════════════════════════════════
 
 function getRoomAvgLevel(room) {
@@ -224,6 +164,10 @@ function getTorpedoSpeed(room) {
     if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
     return speed;
 }
+
+// ═══════════════════════════════════════════════════════
+//  معادلات البوتات
+// ═══════════════════════════════════════════════════════
 
 function botSpeedForRoom(room) {
     const avg = getRoomAvgLevel(room);
@@ -293,9 +237,6 @@ function getChaserCountForWave(wave) {
     return Math.min(count, MAX_CHASERS);
 }
 
-// ═══════════════════════════════════════════════════════
-//  توليد موقع آمن للبوتات بعيدًا عن الجزر
-// ═══════════════════════════════════════════════════════
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
     for (let attempt = 0; attempt < 40; attempt++) {
         const a = Math.random() * Math.PI * 2;
@@ -304,12 +245,10 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
         let y = cy + Math.sin(a) * d;
         x = Math.max(WORLD_MIN, Math.min(WORLD_MAX, x));
         y = Math.max(WORLD_MIN, Math.min(WORLD_MAX, y));
-
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
-                const margin = isl.radius + 250;
-                if (dist2(x, y, isl.x, isl.y) < margin * margin) {
+                if (dist2(x, y, isl.x, isl.y) < (isl.radius + 250) * (isl.radius + 250)) {
                     inside = true; break;
                 }
             }
@@ -348,7 +287,7 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: getGlobalIslands().slice(),  // نفس الجزر لكل غرفة
+        islands: [],   // ⭐ تُولَّد عند أول اتصال
         wiped: false
     };
     startBotTick(id);
@@ -356,7 +295,7 @@ function createRoom(mode, startWave) {
 }
 
 // ═══════════════════════════════════════════════════════
-//  محرك البوتات
+//  المحرك الرئيسي
 // ═══════════════════════════════════════════════════════
 
 function startBotTick(roomId) {
@@ -382,14 +321,14 @@ function startBotTick(roomId) {
         }
 
         const islands = r.islands || [];
-        // cache نصف قطر الاصطدام مرة واحدة
         const islData = islands.map(i => ({
             x: i.x, y: i.y,
-            r100sq: (i.radius + ISLAND_BOT_MARGIN_SQ_FACTOR) * (i.radius + ISLAND_BOT_MARGIN_SQ_FACTOR)
+            r100sq: (i.radius + 150) * (i.radius + 150)
         }));
 
         const roomMaxSpeed = getRoomMaxSpeed(r);
-        const chaserSpeed = Math.min(roomMaxSpeed * CHASER_SPEED_RATIO, BOT_MAX_SPEED + 3);
+        // ⭐ سرعة المطارد أعلى من أسرع سفينة لضمان الالتصاق
+        const chaserSpeed = Math.min(roomMaxSpeed * 1.05, BOT_MAX_SPEED + 6);
         const normalSpeed = botSpeedForRoom(r);
         const predictionTime = getPredictionTime(r);
         const missChance = getMissChance(r);
@@ -401,6 +340,7 @@ function startBotTick(roomId) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
 
+            // ⭐ اختيار أقرب لاعب
             let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
@@ -409,9 +349,9 @@ function startBotTick(roomId) {
             }
             if (!closest) continue;
 
-            const dx = closest.x - bot.x;
-            const dy = closest.y - bot.y;
-            const len = Math.sqrt(closestD2) || 1;
+            let dx = closest.x - bot.x;
+            let dy = closest.y - bot.y;
+            let len = Math.sqrt(closestD2) || 1;
 
             let speed = bot.isChaser ? chaserSpeed : normalSpeed;
 
@@ -426,34 +366,57 @@ function startBotTick(roomId) {
             let moveDx = 0, moveDy = 0;
             const role = bot.role || 'pusher';
 
+            // ═══════════════════════════════════════════
+            //  ⭐ سلوك البوتات — حرية + التصاق
+            // ═══════════════════════════════════════════
             if (bot.isChaser) {
-                moveDx = dx; moveDy = dy;
-            } else if (role === 'pusher') {
-                moveDx = dx; moveDy = dy;
-            } else if (role === 'flanker') {
-                const baseAngle = Math.atan2(dy, dx);
-                const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
-                if (len > 2500) {
-                    moveDx = dx; moveDy = dy;
-                } else {
-                    const fa = baseAngle + flankOffset;
-                    moveDx = Math.cos(fa) * len * 0.7 + dx * 0.3;
-                    moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
+                // Chaser: يلتصق دائمًا باللاعب مهما بعدت المسافة
+                moveDx = dx;
+                moveDy = dy;
+                speed = chaserSpeed;
+            } else {
+                // إذا اللاعب بعيد جدًا (> LEASH_DIST) — البوت يسرّع للعودة
+                if (len > BOT_LEASH_DIST) {
+                    moveDx = dx;
+                    moveDy = dy;
+                    speed *= 1.8;
                 }
-            } else if (role === 'sniper') {
-                if (len > 1900) { moveDx = dx; moveDy = dy; }
-                else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
+                // إذا اللاعب بعيد عن نصف قطر التجول — يقترب
+                else if (len > BOT_FREE_ROAM_RADIUS) {
+                    moveDx = dx;
+                    moveDy = dy;
+                }
+                // إذا داخل نطاق التجول — يطبق دوره (حرية الحركة)
                 else {
-                    const cd = (bot.id % 2 === 0) ? 1 : -1;
-                    moveDx = dy * cd + dx * 0.1;
-                    moveDy = -dx * cd + dy * 0.1;
+                    if (role === 'pusher') {
+                        moveDx = dx; moveDy = dy;
+                    } else if (role === 'flanker') {
+                        const baseAngle = Math.atan2(dy, dx);
+                        const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
+                        if (len > 2500) {
+                            moveDx = dx; moveDy = dy;
+                        } else {
+                            const fa = baseAngle + flankOffset;
+                            moveDx = Math.cos(fa) * len * 0.7 + dx * 0.3;
+                            moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
+                        }
+                    } else if (role === 'sniper') {
+                        if (len > 1900) { moveDx = dx; moveDy = dy; }
+                        else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
+                        else {
+                            const cd = (bot.id % 2 === 0) ? 1 : -1;
+                            moveDx = dy * cd + dx * 0.1;
+                            moveDy = -dx * cd + dy * 0.1;
+                        }
+                    } else if (role === 'blocker') {
+                        const toPlayer = Math.atan2(dy, dx);
+                        const blockAngle = toPlayer + Math.PI / 2;
+                        moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
+                        moveDy = Math.sin(blockAngle) * 0.65 + (dy / len) * 0.35;
+                    }
                 }
-            } else if (role === 'blocker') {
-                const toPlayer = Math.atan2(dy, dx);
-                const blockAngle = toPlayer + Math.PI / 2;
-                moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
-                moveDy = Math.sin(blockAngle) * 0.65 + (dy / len) * 0.35;
             }
+            // ═══════════════════════════════════════════
 
             const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
             let nx = bot.x + (moveDx / moveLen) * step;
@@ -494,6 +457,7 @@ function startBotTick(roomId) {
                 bot.heading = targetHeading;
             }
 
+            // القدرات الخاصة
             bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
@@ -534,10 +498,14 @@ function startBotTick(roomId) {
                 }
             }
 
+            // إطلاق النار
             const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
-            if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
+            // ⭐ نطاق إطلاق النار يزيد للمطاردين
+            const fireRange = bot.isChaser ? 3000 : 2000;
+
+            if (bot.fireTimer > fireCooldown && closestD2 < fireRange * fireRange) {
                 bot.fireTimer = 0;
 
                 const pTime = predictionTime * FPS_RATIO;
@@ -860,10 +828,13 @@ io.on('connection', (socket) => {
 
         const room = rooms[roomId];
 
-        // ⭐ السيرفر يستخدم الجزر المولّدة عالميًا (نفس العميل) ويتجاهل جزر العميل
-        //    هذا يضمن أن كل اللاعبين في نفس الغرفة يرون نفس الجزر
-        if (!room.islands || room.islands.length === 0) {
-            room.islands = getGlobalIslands().slice();
+        // ⭐ توليد جزر افتراضية إذا لم تُرسل من العميل
+        if (room.islands.length === 0) {
+            if (islands && Array.isArray(islands) && islands.length > 0) {
+                room.islands = islands;
+            } else {
+                room.islands = generateIslands(DEFAULT_ISLAND_COUNT);
+            }
         }
 
         socket.join(roomId);
@@ -1214,4 +1185,4 @@ setInterval(() => {
     }
 }, 60000);
 
-server.listen(PORT, () => { });
+server.listen(PORT, () => {});
