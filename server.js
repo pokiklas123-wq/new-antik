@@ -828,11 +828,9 @@ io.on('connection', (socket) => {
 
         const room = rooms[roomId];
 
-        // ⭐ توليد جزر افتراضية إذا لم تُرسل من العميل
-        if (room.islands.length === 0) {
-            if (islands && Array.isArray(islands) && islands.length > 0) {
-                room.islands = islands;
-            } else {
+if (room.islands.length === 0) {
+    room.islands = generateIslands(DEFAULT_ISLAND_COUNT);
+} else {
                 room.islands = generateIslands(DEFAULT_ISLAND_COUNT);
             }
         }
