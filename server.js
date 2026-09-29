@@ -31,6 +31,13 @@ const CHASER_SPEED_RATIO = 0.9;     // المطارد = 90% من أسرع لاع
 const BOT_BASE_SPEED = 8.0;         // سرعة البوت عند مستوى 1
 const BOT_SPEED_PER_LEVEL = 0.025;  // زيادة السرعة لكل مستوى
 
+// ═══════════════════════════════════════════════════════
+//  سرعة التوربيدات — أسرع من أسرع سفينة بنسبة معينة
+// ═══════════════════════════════════════════════════════
+const TORPEDO_SPEED_MULT = 1.4;     // التوربيد أسرع 40% من أسرع سفينة
+const TORPEDO_MIN_SPEED = 22.0;     // حد أدنى حتى لا يكون بطيئاً في المستويات المنخفضة
+const TORPEDO_MAX_SPEED = 32.0;     // حد أقصى لتجنب المبالغة
+
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 },
     'devilahorns':     { hp: 100, speed: 18.5 },
@@ -57,7 +64,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v30.0 - Smart Bot AI');
+    res.send('Grand3D Co-op Server v31.0 - Smart Bot AI + Fast Torpedoes');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -93,6 +100,18 @@ function getRoomMaxSpeed(room) {
         if (stats.speed > maxSpd) maxSpd = stats.speed;
     }
     return maxSpd;
+}
+
+// ═══════════════════════════════════════════════════════
+//  سرعة التوربيد — تُحسب مرة لكل تيك حسب أسرع سفينة
+// ═══════════════════════════════════════════════════════
+
+function getTorpedoSpeed(room) {
+    const maxSpd = getRoomMaxSpeed(room);
+    let speed = maxSpd * TORPEDO_SPEED_MULT;
+    if (speed < TORPEDO_MIN_SPEED) speed = TORPEDO_MIN_SPEED;
+    if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
+    return speed;
 }
 
 // ═══════════════════════════════════════════════════════
@@ -268,6 +287,7 @@ function startBotTick(roomId) {
         const predictionTime = getPredictionTime(r);
         const missChance = getMissChance(r);
         const botAbility = getBotAbilityForRoom(r);
+        const torpedoSpeed = getTorpedoSpeed(r);   // ⭐ سرعة التوربيد
         const now = Date.now();
 
         for (const botId in r.bots) {
@@ -290,8 +310,8 @@ function startBotTick(roomId) {
             // ═══ حساب السرعة حسب الدور ═══
             let speed = bot.isChaser ? chaserSpeed : normalSpeed;
 
-            // ═══ تطبيق قدرة الاندفاع ═══
-            if (botAbility === 'dash' || botAbility === 'barrage' || botAbility === 'shield' || botAbility === 'teleport') {
+            // تطبيق قدرة الاندفاع
+            if (botAbility !== 'none') {
                 if (bot.dashingUntil && now < bot.dashingUntil) {
                     speed *= 2.0;
                 }
@@ -304,13 +324,10 @@ function startBotTick(roomId) {
             const role = bot.role || 'pusher';
 
             if (bot.isChaser) {
-                // المطارد يتبع مباشرة
                 moveDx = dx; moveDy = dy;
             } else if (role === 'pusher') {
-                // مهاجم مباشر
                 moveDx = dx; moveDy = dy;
             } else if (role === 'flanker') {
-                // مُطوِّق: يقترب من الجانب
                 const baseAngle = Math.atan2(dy, dx);
                 const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
                 if (len > 2500) {
@@ -321,17 +338,14 @@ function startBotTick(roomId) {
                     moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
                 }
             } else if (role === 'sniper') {
-                // قنّاص: يبقى بعيداً ويطلق
                 if (len > 1900) { moveDx = dx; moveDy = dy; }
                 else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
                 else {
-                    // يدور حول اللاعب
                     const cd = (bot.id % 2 === 0) ? 1 : -1;
                     moveDx = dy * cd + dx * 0.1;
                     moveDy = -dx * cd + dy * 0.1;
                 }
             } else if (role === 'blocker') {
-                // قاطع: يقطع طريق الهروب
                 const toPlayer = Math.atan2(dy, dx);
                 const blockAngle = toPlayer + Math.PI / 2;
                 moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
@@ -342,7 +356,7 @@ function startBotTick(roomId) {
             let nx = bot.x + (moveDx / moveLen) * step;
             let ny = bot.y + (moveDy / moveLen) * step;
 
-            // ═══ تفادي الجزر ═══
+            // تفادي الجزر
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
                 if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -379,20 +393,19 @@ function startBotTick(roomId) {
                 bot.heading = targetHeading;
             }
 
-            // ═══ القدرات الخاصة (يتم تفعيلها دورياً) ═══
+            // ═══ القدرات الخاصة ═══
             bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
                 bot.abilityTimer = 0;
 
                 if (botAbility === 'dash') {
-                    bot.dashingUntil = now + 500; // 0.5 ثانية
+                    bot.dashingUntil = now + 500;
                     io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'dash' });
                 } else if (botAbility === 'barrage') {
-                    // إطلاق 3 رصاصات سريعة
-                    const pTime = predictionTime;
-                    const tx = closest.x + (closest.vx * pTime * FPS_RATIO);
-                    const ty = closest.y + (closest.vy * pTime * FPS_RATIO);
+                    const pTime = predictionTime * FPS_RATIO;
+                    const tx = closest.x + (closest.vx * pTime);
+                    const ty = closest.y + (closest.vy * pTime);
                     for (let k = 0; k < 3; k++) {
                         setTimeout(() => {
                             const rr = rooms[roomId];
@@ -401,16 +414,16 @@ function startBotTick(roomId) {
                                 botId: bot.id,
                                 x: Math.round(bot.x), y: Math.round(bot.y),
                                 targetX: Math.round(tx + rnd(-80, 80)),
-                                targetY: Math.round(ty + rnd(-80, 80))
+                                targetY: Math.round(ty + rnd(-80, 80)),
+                                speed: torpedoSpeed   // ⭐
                             });
                         }, k * 150);
                     }
                     io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'barrage' });
                 } else if (botAbility === 'shield') {
-                    bot.shieldUntil = now + 2000; // ثانيتان
+                    bot.shieldUntil = now + 2000;
                     io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'shield' });
                 } else if (botAbility === 'teleport') {
-                    // الانتقال خلف اللاعب
                     const backAngle = Math.atan2(-dy, -dx);
                     const newX = closest.x + Math.cos(backAngle) * 600;
                     const newY = closest.y + Math.sin(backAngle) * 600;
@@ -428,12 +441,10 @@ function startBotTick(roomId) {
             if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
                 bot.fireTimer = 0;
 
-                // توقّع مكان اللاعب + خطأ عشوائي حسب المستوى
                 const pTime = predictionTime * FPS_RATIO;
                 let targetX = closest.x + (closest.vx * pTime);
                 let targetY = closest.y + (closest.vy * pTime);
 
-                // إضافة خطأ عشوائي (يقل مع المستوى)
                 if (Math.random() < missChance) {
                     const missAmount = 300;
                     targetX += rnd(-missAmount, missAmount);
@@ -445,7 +456,8 @@ function startBotTick(roomId) {
                     x: Math.round(bot.x),
                     y: Math.round(bot.y),
                     targetX: Math.round(targetX),
-                    targetY: Math.round(targetY)
+                    targetY: Math.round(targetY),
+                    speed: torpedoSpeed   // ⭐ سرعة التوربيد المحسوبة
                 });
             }
         }
@@ -487,7 +499,6 @@ function spawnWave(roomId) {
     if (n > 0) { cx /= n; cy /= n; }
     else { cx = WORLD_SIZE / 2; cy = WORLD_SIZE / 2; }
 
-    // إجمالي البوتات العادية (بدون المطاردين) لتوزيع الأدوار
     const normalCount = count - chaserCount;
 
     for (let i = 0; i < count; i++) {
@@ -502,7 +513,7 @@ function spawnWave(roomId) {
             fireTimer: 0,
             isChaser: isChaserBot,
             role: isChaserBot ? 'pusher' : assignBotRole(i - chaserCount, normalCount),
-            abilityTimer: rnd(0, 3),  // تأخير عشوائي لتفعيل القدرات
+            abilityTimer: rnd(0, 3),
             dashingUntil: 0,
             shieldUntil: 0
         };
@@ -681,6 +692,7 @@ io.on('connection', (socket) => {
                 hp: player.hp,
                 maxHp: player.maxHp,
                 maxSpeed: player.maxSpeed,
+                torpedoSpeed: getTorpedoSpeed(room),  // ⭐
                 hullId: player.hullId,
                 skinPath: player.skinPath
             });
@@ -808,6 +820,7 @@ io.on('connection', (socket) => {
             mode: socket.mode,
             maxHp: stats.hp,
             maxSpeed: stats.speed,
+            torpedoSpeed: getTorpedoSpeed(room),   // ⭐ سرعة التوربيد للاعب
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
@@ -869,7 +882,6 @@ io.on('connection', (socket) => {
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
 
-        // ═══ فحص قدرة الدرع ═══
         if (bot.shieldUntil && Date.now() < bot.shieldUntil) {
             io.to(socket.id).emit('bot_shield_block', { botId: data.botId });
             return;
@@ -927,7 +939,6 @@ io.on('connection', (socket) => {
         const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
-        // ═══ الضرر يُحسَب من السيرفر حسب مستوى الغرفة ═══
         const serverDamage = botDamageForRoom(room);
         p.hp -= serverDamage;
 
