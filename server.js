@@ -192,7 +192,6 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
-            // 🌟 تثبيت سرعة البوت المطارد بناءً على أقصى سرعة لأقوى سفينة في الغرفة (سرعة ثابتة وليست متغيرة مع حركة اللاعب)
             let speed = bot.isChaser ? maxRoomSpeed : botSpeedForWave(r.wave);
             const step = speed * (TICK_MS / 50); 
 
@@ -628,7 +627,7 @@ io.on('connection', (socket) => {
             finisherId: room.players[socket.uid].finisherId
         });
 
-.botsPayload = Object.values(room.bots).map(b => ({
+        const botsPayload = Object.values(room.bots).map(b => ({
             id: b.id, x: Math.round(b.x), y: Math.round(b.y), heading: Math.round(b.heading), hp: b.hp
         }));
         socket.emit('bots_update', botsPayload);
@@ -838,7 +837,6 @@ function leaveRoom(socket, immediate) {
 }
 
 function endRoom(roomId) {
-    const resource = rooms[roomId]; // safe
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
