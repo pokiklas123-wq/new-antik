@@ -23,7 +23,6 @@ const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
 // 🌟 القاموس المحدث بأسماء سفنك الفعلية
-// قمت بوضع أرقام افتراضية تصاعدية، ويمكنك الآن تعديل hp و speed لكل سفينة براحتك
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 }, // Level 1
     'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
@@ -41,10 +40,7 @@ const SHIPS_CONFIG = {
     'legendary':       { hp: 350, speed: 20.0 }  // Level 130
 };
 
-
-// دالة لمعرفة قدرات السفينة بناءً على اسمها
 function getShipStats(hullId) {
-    // إذا كان اسم السفينة موجوداً في القاموس نعطيه قدراتها، وإلا نعطيه القدرات الافتراضية 'bot'
     return SHIPS_CONFIG[hullId.toLowerCase()] || SHIPS_CONFIG['bot'];
 }
 
@@ -53,7 +49,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v27.0 - Server-Authoritative Ships');
+    res.send('Grand3D Co-op Server v28.0 - Chaser Bots & Wave Progression');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -76,6 +72,24 @@ function botHPForWave(wave) {
 
 function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
+}
+
+// 🌟 حساب عدد البوتات المطاردة بناءً على الموجة (بدءاً من موجة 50، وكل 10 موجات يزيد بوت)
+function getChaserCountForWave(wave) {
+    if (wave < 50) return 0;
+    return 1 + Math.floor((wave - 50) / 10);
+}
+
+// 🌟 حساب أقصى سرعة لأقوى سفينة في الغرفة لكي يطاردها البوت بنفس السرعة
+function getMaxSpeedInRoom(room) {
+    let maxSpd = 16.0; // السرعة الافتراضية
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (p.maxSpeed && p.maxSpeed > maxSpd) {
+            maxSpd = p.maxSpeed;
+        }
+    }
+    return maxSpd;
 }
 
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands) {
@@ -163,6 +177,8 @@ function startBotTick(roomId) {
             r100sq: (i.radius + 150) * (i.radius + 150) 
         }));
 
+        const maxRoomSpeed = getMaxSpeedInRoom(r);
+
         for (const botId in r.bots) {
             const bot = r.bots[botId];
             if (bot.hp <= 0) continue;
@@ -178,22 +194,36 @@ function startBotTick(roomId) {
             const dx = closest.x - bot.x;
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
-            const speed = botSpeedForWave(r.wave);
+
+            // 🌟 تحديد السرعة: إذا كان بوت مطارد (isChaser)، يأخذ سرعة أقوى سفينة في الغرفة ليكون مرعباً ومطاردًا حقيقيًا!
+            let speed = botSpeedForWave(r.wave);
+            if (bot.isChaser) {
+                speed = maxRoomSpeed;
+            }
+
             const step = speed * (TICK_MS / 50); 
 
             let moveDx = 0, moveDy = 0;
-            if (len > 1800) {
-                moveDx = dx; 
+            
+            if (bot.isChaser) {
+                // 🌟 البوت المطارد يتجه مباشرة نحو اللاعب أينما ذهب وبدون دوران أو دوران عشوائي
+                moveDx = dx;
                 moveDy = dy;
-            } else if (len < 900) {
-                moveDx = -dx; 
-                moveDy = -dy;
             } else {
-                const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
-                moveDx = dy * circleDirection; 
-                moveDy = -dx * circleDirection;
-                moveDx += dx * 0.15;
-                moveDy += dy * 0.15;
+                // الذكاء العادي للبوتات
+                if (len > 1800) {
+                    moveDx = dx; 
+                    moveDy = dy;
+                } else if (len < 900) {
+                    moveDx = -dx; 
+                    moveDy = -dy;
+                } else {
+                    const circleDirection = (bot.id % 2 === 0) ? 1 : -1;
+                    moveDx = dy * circleDirection; 
+                    moveDy = -dx * circleDirection;
+                    moveDx += dx * 0.15;
+                    moveDy += dy * 0.15;
+                }
             }
 
             const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
@@ -227,10 +257,10 @@ function startBotTick(roomId) {
 
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
-            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
+            const fireCooldown = bot.isChaser ? 0.6 : Math.max(0.8, 2.5 - (r.wave * 0.015)); // البوت المطارد يطلق نار بشكل أسرع وأشرس
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
-            if (bot.fireTimer > fireCooldown && closestD2 < 2000 * 2000) {
+            if (bot.fireTimer > fireCooldown && closestD2 < 2500 * 2500) {
                 bot.fireTimer = 0;
                 
                 const predictionFactor = (len / 100); 
@@ -261,6 +291,7 @@ function spawnWave(roomId) {
     room.bots = {};
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
+    const chaserCount = getChaserCountForWave(room.wave); // تحديد عدد البوتات المطاردة لهذه الموجة
 
     let cx = 0, cy = 0, n = 0;
     for (const uid in room.players) {
@@ -274,11 +305,16 @@ function spawnWave(roomId) {
     for (let i = 0; i < count; i++) {
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
+        
+        // 🌟 جعل أول (chaserCount) من البوتات عبارة عن بوتات مطاردة (isChaser = true)
+        const isChaserBot = (i < chaserCount);
+
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
             heading: rnd(0, 360),
-            hp: hpVal,
-            fireTimer: 0
+            hp: hpVal + (isChaserBot ? 1 : 0), // البوت المطارد يكون أصلب بقليل
+            fireTimer: 0,
+            isChaser: isChaserBot
         };
     }
 
@@ -385,8 +421,8 @@ io.on('connection', (socket) => {
                         wave: room.wave,
                         level: player.level,
                         hp: player.hp,
-                        maxHp: player.maxHp, // إرسال الدم الأقصى للهاتف
-                        maxSpeed: player.maxSpeed, // إرسال السرعة القصوى للهاتف
+                        maxHp: player.maxHp,
+                        maxSpeed: player.maxSpeed,
                         x: Math.round(player.x),
                         y: Math.round(player.y),
                         heading: Math.round(player.heading),
@@ -426,13 +462,11 @@ io.on('connection', (socket) => {
             player.online = true;
             player.id = socket.id;
             
-            // تحديث القدرات إذا دخل اللاعب بسفينة جديدة
             if (hullId && hullId !== player.hullId) {
                 player.hullId = hullId;
                 const stats = getShipStats(hullId);
                 player.maxHp = stats.hp;
                 player.maxSpeed = stats.speed;
-                // لا نزيد الدم الحالي أكثر من الأقصى
                 if (player.hp > player.maxHp) player.hp = player.maxHp; 
             }
             
@@ -449,7 +483,7 @@ io.on('connection', (socket) => {
                 wave: room.wave,
                 level: player.level,
                 hp: player.hp,
-                maxHp: player.maxHp, // إرسال البيانات المحدثة
+                maxHp: player.maxHp,
                 maxSpeed: player.maxSpeed,
                 hullId: player.hullId,
                 skinPath: player.skinPath
@@ -517,7 +551,8 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        if (!roomId) roomId = createRoom(socket.mode, socket.startLevel);
+        // 🌟 جعل الموجة تبدأ متقدمة بدرجة عن مستواه الحالي (startLevel + 1) لمنع الدوامة اللانهائية وتكرار نفس التحدي
+        if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const room = rooms[roomId];
         if (islands && Array.isArray(islands) && islands.length > 0 && room.islands.length === 0) {
@@ -549,9 +584,9 @@ io.on('connection', (socket) => {
             uid: socket.uid,
             name: socket.username,
             x: sx, y: sy, heading: 0,
-            maxHp: stats.hp,       // 🌟 تحديد الدم بناءً على السفينة
-            hp: stats.hp,          // 🌟 شحن الدم للحد الأقصى للسفينة
-            maxSpeed: stats.speed, // 🌟 تحديد سرعة السفينة القصوى
+            maxHp: stats.hp,       
+            hp: stats.hp,          
+            maxSpeed: stats.speed, 
             kills: 0,
             level: socket.startLevel,
             online: true,
@@ -572,8 +607,8 @@ io.on('connection', (socket) => {
             wave: room.wave,
             playerLevel: room.players[socket.uid].level,
             mode: socket.mode,
-            maxHp: stats.hp,       // إرسال الدم الأقصى للهاتف
-            maxSpeed: stats.speed, // إرسال السرعة للهاتف
+            maxHp: stats.hp,       
+            maxSpeed: stats.speed, 
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath
@@ -614,7 +649,6 @@ io.on('connection', (socket) => {
         p.x = data.x; p.y = data.y; p.heading = data.heading;
         if (data.hullId && data.hullId !== p.hullId) {
             p.hullId = data.hullId;
-            // لا نغير القدرات في اللحظة إلا إذا أردت تحديثها فورياً (يفضل تركها تتحدث مع بداية الماتش أو الدخول)
         }
         if (data.skinPath) p.skinPath = data.skinPath; 
         if (data.finisherId) p.finisherId = data.finisherId;
@@ -658,7 +692,6 @@ io.on('connection', (socket) => {
                 for (const uid in room.players) {
                     const pl = room.players[uid];
                     if (clearedWave >= pl.level) pl.level += 1;
-                    // 🌟 هنا نعيد دم اللاعب إلى حده الأقصى وليس 100
                     pl.hp = pl.maxHp; 
                 }
 
@@ -668,7 +701,7 @@ io.on('connection', (socket) => {
                     const pl = room.players[uid];
                     if (pl.online && pl.id) {
                         io.to(pl.id).emit('level_up', { wave: room.wave, level: pl.level });
-                        io.to(pl.id).emit('hp_update', { hp: pl.hp }); // نرسل الدم الجديد
+                        io.to(pl.id).emit('hp_update', { hp: pl.hp }); 
                     }
                 }
 
@@ -729,7 +762,6 @@ io.on('connection', (socket) => {
                     const sp = randomSpawnNearSafe(WORLD_SIZE / 2, WORLD_SIZE / 2, 300, 1200, r.islands || []);
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
-                    // 🌟 في حال العودة للحياة (Respawn)، نملأ دمه للحد الأقصى لسفينته
                     currentPlayer.hp = currentPlayer.maxHp; 
                     if (currentPlayer.online && currentPlayer.id) {
                         io.to(currentPlayer.id).emit('player_respawned', { 
@@ -810,6 +842,7 @@ function leaveRoom(socket, immediate) {
 }
 
 function endRoom(roomId) {
+    .room = rooms[roomId]; // correction for syntax if needed
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
