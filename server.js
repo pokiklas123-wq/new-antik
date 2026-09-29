@@ -23,27 +23,27 @@ const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
 // معامل تحويل السرعة: السيرفر 10Hz / العميل 60FPS = 6
-const FPS_RATIO = 6.0;
+const FPS_RATIO = 12.0;
 // البوت المطارد أسرع بـ 30% من أسرع سفينة (عشان يلحقك فعلاً)
 const CHASER_SPEED_MULT = 1.3;
 // مضاعف الضرر على اللاعب
 const BOT_DAMAGE_MULT = 1.6;
 
 const SHIPS_CONFIG = {
-    'bot':             { hp: 100, speed: 10.0 },
-    'devilahorns':     { hp: 100, speed: 18.5 },
-    'devilsfangs':     { hp: 150, speed: 12.0 },
-    'finish':          { hp: 140, speed: 18.5 },
-    'proskin':         { hp: 140, speed: 19.5 },
-    'suphigh':         { hp: 110, speed: 20.0 },
-    'suplis':          { hp: 110, speed: 20.5 },
-    'suplis2':         { hp: 120, speed: 20.5 },
-    'gemini':          { hp: 300, speed: 17.0 },
-    'war':             { hp: 250, speed: 20.0 },
-    'geminiprosimple': { hp: 300, speed: 19.0 },
-    'deepseek':        { hp: 280, speed: 20.5 },
-    'geminipro':       { hp: 300, speed: 21.0 },
-    'legendary':       { hp: 350, speed: 20.0 }
+    'bot':             { hp: 100, speed: 8.0 },
+    'devilahorns':     { hp: 100, speed: 15.5 },
+    'devilsfangs':     { hp: 150, speed: 10.0 },
+    'finish':          { hp: 140, speed: 15.5 },
+    'proskin':         { hp: 140, speed: 16.5 },
+    'suphigh':         { hp: 110, speed: 17.0 },
+    'suplis':          { hp: 110, speed: 17.5 },
+    'suplis2':         { hp: 120, speed: 17.5 },
+    'gemini':          { hp: 300, speed: 14.0 },
+    'war':             { hp: 250, speed: 17.0 },
+    'geminiprosimple': { hp: 300, speed: 16.0 },
+    'deepseek':        { hp: 280, speed: 17.5 },
+    'geminipro':       { hp: 300, speed: 18.0 },
+    'legendary':       { hp: 350, speed: 17.0 }
 };
 
 function getShipStats(hullId) {
