@@ -22,7 +22,6 @@ const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 const OFFLINE_DEATH_MS = 60000;
 
-// 🌟 القاموس المحدث بأسماء سفنك الفعلية
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 }, // Level 1
     'devilahorns':     { hp: 100, speed: 18.5 }, // Level 10
@@ -49,7 +48,7 @@ let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server v28.0 - Chaser Bots & Wave Progression');
+    res.send('Grand3D Co-op Server v28.1 - Chaser Bots & Wave Progression');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -74,15 +73,13 @@ function botCountForWave(wave) {
     return Math.min(5 + Math.floor(wave * 0.3), 30);
 }
 
-// 🌟 حساب عدد البوتات المطاردة بناءً على الموجة (بدءاً من موجة 50، وكل 10 موجات يزيد بوت)
 function getChaserCountForWave(wave) {
     if (wave < 50) return 0;
     return 1 + Math.floor((wave - 50) / 10);
 }
 
-// 🌟 حساب أقصى سرعة لأقوى سفينة في الغرفة لكي يطاردها البوت بنفس السرعة
 function getMaxSpeedInRoom(room) {
-    let maxSpd = 16.0; // السرعة الافتراضية
+    let maxSpd = 16.0;
     for (const uid in room.players) {
         const p = room.players[uid];
         if (p.maxSpeed && p.maxSpeed > maxSpd) {
@@ -195,7 +192,6 @@ function startBotTick(roomId) {
             const dy = closest.y - bot.y;
             const len = Math.sqrt(closestD2) || 1;
 
-            // 🌟 تحديد السرعة: إذا كان بوت مطارد (isChaser)، يأخذ سرعة أقوى سفينة في الغرفة ليكون مرعباً ومطاردًا حقيقيًا!
             let speed = botSpeedForWave(r.wave);
             if (bot.isChaser) {
                 speed = maxRoomSpeed;
@@ -206,11 +202,9 @@ function startBotTick(roomId) {
             let moveDx = 0, moveDy = 0;
             
             if (bot.isChaser) {
-                // 🌟 البوت المطارد يتجه مباشرة نحو اللاعب أينما ذهب وبدون دوران أو دوران عشوائي
                 moveDx = dx;
                 moveDy = dy;
             } else {
-                // الذكاء العادي للبوتات
                 if (len > 1800) {
                     moveDx = dx; 
                     moveDy = dy;
@@ -257,7 +251,7 @@ function startBotTick(roomId) {
 
             bot.heading = Math.atan2(dx, -dy) * 180 / Math.PI;
 
-            const fireCooldown = bot.isChaser ? 0.6 : Math.max(0.8, 2.5 - (r.wave * 0.015)); // البوت المطارد يطلق نار بشكل أسرع وأشرس
+            const fireCooldown = bot.isChaser ? 0.6 : Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
 
             if (bot.fireTimer > fireCooldown && closestD2 < 2500 * 2500) {
@@ -291,7 +285,7 @@ function spawnWave(roomId) {
     room.bots = {};
     const count = botCountForWave(room.wave);
     const hpVal = botHPForWave(room.wave);
-    const chaserCount = getChaserCountForWave(room.wave); // تحديد عدد البوتات المطاردة لهذه الموجة
+    const chaserCount = getChaserCountForWave(room.wave);
 
     let cx = 0, cy = 0, n = 0;
     for (const uid in room.players) {
@@ -305,14 +299,12 @@ function spawnWave(roomId) {
     for (let i = 0; i < count; i++) {
         const sp = randomSpawnNearSafe(cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, room.islands || []);
         const id = room.botIdCounter++;
-        
-        // 🌟 جعل أول (chaserCount) من البوتات عبارة عن بوتات مطاردة (isChaser = true)
         const isChaserBot = (i < chaserCount);
 
         room.bots[id] = {
             id, x: sp.x, y: sp.y,
             heading: rnd(0, 360),
-            hp: hpVal + (isChaserBot ? 1 : 0), // البوت المطارد يكون أصلب بقليل
+            hp: hpVal + (isChaserBot ? 1 : 0),
             fireTimer: 0,
             isChaser: isChaserBot
         };
@@ -551,7 +543,6 @@ io.on('connection', (socket) => {
         }
 
         let roomId = findOpenRoom(socket.mode);
-        // 🌟 جعل الموجة تبدأ متقدمة بدرجة عن مستواه الحالي (startLevel + 1) لمنع الدوامة اللانهائية وتكرار نفس التحدي
         if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
 
         const room = rooms[roomId];
@@ -842,7 +833,6 @@ function leaveRoom(socket, immediate) {
 }
 
 function endRoom(roomId) {
-    .room = rooms[roomId]; // correction for syntax if needed
     const room = rooms[roomId];
     if (!room) return;
     room.wiped = true;
