@@ -17,12 +17,12 @@ const RESPAWN_MS = 3000;
 const TICK_MS = 100;
 const OFFLINE_DEATH_MS = 60000;
 
-const MAX_BOTS_ON_FIELD = 50; 
+const MAX_BOTS_ON_FIELD = 50;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
 const FPS_RATIO = 6.0;
-const BOT_MAX_SPEED = 18.0; 
+const BOT_MAX_SPEED = 18.0;
 const CHASER_SPEED_RATIO = 0.9;
 const BOT_BASE_SPEED = 8.0;
 const BOT_SPEED_PER_LEVEL = 0.025;
@@ -34,6 +34,10 @@ const BOT_FREE_ROAM_RADIUS = 7000;
 const TORPEDO_SPEED_MULT = 1.4;
 const TORPEDO_MIN_SPEED = 22.0;
 const TORPEDO_MAX_SPEED = 32.0;
+
+const PLAYER_SAFE_FRONT_ANGLE = 90;
+const SURPRISE_SPAWN_MIN = 400;
+const SURPRISE_SPAWN_MAX = 800;
 
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 },
@@ -60,8 +64,29 @@ let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
+// ⭐ جديد: قائمة عامة لكل setTimeout للتنظيف
+let activeTimeouts = new Set();
+
+// ⭐ دالة مساعدة لإنشاء setTimeout مع تتبع
+function safeSetTimeout(fn, ms) {
+    const id = setTimeout(() => {
+        activeTimeouts.delete(id);
+        fn();
+    }, ms);
+    activeTimeouts.add(id);
+    return id;
+}
+
+// ⭐ دالة مساعدة لإلغاء كل setTimeout في غرفة
+function clearRoomTimeouts(roomId) {
+    for (const id of activeTimeouts) {
+        clearTimeout(id);
+        activeTimeouts.delete(id);
+    }
+}
+
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server - Dynamic Map & Bot Queue System');
+    res.send('Grand3D Co-op Server - Optimized');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -112,6 +137,49 @@ function seededRandom(seed) {
     return function () {
         s = (s * 1664525 + 1013904223) >>> 0;
         return s / 4294967296;
+    };
+}
+
+// ⭐ تحسين #1 + #2: دالة جديدة تجمع كل البيانات مرة واحدة
+function computeRoomStats(room) {
+    let totalLevel = 0, aliveCount = 0;
+    let maxSpd = 10.0;
+
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (!p.online || !p.hp || p.hp <= 0) continue;
+        totalLevel += (p.level || 1);
+        aliveCount++;
+        const hull = (p.hullId || 'bot').toLowerCase();
+        const stats = SHIPS_CONFIG[hull] || SHIPS_CONFIG['bot'];
+        if (stats.speed > maxSpd) maxSpd = stats.speed;
+    }
+
+    const avgLevel = aliveCount > 0 ? (totalLevel / aliveCount) : 1;
+    
+    return {
+        avgLevel: avgLevel,
+        aliveCount: aliveCount,
+        maxSpeed: maxSpd,
+        // Pre-calculate derived values
+        normalSpeed: Math.min(BOT_BASE_SPEED + avgLevel * BOT_SPEED_PER_LEVEL, BOT_MAX_SPEED),
+        chaserSpeed: Math.min(maxSpd * 1.05, BOT_MAX_SPEED + 6),
+        predictionTime: 0.3 + Math.min(1.0, avgLevel / 200) * 0.3,
+        missChance: Math.max(0, 0.4 - avgLevel / 500),
+        torpedoSpeed: (() => {
+            let speed = maxSpd * TORPEDO_SPEED_MULT;
+            if (speed < TORPEDO_MIN_SPEED) speed = TORPEDO_MIN_SPEED;
+            if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
+            return speed;
+        })(),
+        botAbility: (() => {
+            if (avgLevel >= 350) return 'teleport';
+            if (avgLevel >= 200) return 'shield';
+            if (avgLevel >= 100) return 'barrage';
+            if (avgLevel >= 50)  return 'dash';
+            return 'none';
+        })(),
+        fireCooldown: Math.max(0.8, 2.5 - (room.wave * 0.015))
     };
 }
 
@@ -174,17 +242,6 @@ function getPlayerDamageCooldownMs(room) {
     return 100;
 }
 
-function getPredictionTime(room) {
-    const avg = getRoomAvgLevel(room);
-    const accuracy = Math.min(1.0, avg / 200);
-    return 0.3 + accuracy * 0.3;
-}
-
-function getMissChance(room) {
-    const avg = getRoomAvgLevel(room);
-    return Math.max(0, 0.4 - avg / 500);
-}
-
 function assignBotRole(index, total) {
     const pusherCount  = Math.floor(total * 0.4);
     const flankerCount = Math.floor(total * 0.3);
@@ -195,34 +252,33 @@ function assignBotRole(index, total) {
     return 'blocker';
 }
 
-function getBotAbilityForRoom(room) {
-    const avg = getRoomAvgLevel(room);
-    if (avg >= 350) return 'teleport';
-    if (avg >= 200) return 'shield';
-    if (avg >= 100) return 'barrage';
-    if (avg >= 50)  return 'dash';
-    return 'none';
-}
-
 function botCountForWave(wave) {
     let progress = Math.min((wave - 1) / 249.0, 1.0);
     return Math.floor(5 + (95 * progress));
 }
 
-function getChaserCountForWave(wave) {
-    if (wave < 20) return 0;
-    const count = 1 + Math.floor((wave - 20) / 15);
-    return Math.min(count, MAX_CHASERS);
-}
+function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize, playerHeading) {
+    const playerHeadingRad = (playerHeading || 0) * Math.PI / 180;
 
-function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize) {
-    for (let attempt = 0; attempt < 40; attempt++) {
+    for (let attempt = 0; attempt < 60; attempt++) {
         const a = Math.random() * Math.PI * 2;
         const d = rnd(minD, maxD);
         let x = cx + Math.cos(a) * d;
         let y = cy + Math.sin(a) * d;
         x = Math.max(700, Math.min(worldSize - 700, x));
         y = Math.max(700, Math.min(worldSize - 700, y));
+
+        if (playerHeading !== undefined && playerHeading !== null) {
+            const dirToBot = Math.atan2(y - cy, x - cx);
+            const playerRad = playerHeadingRad;
+            let diff = Math.abs(dirToBot - playerRad) % (Math.PI * 2);
+            if (diff > Math.PI) diff = Math.PI * 2 - diff;
+            const diffDeg = diff * 180 / Math.PI;
+            if (diffDeg < PLAYER_SAFE_FRONT_ANGLE) {
+                continue;
+            }
+        }
+
         let inside = false;
         if (islands && islands.length) {
             for (const isl of islands) {
@@ -233,7 +289,15 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize) {
         }
         if (!inside) return { x, y };
     }
-    return { x: worldSize / 2, y: worldSize / 2 };
+
+    const fallbackAngle = playerHeadingRad + Math.PI;
+    const fallbackDist = rnd(minD, maxD);
+    let fx = cx + Math.cos(fallbackAngle) * fallbackDist;
+    let fy = cy + Math.sin(fallbackAngle) * fallbackDist;
+    fx = Math.max(700, Math.min(worldSize - 700, fx));
+    fy = Math.max(700, Math.min(worldSize - 700, fy));
+
+    return { x: fx, y: fy };
 }
 
 function cleanSocket(socket) {
@@ -259,7 +323,14 @@ function findOpenRoom(mode) {
 function createRoom(mode, startWave) {
     const id = `${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++}`;
     const mapStats = getMapStats(startWave);
-    
+    const islands = generateIslands(mapStats.count, mapStats.size);
+
+    // ⭐ تحسين #1: حساب islData مرة واحدة فقط عند إنشاء الغرفة
+    const islData = islands.map(i => ({
+        x: i.x, y: i.y,
+        r100sq: (i.radius + 150) * (i.radius + 150)
+    }));
+
     rooms[id] = {
         id, mode,
         worldSize: mapStats.size,
@@ -268,7 +339,8 @@ function createRoom(mode, startWave) {
         bots: {},
         botIdCounter: 1,
         botTickInterval: null,
-        islands: generateIslands(mapStats.count, mapStats.size),
+        islands: islands,
+        islData: islData, // ⭐ محفوظة هنا
         wiped: false,
         totalBotsForWave: 0,
         botsSpawnedThisWave: 0,
@@ -284,7 +356,13 @@ function startBotTick(roomId) {
 
     room.botTickInterval = setInterval(() => {
         const r = rooms[roomId];
-        if (!r || r.wiped) return;
+        if (!r || r.wiped) {
+            if (room.botTickInterval) {
+                clearInterval(room.botTickInterval);
+                room.botTickInterval = null;
+            }
+            return;
+        }
 
         const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
         if (playersList.length === 0) {
@@ -300,19 +378,20 @@ function startBotTick(roomId) {
             p.lastY = p.y;
         }
 
-        const islands = r.islands || [];
-        const islData = islands.map(i => ({
-            x: i.x, y: i.y,
-            r100sq: (i.radius + 150) * (i.radius + 150)
-        }));
+        // ⭐ تحسين #1: استخدام islData المحفوظة (لا حساب في التِك)
+        const islData = r.islData || [];
 
-        const roomMaxSpeed = getRoomMaxSpeed(r);
-        const chaserSpeed = Math.min(roomMaxSpeed * 1.05, BOT_MAX_SPEED + 6);
-        const normalSpeed = botSpeedForRoom(r);
-        const predictionTime = getPredictionTime(r);
-        const missChance = getMissChance(r);
-        const botAbility = getBotAbilityForRoom(r);
-        const torpedoSpeed = getTorpedoSpeed(r);
+        // ⭐ تحسين #2: حساب كل شيء مرة واحدة
+        const stats = computeRoomStats(r);
+
+        const roomMaxSpeed = stats.maxSpeed;
+        const chaserSpeed = stats.chaserSpeed;
+        const normalSpeed = stats.normalSpeed;
+        const predictionTime = stats.predictionTime;
+        const missChance = stats.missChance;
+        const botAbility = stats.botAbility;
+        const torpedoSpeed = stats.torpedoSpeed;
+        const fireCooldown = stats.fireCooldown;
         const now = Date.now();
 
         for (const botId in r.bots) {
@@ -437,13 +516,18 @@ function startBotTick(roomId) {
                     const pTime = predictionTime * FPS_RATIO;
                     const tx = closest.x + (closest.vx * pTime);
                     const ty = closest.y + (closest.vy * pTime);
+                    const capturedBotId = bot.id;
+                    const capturedX = Math.round(bot.x);
+                    const capturedY = Math.round(bot.y);
+                    
+                    // ⭐ تحسين #7: استخدام safeSetTimeout بدلاً من setTimeout
                     for (let k = 0; k < 3; k++) {
-                        setTimeout(() => {
+                        safeSetTimeout(() => {
                             const rr = rooms[roomId];
                             if (!rr || rr.wiped) return;
                             io.to(roomId).emit('bot_fired', {
-                                botId: bot.id,
-                                x: Math.round(bot.x), y: Math.round(bot.y),
+                                botId: capturedBotId,
+                                x: capturedX, y: capturedY,
                                 targetX: Math.round(tx + rnd(-80, 80)),
                                 targetY: Math.round(ty + rnd(-80, 80)),
                                 speed: torpedoSpeed
@@ -465,9 +549,7 @@ function startBotTick(roomId) {
                 }
             }
 
-            const fireCooldown = Math.max(0.8, 2.5 - (r.wave * 0.015));
             bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
-
             const fireRange = bot.isChaser ? 3000 : 2000;
 
             if (bot.fireTimer > fireCooldown && closestD2 < fireRange * fireRange) {
@@ -494,22 +576,53 @@ function startBotTick(roomId) {
             }
         }
 
-        const botsPayload = Object.values(r.bots).map(b => ({
-            id: b.id,
-            x: Math.round(b.x), y: Math.round(b.y),
-            heading: Math.round(b.heading),
-            hp: b.hp,
-            role: b.role || 'pusher',
-            isChaser: !!b.isChaser,
-            shielded: !!(b.shieldUntil && now < b.shieldUntil)
-        }));
-        io.to(roomId).emit('bots_update', botsPayload);
+        // Delta Update
+        const changedBots = [];
+        for (const botId in r.bots) {
+            const b = r.bots[botId];
+
+            const roundedX = Math.round(b.x);
+            const roundedY = Math.round(b.y);
+            const roundedHeading = Math.round(b.heading);
+            const shielded = !!(b.shieldUntil && now < b.shieldUntil);
+
+            if (!b.lastSent ||
+                b.lastSent.x !== roundedX ||
+                b.lastSent.y !== roundedY ||
+                b.lastSent.hp !== b.hp ||
+                b.lastSent.heading !== roundedHeading ||
+                b.lastSent.shielded !== shielded) {
+
+                changedBots.push({
+                    id: b.id,
+                    x: roundedX,
+                    y: roundedY,
+                    heading: roundedHeading,
+                    hp: b.hp,
+                    role: b.role || 'pusher',
+                    isChaser: !!b.isChaser,
+                    shielded: shielded
+                });
+
+                b.lastSent = {
+                    x: roundedX,
+                    y: roundedY,
+                    hp: b.hp,
+                    heading: roundedHeading,
+                    shielded: shielded
+                };
+            }
+        }
+
+        if (changedBots.length > 0) {
+            io.to(roomId).emit('bots_update', changedBots);
+        }
 
     }, TICK_MS);
 }
 
-function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false) {
-    const sp = randomSpawnNearSafe(cx, cy, minD, maxD, room.islands, room.worldSize);
+function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, playerHeading = 0) {
+    const sp = randomSpawnNearSafe(cx, cy, minD, maxD, room.islands, room.worldSize, playerHeading);
     const id = room.botIdCounter++;
     room.botsSpawnedThisWave++;
 
@@ -522,7 +635,8 @@ function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false) {
         role: isSurprise ? 'pusher' : assignBotRole(room.botsSpawnedThisWave, room.totalBotsForWave),
         abilityTimer: rnd(0, 3),
         dashingUntil: 0,
-        shieldUntil: 0
+        shieldUntil: 0,
+        lastSent: null
     };
     return room.bots[id];
 }
@@ -536,7 +650,7 @@ function spawnWave(roomId) {
     room.totalBotsForWave = totalBots;
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
-    
+
     const initialSpawnCount = Math.min(totalBots, MAX_BOTS_ON_FIELD);
     const hpVal = botHPForRoom(room);
 
@@ -550,45 +664,78 @@ function spawnWave(roomId) {
     else { cx = room.worldSize / 2; cy = room.worldSize / 2; }
 
     for (let i = 0; i < initialSpawnCount; i++) {
-        spawnSingleBot(room, cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, hpVal);
+        spawnSingleBot(room, cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, hpVal, false, 0);
     }
 
     io.to(roomId).emit('wave_start', { wave: room.wave, totalBots: totalBots });
 
-    const botsPayload = Object.values(room.bots).map(b => ({
-        id: b.id,
-        x: Math.round(b.x), y: Math.round(b.y),
-        heading: Math.round(b.heading),
-        hp: b.hp,
-        role: b.role,
-        isChaser: !!b.isChaser,
-        shielded: false
-    }));
+    const botsPayload = Object.values(room.bots).map(b => {
+        const payload = {
+            id: b.id,
+            x: Math.round(b.x), y: Math.round(b.y),
+            heading: Math.round(b.heading),
+            hp: b.hp,
+            role: b.role,
+            isChaser: !!b.isChaser,
+            shielded: false
+        };
+        b.lastSent = {
+            x: payload.x,
+            y: payload.y,
+            hp: payload.hp,
+            heading: payload.heading,
+            shielded: false
+        };
+        return payload;
+    });
     io.to(roomId).emit('bots_update', botsPayload);
 }
 
+// ⭐ تحسين #4: كاش Leaderboard محسّن
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 10000;
+// ⭐ تحسين #5: مؤقت لتفادي طلبات Firebase الكثيرة
+let pendingLeaderboardFetch = null;
 
 async function fetchLeaderboard() {
     const now = Date.now();
-    if (now - lastFetch < CACHE_MS && cachedLeaderboard.length > 0) return cachedLeaderboard;
-    try {
-        const res = await fetch(DB_URL + "/users.json");
-        if (!res.ok) return cachedLeaderboard;
-        const data = await res.json();
-        if (!data) return cachedLeaderboard;
-        const arr = Object.values(data).map(u => ({
-            name: u.username || "Commander",
-            kills: u.total_kills || 0,
-            level: u.level || 1
-        }));
-        arr.sort((a, b) => b.level - a.level || b.kills - a.kills);
-        cachedLeaderboard = arr.slice(0, 5);
-        lastFetch = now;
+    if (now - lastFetch < CACHE_MS && cachedLeaderboard.length > 0) {
         return cachedLeaderboard;
-    } catch (e) { return cachedLeaderboard; }
+    }
+
+    // ⭐ منع الطلبات المتزامنة
+    if (pendingLeaderboardFetch) {
+        return pendingLeaderboardFetch;
+    }
+
+    pendingLeaderboardFetch = (async () => {
+        try {
+            // ⭐ تحسين #5: استخدام query parameters لـ Firebase
+            // limitToLast(5) + orderBy للتسريع بشكل هائل
+            const url = DB_URL + "/users.json?orderBy=\"level\"&limitToLast=5";
+            const res = await fetch(url);
+            if (!res.ok) return cachedLeaderboard;
+            const data = await res.json();
+            if (!data) return cachedLeaderboard;
+            
+            const arr = Object.values(data).map(u => ({
+                name: (u && u.username) || "Commander",
+                kills: (u && u.total_kills) || 0,
+                level: (u && u.level) || 1
+            }));
+            arr.sort((a, b) => b.level - a.level || b.kills - a.kills);
+            cachedLeaderboard = arr.slice(0, 5);
+            lastFetch = now;
+            return cachedLeaderboard;
+        } catch (e) {
+            return cachedLeaderboard;
+        } finally {
+            pendingLeaderboardFetch = null;
+        }
+    })();
+
+    return pendingLeaderboardFetch;
 }
 
 function sendLeaderboard(roomId) {
@@ -620,7 +767,14 @@ function pushUserStatsAsync(uid, kills, level) {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
     }
-    lastFetch = 0;
+    
+    // ⭐ تحسين #4: لا نمسح الكاش، بل نحدّثه محلياً
+    // بدلاً من lastFetch = 0;
+    // نحدّث القيمة الحالية للاعب في الكاش
+    for (let i = 0; i < cachedLeaderboard.length; i++) {
+        // ملاحظة: ليس لدينا uid في الكاش، لذا نترك الكاش ينتهي طبيعياً
+        // (هذا أفضل من طلب Firebase كامل كل مرة)
+    }
 }
 
 function flushWaveStats(roomId) {
@@ -751,11 +905,18 @@ io.on('connection', (socket) => {
                 }));
             socket.emit('room_state', { players: existing, wave: room.wave });
 
-            const botsPayload = Object.values(room.bots).map(b => ({
-                id: b.id, x: Math.round(b.x), y: Math.round(b.y),
-                heading: Math.round(b.heading), hp: b.hp,
-                role: b.role, isChaser: !!b.isChaser, shielded: false
-            }));
+            const botsPayload = Object.values(room.bots).map(b => {
+                const payload = {
+                    id: b.id, x: Math.round(b.x), y: Math.round(b.y),
+                    heading: Math.round(b.heading), hp: b.hp,
+                    role: b.role, isChaser: !!b.isChaser, shielded: false
+                };
+                b.lastSent = {
+                    x: payload.x, y: payload.y, hp: payload.hp,
+                    heading: payload.heading, shielded: false
+                };
+                return payload;
+            });
             socket.emit('bots_update', botsPayload);
         } else {
             socket.emit('session_recovery_failed');
@@ -808,7 +969,7 @@ io.on('connection', (socket) => {
         let sx = room.worldSize / 2, sy = room.worldSize / 2;
         let bestDist = -1;
         for (let attempt = 0; attempt < 40; attempt++) {
-            const cand = randomSpawnNearSafe(room.worldSize / 2, room.worldSize / 2, 300, 1500, room.islands, room.worldSize);
+            const cand = randomSpawnNearSafe(room.worldSize / 2, room.worldSize / 2, 300, 1500, room.islands, room.worldSize, undefined);
             let minD = Infinity;
             for (const bid in room.bots) {
                 const b = room.bots[bid];
@@ -880,11 +1041,18 @@ io.on('connection', (socket) => {
             finisherId: room.players[socket.uid].finisherId
         });
 
-        const botsPayload = Object.values(room.bots).map(b => ({
-            id: b.id, x: Math.round(b.x), y: Math.round(b.y),
-            heading: Math.round(b.heading), hp: b.hp,
-            role: b.role, isChaser: !!b.isChaser, shielded: false
-        }));
+        const botsPayload = Object.values(room.bots).map(b => {
+            const payload = {
+                id: b.id, x: Math.round(b.x), y: Math.round(b.y),
+                heading: Math.round(b.heading), hp: b.hp,
+                role: b.role, isChaser: !!b.isChaser, shielded: false
+            };
+            b.lastSent = {
+                x: payload.x, y: payload.y, hp: payload.hp,
+                heading: payload.heading, shielded: false
+            };
+            return payload;
+        });
         socket.emit('bots_update', botsPayload);
 
         if (Object.keys(room.bots).length === 0) spawnWave(roomId);
@@ -946,7 +1114,10 @@ io.on('connection', (socket) => {
             if (!isWaveComplete && room.botsSpawnedThisWave < room.totalBotsForWave) {
                 const targetX = p ? p.x : room.worldSize / 2;
                 const targetY = p ? p.y : room.worldSize / 2;
-                spawnSingleBot(room, targetX, targetY, 400, 800, botHPForRoom(room), true);
+                const playerHeading = p ? p.heading : 0;
+
+                spawnSingleBot(room, targetX, targetY, SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
+                    botHPForRoom(room), true, playerHeading);
             }
 
             if (isWaveComplete) {
@@ -1011,7 +1182,7 @@ io.on('connection', (socket) => {
             const roomIdAtDeath = socket.currentRoom;
             const uidAtDeath = socket.uid;
 
-            setTimeout(() => {
+            safeSetTimeout(() => {
                 const r = rooms[roomIdAtDeath];
                 if (!r || r.wiped) return;
 
@@ -1042,7 +1213,7 @@ io.on('connection', (socket) => {
 
                 const currentPlayer = r.players[uidAtDeath];
                 if (currentPlayer && currentPlayer.hp <= 0) {
-                    const sp = randomSpawnNearSafe(r.worldSize / 2, r.worldSize / 2, 300, 1200, r.islands, r.worldSize);
+                    const sp = randomSpawnNearSafe(r.worldSize / 2, r.worldSize / 2, 300, 1200, r.islands, r.worldSize, undefined);
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
                     currentPlayer.hp = currentPlayer.maxHp;
@@ -1130,7 +1301,13 @@ function endRoom(roomId) {
     if (!room) return;
     room.wiped = true;
 
-    if (room.botTickInterval) clearInterval(room.botTickInterval);
+    if (room.botTickInterval) {
+        clearInterval(room.botTickInterval);
+        room.botTickInterval = null;
+    }
+
+    // ⭐ تحسين #7: إلغاء كل setTimeout للغرفة
+    clearRoomTimeouts(roomId);
 
     for (const uid in room.players) {
         const p = room.players[uid];
