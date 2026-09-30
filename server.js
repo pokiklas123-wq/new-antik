@@ -54,7 +54,7 @@ const SHIPS_CONFIG = {
     'deepseek':        { hp: 280, speed: 20.5 },
     'geminipro':       { hp: 300, speed: 21.0 },
     'legendary':       { hp: 350, speed: 20.0 },
-  'sovereignabyss':       { hp: 400, speed: 21.5 },
+  'sovereignabyss':       { hp: 400, speed: 31.5 },
   'sovereignabysspro':       { hp: 420, speed: 22.5 }
 };
 
