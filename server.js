@@ -53,7 +53,7 @@ const SHIPS_CONFIG = {
     'geminiprosimple': { hp: 300, speed: 19.0 },
     'deepseek':        { hp: 280, speed: 20.5 },
     'geminipro':       { hp: 300, speed: 21.0 },
-    'legendary':       { hp: 993350, speed: 200.0 },
+    'legendary':       { hp: 350, speed: 22.0 },
   'sovereignabyss':       { hp: 400, speed: 31.5 },
   'sovereignabysspro':       { hp: 420, speed: 22.5 }
 };
@@ -1061,7 +1061,21 @@ io.on('connection', (socket) => {
 
         sendLeaderboard(roomId);
     });
+socket.on('player_fired', (data) => {
+    const room = rooms[socket.currentRoom];
+    if (!room || room.wiped) return;
+    const p = room.players[socket.uid];
+    if (!p) return;
 
+    // 🔥 ابث لبقية اللاعبين في نفس الغرفة فقط (بدون المرسل)
+    socket.to(socket.currentRoom).emit('player_fired', {
+        id: socket.id,
+        x: data.x,
+        y: data.y,
+        heading: data.heading,
+        hullId: data.hullId || p.hullId
+    });
+});
     socket.on('player_moved', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.uid]) return;
