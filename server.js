@@ -54,8 +54,11 @@ const SHIPS_CONFIG = {
     'deepseek':        { hp: 280, speed: 20.5 },
     'geminipro':       { hp: 300, speed: 21.0 },
     'legendary':       { hp: 350, speed: 22.0 },
-  'sovereignabyss':       { hp: 400, speed: 31.5 },
-  'sovereignabysspro':       { hp: 420, speed: 22.5 }
+    'sovereignabyss':  { hp: 400, speed: 31.5 },
+    'sovereignabysspro': { hp: 420, speed: 22.5 },
+    'sport':           { hp: 500, speed: 23.5 },
+    'sportpro':        { hp: 520, speed: 24.5 },
+    'boat':            { hp: 560, speed: 25.0 }
 };
 
 function getShipStats(hullId) {
