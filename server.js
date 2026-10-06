@@ -58,7 +58,8 @@ const SHIPS_CONFIG = {
     'sovereignabysspro': { hp: 450, speed: 23.5 },
     'sport':           { hp: 500, speed: 24.5 },
     'sportpro':        { hp: 530, speed: 25.5 },
-    'boat':            { hp: 570, speed: 26.5 }
+    'boat':            { hp: 570, speed: 26.5 },
+    'splittingtheseas':            { hp: 620, speed: 30.0 }
 };
 
 function getShipStats(hullId) {
