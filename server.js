@@ -39,7 +39,6 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000; 
 const SURPRISE_SPAWN_MAX = 6000; 
 
-// قائمة السفن الخاصة بك حرفياً كما طلبتها
 const SHIPS_CONFIG = {
     'bot':               { hp: 100, speed: 10.0, damage: 5 },
     'devilahorns':       { hp: 100, speed: 18.5, damage: 5 },
@@ -198,17 +197,15 @@ function botSpeedForRoom(room) {
     return Math.min(BOT_BASE_SPEED + (wv * 0.05), BOT_MAX_SPEED);
 }
 
+// رجعنا لدالة تحمّل البوت الخاصة بك بالحرف الواحد (بدون لمس)
 function botHPForRoom(room) {
     const wv = room.wave || 1;
-    // حساب عدد الطلقات المطلوبة كما كان في كودك الأصلي تماما ولكن مبني على الويف
-    const requiredHits = 1 + Math.floor(wv / 40) + Math.floor(wv / 60);
-    // ضرب عدد الطلقات في 5 (لأن دمج السفينة الأساسية عندك هو 5)
-    return requiredHits * 5;
+    return 1 + Math.floor(wv / 40) + Math.floor(wv / 60);
 }
 
+// رجعنا لدالة دمج البوت الخاصة بك بالحرف الواحد (بدون لمس)
 function botDamageForRoom(room) {
     const wv = room.wave || 1;
-    // معادلة قوتهم التدميرية مطابقة لكودك الأصلي ولم المسها
     const levelPart = Math.floor(wv / 30);
     const wavePart  = Math.floor(wv / 80);
     return 12 + levelPart + wavePart;
@@ -554,7 +551,7 @@ function startBotTick(roomId) {
                     x: roundedX,
                     y: roundedY,
                     heading: roundedHeading,
-                    hp: b.hp,
+                    hp: b.hp, // نرسلها كما هي لتعرض كنسبة أو رقم
                     role: b.role || 'pusher',
                     isChaser: !!b.isChaser,
                     shielded: shielded
@@ -1049,14 +1046,18 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // تطبيق الدمج بناء على قوة السفينة
+        // --- هنا الحل السحري بناءً على رياضيتك ---
         const p = room.players[socket.uid];
         const shipStats = getShipStats(p ? p.hullId : 'bot');
         const playerDamage = shipStats.damage || 5; 
         
-        bot.hp -= playerDamage;
+        // نحول الدمج الخاص بك إلى عدد طلقات
+        // 10 تعني طلقة كاملة، 5 تعني نصف طلقة
+        const hitPower = playerDamage / 10.0;
+        
+        bot.hp -= hitPower;
 
-        if (bot.hp <= 0) {
+        if (bot.hp <= 0.001) { // نستخدم 0.001 لتفادي أعشار الفاصلة العائمة في البرمجة
             delete room.bots[data.botId];
             room.botsKilledThisWave++;
             if (p) p.kills += 1;
