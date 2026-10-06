@@ -36,8 +36,9 @@ const TORPEDO_MIN_SPEED = 22.0;
 const TORPEDO_MAX_SPEED = 32.0;
 
 const PLAYER_SAFE_FRONT_ANGLE = 90;
-const SURPRISE_SPAWN_MIN = 400;
-const SURPRISE_SPAWN_MAX = 800;
+// تم التعديل لحل المشكلة الثالثة: إبعاد نقطة زرع البوتات المفاجئة
+const SURPRISE_SPAWN_MIN = 4000; 
+const SURPRISE_SPAWN_MAX = 6000; 
 
 const SHIPS_CONFIG = {
     'bot':             { hp: 100, speed: 10.0 },
@@ -70,10 +71,8 @@ let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
-// ⭐ جديد: قائمة عامة لكل setTimeout للتنظيف
 let activeTimeouts = new Set();
 
-// ⭐ دالة مساعدة لإنشاء setTimeout مع تتبع
 function safeSetTimeout(fn, ms) {
     const id = setTimeout(() => {
         activeTimeouts.delete(id);
@@ -83,7 +82,6 @@ function safeSetTimeout(fn, ms) {
     return id;
 }
 
-// ⭐ دالة مساعدة لإلغاء كل setTimeout في غرفة
 function clearRoomTimeouts(roomId) {
     for (const id of activeTimeouts) {
         clearTimeout(id);
@@ -146,59 +144,39 @@ function seededRandom(seed) {
     };
 }
 
-// ⭐ تحسين #1 + #2: دالة جديدة تجمع كل البيانات مرة واحدة
+// تم التعديل لحل المشكلة الأولى والرابعة: الاعتماد على الويف وإلغاء الداش والانتقال الآني
 function computeRoomStats(room) {
-    let totalLevel = 0, aliveCount = 0;
-    let maxSpd = 10.0;
+    let aliveCount = 0;
 
     for (const uid in room.players) {
         const p = room.players[uid];
-        if (!p.online || !p.hp || p.hp <= 0) continue;
-        totalLevel += (p.level || 1);
-        aliveCount++;
-        const hull = (p.hullId || 'bot').toLowerCase();
-        const stats = SHIPS_CONFIG[hull] || SHIPS_CONFIG['bot'];
-        if (stats.speed > maxSpd) maxSpd = stats.speed;
+        if (p.online && p.hp > 0) aliveCount++;
     }
 
-    const avgLevel = aliveCount > 0 ? (totalLevel / aliveCount) : 1;
+    const wave = room.wave || 1;
+    const waveSpeed = Math.min(BOT_BASE_SPEED + (wave * 0.05), BOT_MAX_SPEED);
     
     return {
-        avgLevel: avgLevel,
+        avgLevel: wave, 
         aliveCount: aliveCount,
-        maxSpeed: maxSpd,
-        // Pre-calculate derived values
-        normalSpeed: Math.min(BOT_BASE_SPEED + avgLevel * BOT_SPEED_PER_LEVEL, BOT_MAX_SPEED),
-        chaserSpeed: Math.min(maxSpd * 1.05, BOT_MAX_SPEED + 6),
-        predictionTime: 0.3 + Math.min(1.0, avgLevel / 200) * 0.3,
-        missChance: Math.max(0, 0.4 - avgLevel / 500),
-        torpedoSpeed: (() => {
-            let speed = maxSpd * TORPEDO_SPEED_MULT;
-            if (speed < TORPEDO_MIN_SPEED) speed = TORPEDO_MIN_SPEED;
-            if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
-            return speed;
-        })(),
+        maxSpeed: 15.0, 
+        normalSpeed: waveSpeed,
+        chaserSpeed: Math.min(waveSpeed * 1.2, BOT_MAX_SPEED + 2), 
+        predictionTime: 0.3 + Math.min(1.0, wave / 100) * 0.3,
+        missChance: Math.max(0, 0.4 - wave / 200),
+        torpedoSpeed: 22.0, 
         botAbility: (() => {
-            if (avgLevel >= 350) return 'teleport';
-            if (avgLevel >= 200) return 'shield';
-            if (avgLevel >= 100) return 'barrage';
-            if (avgLevel >= 50)  return 'dash';
+            if (wave >= 100) return 'shield';
+            if (wave >= 50) return 'barrage';
             return 'none';
         })(),
-        fireCooldown: Math.max(0.8, 2.5 - (room.wave * 0.015))
+        fireCooldown: Math.max(1.0, 2.5 - (wave * 0.015))
     };
 }
 
+// الدوال التالية تم تعديلها لتعتمد على رقم الويف وليس مستوى اللاعب
 function getRoomAvgLevel(room) {
-    let total = 0, count = 0;
-    for (const uid in room.players) {
-        const p = room.players[uid];
-        if (p.online && p.hp > 0) {
-            total += (p.level || 1);
-            count++;
-        }
-    }
-    return count > 0 ? (total / count) : 1;
+    return room.wave || 1; 
 }
 
 function getRoomMaxSpeed(room) {
@@ -214,37 +192,29 @@ function getRoomMaxSpeed(room) {
 }
 
 function getTorpedoSpeed(room) {
-    const maxSpd = getRoomMaxSpeed(room);
-    let speed = maxSpd * TORPEDO_SPEED_MULT;
-    if (speed < TORPEDO_MIN_SPEED) speed = TORPEDO_MIN_SPEED;
-    if (speed > TORPEDO_MAX_SPEED) speed = TORPEDO_MAX_SPEED;
-    return speed;
+    return 22.0; 
 }
 
 function botSpeedForRoom(room) {
-    const avg = getRoomAvgLevel(room);
-    return Math.min(BOT_BASE_SPEED + avg * BOT_SPEED_PER_LEVEL, BOT_MAX_SPEED);
+    const wv = room.wave || 1;
+    return Math.min(BOT_BASE_SPEED + (wv * 0.05), BOT_MAX_SPEED);
 }
 
 function botHPForRoom(room) {
-    const avg = getRoomAvgLevel(room);
     const wv = room.wave || 1;
-    return 1 + Math.floor(avg / 40) + Math.floor(wv / 60);
+    return 1 + Math.floor(wv / 10);
 }
 
 function botDamageForRoom(room) {
-    const avg = getRoomAvgLevel(room);
     const wv = room.wave || 1;
-    const levelPart = Math.floor(avg / 30);
-    const wavePart  = Math.floor(wv / 80);
-    return 12 + levelPart + wavePart;
+    return 12 + Math.floor(wv / 15);
 }
 
 function getPlayerDamageCooldownMs(room) {
-    const avg = getRoomAvgLevel(room);
-    if (avg > 500) return 400;
-    if (avg > 250) return 300;
-    if (avg > 100) return 200;
+    const wv = room.wave || 1;
+    if (wv > 500) return 400;
+    if (wv > 250) return 300;
+    if (wv > 100) return 200;
     return 100;
 }
 
@@ -331,7 +301,6 @@ function createRoom(mode, startWave) {
     const mapStats = getMapStats(startWave);
     const islands = generateIslands(mapStats.count, mapStats.size);
 
-    // ⭐ تحسين #1: حساب islData مرة واحدة فقط عند إنشاء الغرفة
     const islData = islands.map(i => ({
         x: i.x, y: i.y,
         r100sq: (i.radius + 150) * (i.radius + 150)
@@ -346,7 +315,7 @@ function createRoom(mode, startWave) {
         botIdCounter: 1,
         botTickInterval: null,
         islands: islands,
-        islData: islData, // ⭐ محفوظة هنا
+        islData: islData,
         wiped: false,
         totalBotsForWave: 0,
         botsSpawnedThisWave: 0,
@@ -384,13 +353,9 @@ function startBotTick(roomId) {
             p.lastY = p.y;
         }
 
-        // ⭐ تحسين #1: استخدام islData المحفوظة (لا حساب في التِك)
         const islData = r.islData || [];
-
-        // ⭐ تحسين #2: حساب كل شيء مرة واحدة
         const stats = computeRoomStats(r);
 
-        const roomMaxSpeed = stats.maxSpeed;
         const chaserSpeed = stats.chaserSpeed;
         const normalSpeed = stats.normalSpeed;
         const predictionTime = stats.predictionTime;
@@ -417,12 +382,6 @@ function startBotTick(roomId) {
             let len = Math.sqrt(closestD2) || 1;
 
             let speed = bot.isChaser ? chaserSpeed : normalSpeed;
-
-            if (botAbility !== 'none') {
-                if (bot.dashingUntil && now < bot.dashingUntil) {
-                    speed *= 2.0;
-                }
-            }
 
             const step = speed * FPS_RATIO;
 
@@ -515,10 +474,7 @@ function startBotTick(roomId) {
             if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
                 bot.abilityTimer = 0;
 
-                if (botAbility === 'dash') {
-                    bot.dashingUntil = now + 500;
-                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'dash' });
-                } else if (botAbility === 'barrage') {
+                if (botAbility === 'barrage') {
                     const pTime = predictionTime * FPS_RATIO;
                     const tx = closest.x + (closest.vx * pTime);
                     const ty = closest.y + (closest.vy * pTime);
@@ -526,7 +482,6 @@ function startBotTick(roomId) {
                     const capturedX = Math.round(bot.x);
                     const capturedY = Math.round(bot.y);
                     
-                    // ⭐ تحسين #7: استخدام safeSetTimeout بدلاً من setTimeout
                     for (let k = 0; k < 3; k++) {
                         safeSetTimeout(() => {
                             const rr = rooms[roomId];
@@ -544,14 +499,6 @@ function startBotTick(roomId) {
                 } else if (botAbility === 'shield') {
                     bot.shieldUntil = now + 2000;
                     io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'shield' });
-                } else if (botAbility === 'teleport') {
-                    const backAngle = Math.atan2(-dy, -dx);
-                    const newX = closest.x + Math.cos(backAngle) * 600;
-                    const newY = closest.y + Math.sin(backAngle) * 600;
-                    if (newX > 700 && newX < r.worldSize - 700 && newY > 700 && newY < r.worldSize - 700) {
-                        bot.x = newX; bot.y = newY;
-                        io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'teleport' });
-                    }
                 }
             }
 
@@ -582,7 +529,6 @@ function startBotTick(roomId) {
             }
         }
 
-        // Delta Update
         const changedBots = [];
         for (const botId in r.bots) {
             const b = r.bots[botId];
@@ -697,11 +643,9 @@ function spawnWave(roomId) {
     io.to(roomId).emit('bots_update', botsPayload);
 }
 
-// ⭐ تحسين #4: كاش Leaderboard محسّن
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 10000;
-// ⭐ تحسين #5: مؤقت لتفادي طلبات Firebase الكثيرة
 let pendingLeaderboardFetch = null;
 
 async function fetchLeaderboard() {
@@ -710,15 +654,12 @@ async function fetchLeaderboard() {
         return cachedLeaderboard;
     }
 
-    // ⭐ منع الطلبات المتزامنة
     if (pendingLeaderboardFetch) {
         return pendingLeaderboardFetch;
     }
 
     pendingLeaderboardFetch = (async () => {
         try {
-            // ⭐ تحسين #5: استخدام query parameters لـ Firebase
-            // limitToLast(5) + orderBy للتسريع بشكل هائل
             const url = DB_URL + "/users.json?orderBy=\"level\"&limitToLast=5";
             const res = await fetch(url);
             if (!res.ok) return cachedLeaderboard;
@@ -772,14 +713,6 @@ function pushUserStatsAsync(uid, kills, level) {
         fetch(DB_URL + "/users/" + uid + "/level.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
-    }
-    
-    // ⭐ تحسين #4: لا نمسح الكاش، بل نحدّثه محلياً
-    // بدلاً من lastFetch = 0;
-    // نحدّث القيمة الحالية للاعب في الكاش
-    for (let i = 0; i < cachedLeaderboard.length; i++) {
-        // ملاحظة: ليس لدينا uid في الكاش، لذا نترك الكاش ينتهي طبيعياً
-        // (هذا أفضل من طلب Firebase كامل كل مرة)
     }
 }
 
@@ -1065,21 +998,22 @@ io.on('connection', (socket) => {
 
         sendLeaderboard(roomId);
     });
-socket.on('player_fired', (data) => {
-    const room = rooms[socket.currentRoom];
-    if (!room || room.wiped) return;
-    const p = room.players[socket.uid];
-    if (!p) return;
 
-    // 🔥 ابث لبقية اللاعبين في نفس الغرفة فقط (بدون المرسل)
-    socket.to(socket.currentRoom).emit('player_fired', {
-        id: socket.id,
-        x: data.x,
-        y: data.y,
-        heading: data.heading,
-        hullId: data.hullId || p.hullId
+    socket.on('player_fired', (data) => {
+        const room = rooms[socket.currentRoom];
+        if (!room || room.wiped) return;
+        const p = room.players[socket.uid];
+        if (!p) return;
+
+        socket.to(socket.currentRoom).emit('player_fired', {
+            id: socket.id,
+            x: data.x,
+            y: data.y,
+            heading: data.heading,
+            hullId: data.hullId || p.hullId
+        });
     });
-});
+
     socket.on('player_moved', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.uid]) return;
@@ -1131,9 +1065,10 @@ socket.on('player_fired', (data) => {
                 remainingBots: remainingBots
             });
 
+            // تم التعديل لحل المشكلة الثالثة: جعل الزرع التعويضي في وسط الخريطة ليبتعد عن اللاعب
             if (!isWaveComplete && room.botsSpawnedThisWave < room.totalBotsForWave) {
-                const targetX = p ? p.x : room.worldSize / 2;
-                const targetY = p ? p.y : room.worldSize / 2;
+                const targetX = room.worldSize / 2;
+                const targetY = room.worldSize / 2;
                 const playerHeading = p ? p.heading : 0;
 
                 spawnSingleBot(room, targetX, targetY, SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
@@ -1232,7 +1167,8 @@ socket.on('player_fired', (data) => {
                 }
 
                 const currentPlayer = r.players[uidAtDeath];
-                if (currentPlayer && currentPlayer.hp <= 0) {
+                // تم التعديل لحل المشكلة الثانية: التأكد أن اللاعب متصل قبل إرجاعه للحياة
+                if (currentPlayer && currentPlayer.hp <= 0 && currentPlayer.online) {
                     const sp = randomSpawnNearSafe(r.worldSize / 2, r.worldSize / 2, 300, 1200, r.islands, r.worldSize, undefined);
                     currentPlayer.x = sp.x;
                     currentPlayer.y = sp.y;
@@ -1255,6 +1191,7 @@ socket.on('player_fired', (data) => {
     socket.on('disconnect', () => leaveRoom(socket, false));
 });
 
+// تم التعديل بالكامل لحل المشكلة الثانية: تنظيف اللاعبين وتدمير الغرفة بشكل صحيح عند غياب المتصلين
 function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
@@ -1283,7 +1220,8 @@ function leaveRoom(socket, immediate) {
                 socket.leave(roomId);
                 cleanSocket(socket);
 
-                if (Object.keys(room.players).length === 0) endRoom(roomId);
+                const anyOnline = Object.values(room.players).some(pl => pl.online);
+                if (!anyOnline) endRoom(roomId);
             });
         } else {
             delete room.players[socket.uid];
@@ -1291,7 +1229,8 @@ function leaveRoom(socket, immediate) {
             socket.leave(roomId);
             cleanSocket(socket);
 
-            if (Object.keys(room.players).length === 0) endRoom(roomId);
+            const anyOnline = Object.values(room.players).some(pl => pl.online);
+            if (!anyOnline) endRoom(roomId);
         }
     } else {
         player.online = false;
@@ -1301,15 +1240,12 @@ function leaveRoom(socket, immediate) {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
 
-            const p = r.players[socket.uid];
-            if (!p || p.online) return;
-
-            p.hp = 0;
-            p.deathTimer = null;
-
             delete r.players[socket.uid];
-            if (Object.keys(r.players).length === 0) {
+
+            const anyOnlineAlive = Object.values(r.players).some(pl => pl.online);
+            if (!anyOnlineAlive) {
                 flushWaveStats(roomId);
+                io.to(roomId).emit('team_wipe');
                 endRoom(roomId);
             }
         }, OFFLINE_DEATH_MS);
@@ -1326,7 +1262,6 @@ function endRoom(roomId) {
         room.botTickInterval = null;
     }
 
-    // ⭐ تحسين #7: إلغاء كل setTimeout للغرفة
     clearRoomTimeouts(roomId);
 
     for (const uid in room.players) {
