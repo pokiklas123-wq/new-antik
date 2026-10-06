@@ -36,31 +36,31 @@ const TORPEDO_MIN_SPEED = 22.0;
 const TORPEDO_MAX_SPEED = 32.0;
 
 const PLAYER_SAFE_FRONT_ANGLE = 90;
-// تم التعديل لحل المشكلة الثالثة: إبعاد نقطة زرع البوتات المفاجئة
 const SURPRISE_SPAWN_MIN = 4000; 
 const SURPRISE_SPAWN_MAX = 6000; 
 
+// قائمة السفن الخاصة بك حرفياً كما طلبتها
 const SHIPS_CONFIG = {
-    'bot':             { hp: 100, speed: 10.0 },
-    'devilahorns':     { hp: 100, speed: 18.5 },
-    'devilsfangs':     { hp: 150, speed: 12.0 },
-    'finish':          { hp: 140, speed: 18.5 },
-    'proskin':         { hp: 140, speed: 19.5 },
-    'suphigh':         { hp: 110, speed: 20.0 },
-    'suplis':          { hp: 110, speed: 20.5 },
-    'suplis2':         { hp: 120, speed: 20.5 },
-    'gemini':          { hp: 300, speed: 17.0 },
-    'war':             { hp: 250, speed: 20.0 },
-    'geminiprosimple': { hp: 300, speed: 19.0 },
-    'deepseek':        { hp: 280, speed: 20.5 },
-    'geminipro':       { hp: 300, speed: 21.0 },
-    'legendary':       { hp: 350, speed: 22.0 },
-    'sovereignabyss':  { hp: 400, speed: 23.5 },
-    'sovereignabysspro': { hp: 450, speed: 23.5 },
-    'sport':           { hp: 500, speed: 24.5 },
-    'sportpro':        { hp: 530, speed: 25.5 },
-    'boat':            { hp: 570, speed: 26.5 },
-    'splittingtheseas':            { hp: 620, speed: 30.0 }
+    'bot':               { hp: 100, speed: 10.0, damage: 5 },
+    'devilahorns':       { hp: 100, speed: 18.5, damage: 5 },
+    'devilsfangs':       { hp: 150, speed: 12.0, damage: 10 },
+    'finish':            { hp: 140, speed: 18.5, damage: 10 },
+    'proskin':           { hp: 140, speed: 19.5, damage: 10 },
+    'suphigh':           { hp: 110, speed: 20.0, damage: 15 },
+    'suplis':            { hp: 110, speed: 20.5, damage: 20 },
+    'suplis2':           { hp: 120, speed: 20.5, damage: 20 },
+    'gemini':            { hp: 300, speed: 17.0, damage: 30 },
+    'war':               { hp: 250, speed: 20.0, damage: 30 },
+    'geminiprosimple':   { hp: 300, speed: 19.0, damage: 40 },
+    'deepseek':          { hp: 280, speed: 20.5, damage: 50 },
+    'geminipro':         { hp: 300, speed: 21.0, damage: 60 },
+    'legendary':         { hp: 350, speed: 22.0, damage: 70 },
+    'sovereignabyss':    { hp: 400, speed: 23.5, damage: 70 },
+    'sovereignabysspro': { hp: 450, speed: 23.5, damage: 70 },
+    'sport':             { hp: 500, speed: 24.5, damage: 90 },
+    'sportpro':          { hp: 530, speed: 25.5, damage: 90 },
+    'boat':              { hp: 570, speed: 26.5, damage: 90 },
+    'splittingtheseas':  { hp: 620, speed: 30.0, damage: 100 }
 };
 
 function getShipStats(hullId) {
@@ -144,7 +144,6 @@ function seededRandom(seed) {
     };
 }
 
-// تم التعديل لحل المشكلة الأولى والرابعة: الاعتماد على الويف وإلغاء الداش والانتقال الآني
 function computeRoomStats(room) {
     let aliveCount = 0;
 
@@ -174,7 +173,6 @@ function computeRoomStats(room) {
     };
 }
 
-// الدوال التالية تم تعديلها لتعتمد على رقم الويف وليس مستوى اللاعب
 function getRoomAvgLevel(room) {
     return room.wave || 1; 
 }
@@ -202,12 +200,18 @@ function botSpeedForRoom(room) {
 
 function botHPForRoom(room) {
     const wv = room.wave || 1;
-    return 1 + Math.floor(wv / 10);
+    // حساب عدد الطلقات المطلوبة كما كان في كودك الأصلي تماما ولكن مبني على الويف
+    const requiredHits = 1 + Math.floor(wv / 40) + Math.floor(wv / 60);
+    // ضرب عدد الطلقات في 5 (لأن دمج السفينة الأساسية عندك هو 5)
+    return requiredHits * 5;
 }
 
 function botDamageForRoom(room) {
     const wv = room.wave || 1;
-    return 12 + Math.floor(wv / 15);
+    // معادلة قوتهم التدميرية مطابقة لكودك الأصلي ولم المسها
+    const levelPart = Math.floor(wv / 30);
+    const wavePart  = Math.floor(wv / 80);
+    return 12 + levelPart + wavePart;
 }
 
 function getPlayerDamageCooldownMs(room) {
@@ -1045,12 +1049,16 @@ io.on('connection', (socket) => {
             return;
         }
 
-        bot.hp -= 1;
+        // تطبيق الدمج بناء على قوة السفينة
+        const p = room.players[socket.uid];
+        const shipStats = getShipStats(p ? p.hullId : 'bot');
+        const playerDamage = shipStats.damage || 5; 
+        
+        bot.hp -= playerDamage;
 
         if (bot.hp <= 0) {
             delete room.bots[data.botId];
             room.botsKilledThisWave++;
-            const p = room.players[socket.uid];
             if (p) p.kills += 1;
 
             const isWaveComplete = (room.botsKilledThisWave >= room.totalBotsForWave);
@@ -1065,7 +1073,6 @@ io.on('connection', (socket) => {
                 remainingBots: remainingBots
             });
 
-            // تم التعديل لحل المشكلة الثالثة: جعل الزرع التعويضي في وسط الخريطة ليبتعد عن اللاعب
             if (!isWaveComplete && room.botsSpawnedThisWave < room.totalBotsForWave) {
                 const targetX = room.worldSize / 2;
                 const targetY = room.worldSize / 2;
@@ -1167,7 +1174,6 @@ io.on('connection', (socket) => {
                 }
 
                 const currentPlayer = r.players[uidAtDeath];
-                // تم التعديل لحل المشكلة الثانية: التأكد أن اللاعب متصل قبل إرجاعه للحياة
                 if (currentPlayer && currentPlayer.hp <= 0 && currentPlayer.online) {
                     const sp = randomSpawnNearSafe(r.worldSize / 2, r.worldSize / 2, 300, 1200, r.islands, r.worldSize, undefined);
                     currentPlayer.x = sp.x;
@@ -1191,7 +1197,6 @@ io.on('connection', (socket) => {
     socket.on('disconnect', () => leaveRoom(socket, false));
 });
 
-// تم التعديل بالكامل لحل المشكلة الثانية: تنظيف اللاعبين وتدمير الغرفة بشكل صحيح عند غياب المتصلين
 function leaveRoom(socket, immediate) {
     const roomId = socket.currentRoom;
     const room = roomId ? rooms[roomId] : null;
