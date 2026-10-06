@@ -45,7 +45,7 @@ const SHIPS_CONFIG = {
     'devilsfangs':     { hp: 150, speed: 12.0 },
     'finish':          { hp: 140, speed: 18.5 },
     'proskin':         { hp: 140, speed: 19.5 },
-    'suphigh':         { hp: 110, speed: 20.0 },
+    'suphigh':         { hp: 11110, speed: 20.0 },
     'suplis':          { hp: 110, speed: 20.5 },
     'suplis2':         { hp: 120, speed: 20.5 },
     'gemini':          { hp: 300, speed: 17.0 },
