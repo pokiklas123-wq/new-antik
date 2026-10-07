@@ -70,6 +70,7 @@ let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
+// تتبع الـ timeouts حسب roomId
 let activeTimeouts = new Map();
 
 function safeSetTimeout(roomId, fn, ms) {
@@ -113,19 +114,14 @@ function getMapStats(level) {
     return { size, count };
 }
 
-// 🟢 تم التعديل: إبعاد الجزر عن الحواف الميتة لمنع انحشار البوتات
 function generateIslands(count, worldSize) {
     const islands = [];
     const rng = seededRandom(777);
     let placed = 0, attempts = 0;
-    
-    // مسافة الأمان: 700 (الحد) + 530 (أقصى تصادم) + 220 (مساحة مرور) = 1450
-    const MIN_MARGIN = 1450; 
-
     while (placed < count && attempts < 8000) {
         attempts++;
-        const ix = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
-        const iy = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
+        const ix = 800 + rng() * (worldSize - 1600);
+        const iy = 800 + rng() * (worldSize - 1600);
         if (Math.hypot(ix - (worldSize / 2), iy - (worldSize / 2)) < 50) continue;
 
         let clash = false;
@@ -230,6 +226,11 @@ function assignBotRole(index, total) {
     return 'blocker';
 }
 
+function botCountForWave(wave) {
+    let progress = Math.min((wave - 1) / 249.0, 1.0);
+    return Math.floor(5 + (95 * progress));
+}
+
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize, playerHeading) {
     const playerHeadingRad = (playerHeading || 0) * Math.PI / 180;
 
@@ -331,51 +332,38 @@ function isInsideIsland(x, y, islData) {
     return false;
 }
 
-// 🟢 تم التعديل: دفع البوت شعاعياً للخارج بعيداً عن مركز الجزيرة بدلاً من دفعه باتجاه اللاعب
 function tryUnstuck(bot, step, islData) {
-    let trappingIsland = null;
-    let minD2 = Infinity;
-    
-    // البحث عن الجزيرة التي علق فيها البوت
-    for (let i = 0; i < islData.length; i++) {
-        let d2 = dist2(bot.x, bot.y, islData[i].x, islData[i].y);
-        if (d2 < islData[i].r100sq * 1.5 && d2 < minD2) {
-            minD2 = d2;
-            trappingIsland = islData[i];
+    const baseAngle = Math.atan2(bot.y - (bot.anchorY || bot.y), bot.x - (bot.anchorX || bot.x));
+
+    const dirs = [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2,
+                  3 * Math.PI / 4, -3 * Math.PI / 4, Math.PI];
+
+    for (const offset of dirs) {
+        const angle = baseAngle + offset;
+        const tx = bot.x + Math.cos(angle) * step * 3;
+        const ty = bot.y + Math.sin(angle) * step * 3;
+
+        if (!isInsideIsland(tx, ty, islData)) {
+            bot.x = tx;
+            bot.y = ty;
+            return true;
         }
     }
 
-    if (trappingIsland) {
-        // حساب زاوية الهروب من مركز الجزيرة باتجاه البوت لدفع البوت للخارج
-        const escapeAngle = Math.atan2(bot.y - trappingIsland.y, bot.x - trappingIsland.x);
-        
-        // محاولة دفع البوت للخارج تدريجياً
-        for (let r = 2; r <= 8; r++) {
-            const tx = bot.x + Math.cos(escapeAngle) * step * r;
-            const ty = bot.y + Math.sin(escapeAngle) * step * r;
+    for (let r = 2; r <= 5; r++) {
+        for (const offset of dirs) {
+            const angle = baseAngle + offset;
+            const tx = bot.x + Math.cos(angle) * step * r * 2;
+            const ty = bot.y + Math.sin(angle) * step * r * 2;
 
             if (!isInsideIsland(tx, ty, islData)) {
                 bot.x = tx;
                 bot.y = ty;
-                return true; 
-            }
-        }
-    }
-
-    // الطريقة الاحتياطية (إذا علق في الحائط وليس في جزيرة)
-    const dirs = [0, Math.PI / 2, -Math.PI / 2, Math.PI, Math.PI / 4, -Math.PI / 4];
-    for (const offset of dirs) {
-        const tx = bot.x + Math.cos(offset) * step * 5;
-        const ty = bot.y + Math.sin(offset) * step * 5;
-        // التأكد أن نقطة الهروب ليست خلف الحدود الوهمية
-        if (tx >= 700 && ty >= 700) { 
-            if (!isInsideIsland(tx, ty, islData)) {
-                bot.x = tx; bot.y = ty;
                 return true;
             }
         }
     }
-    
+
     return false;
 }
 
@@ -686,7 +674,7 @@ function startBotTick(roomId) {
                 io.to(roomId).emit('bots_update', changedBots);
             }
         } catch (err) {
-            // تجاهل إطار واحد فقط
+            // تجاهل إطار واحد فقط، لا نوقف interval
         }
     }, TICK_MS);
 }
