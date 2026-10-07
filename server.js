@@ -116,7 +116,7 @@ function getMapStats(level) {
 // 🟢 التعديل الأول: إبعاد الجزر عن الحدود لمنع انحشار البوتات 
 function generateIslands(count, worldSize) {
     const islands = [];
-    const rng = seededRandom(777);
+    const rng = Math.random;
     let placed = 0, attempts = 0;
     const MIN_MARGIN = 1450; 
     
