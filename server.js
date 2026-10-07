@@ -113,13 +113,14 @@ function getMapStats(level) {
     return { size, count };
 }
 
-// 🟢 التعديل الأول: إبعاد الجزر عن الحدود لمنع انحشار البوتات 
+
 function generateIslands(count, worldSize) {
     const islands = [];
-    const rng = Math.random;
+    const rng = Math.random; 
     let placed = 0, attempts = 0;
-    const MIN_MARGIN = 1450; 
     
+    const MIN_MARGIN = 1450; 
+
     while (placed < count && attempts < 8000) {
         attempts++;
         const ix = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
@@ -129,7 +130,8 @@ function generateIslands(count, worldSize) {
         let clash = false;
         for (const o of islands) {
             const dx = ix - o.x, dy = iy - o.y;
-            if (Math.hypot(dx, dy) < o.radius + 400) { clash = true; break; }
+
+            if (Math.hypot(dx, dy) < o.radius + 900) { clash = true; break; }
         }
         if (clash) continue;
 
@@ -144,6 +146,7 @@ function generateIslands(count, worldSize) {
     }
     return islands;
 }
+
 
 function seededRandom(seed) {
     let s = seed >>> 0;
@@ -334,7 +337,7 @@ function isInsideIsland(x, y, islData) {
     return false;
 }
 
-// 🟢 التعديل الثاني: دفع البوت للخارج بدلاً من دفعه باتجاه اللاعب
+
 function tryUnstuck(bot, step, islData) {
     let trappingIsland = null;
     let minD2 = Infinity;
@@ -682,7 +685,7 @@ function startBotTick(roomId) {
                 io.to(roomId).emit('bots_update', changedBots);
             }
         } catch (err) {
-            // تجاهل إطار واحد فقط
+
         }
     }, TICK_MS);
 }
