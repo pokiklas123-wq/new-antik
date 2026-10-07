@@ -23,7 +23,6 @@ const BOT_SPAWN_MAX_DIST = 6000;
 
 const FPS_RATIO = 6.0;
 
-//  مُعدّل: سرعة البوتات الجديدة لتواكب السفن الجديدة
 const BOT_MAX_SPEED = 20.0;
 const BOT_BASE_SPEED = 10.0;
 const CHASER_SPEED_RATIO = 0.9;
@@ -40,7 +39,6 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000; 
 const SURPRISE_SPAWN_MAX = 6000; 
 
-//  الجدول الجديد الكامل
 const SHIPS_CONFIG = {
     'bot':               { hp:  150, speed: 11.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 12.0, damage:  15 },
@@ -154,7 +152,6 @@ function computeRoomStats(room) {
     }
 
     const wave = room.wave || 1;
-    //  البوتات تتحرك بسرعة متدرجة حتى 20 في wave 400
     const waveSpeed = Math.min(BOT_BASE_SPEED + (wave * 0.03), BOT_MAX_SPEED);
     
     return {
@@ -191,7 +188,6 @@ function getRoomMaxSpeed(room) {
     return maxSpd;
 }
 
-//  مُعدّل: سرعة الصاروخ تتزايد مع الموجات
 function getTorpedoSpeed(room) {
     const wv = room.wave || 1;
     return Math.min(22.0 + Math.floor(wv / 20), TORPEDO_MAX_SPEED);
@@ -202,21 +198,16 @@ function botSpeedForRoom(room) {
     return Math.min(BOT_BASE_SPEED + (wv * 0.03), BOT_MAX_SPEED);
 }
 
-//  مُعدّل: نمو أسّي بدلاً من خطي
 function botHPForRoom(room) {
     const wv = room.wave || 1;
-    // wave 1 → 1, wave 100 → 10, wave 200 → 30, wave 300 → 70, wave 400 → 130
     return 1 + Math.floor(Math.pow(wv / 12, 1.7));
 }
 
-//  مُعدّل: ضرر البوت يتناسب مع HP اللاعب الجديد
 function botDamageForRoom(room) {
     const wv = room.wave || 1;
-    // wave 1 → 15, wave 100 → 45, wave 200 → 88, wave 300 → 145, wave 400 → 210
     return 15 + Math.floor(Math.pow(wv / 10, 1.2));
 }
 
-//  مُعدّل: كولداون أسرع قليلاً في الموجات المتأخرة
 function getPlayerDamageCooldownMs(room) {
     const wv = room.wave || 1;
     if (wv > 400) return 250;
@@ -332,6 +323,59 @@ function createRoom(mode, startWave) {
     return id;
 }
 
+// ═══════════════════════════════════════════════════════════
+// دالة مساعدة: هل الموقع داخل جزيرة؟
+// ═══════════════════════════════════════════════════════════
+function isInsideIsland(x, y, islData) {
+    for (let i = 0; i < islData.length; i++) {
+        if (dist2(x, y, islData[i].x, islData[i].y) < islData[i].r100sq) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// ═══════════════════════════════════════════════════════════
+// محاولة الخروج من الحصار بحركة حلزونية متعددة الاتجاهات
+// ═══════════════════════════════════════════════════════════
+function tryUnstuck(bot, step, islData) {
+    // الاتجاه الأساسي: من البوت إلى آخر موقع معروف للمركز
+    const baseAngle = Math.atan2(bot.y - (bot.anchorY || bot.y), bot.x - (bot.anchorX || bot.x));
+
+    // 8 اتجاهات حلزونية
+    const dirs = [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2, 
+                  3 * Math.PI / 4, -3 * Math.PI / 4, Math.PI];
+
+    for (const offset of dirs) {
+        const angle = baseAngle + offset;
+        const tx = bot.x + Math.cos(angle) * step * 3;   // خطوة كبيرة 3x
+        const ty = bot.y + Math.sin(angle) * step * 3;
+
+        if (!isInsideIsland(tx, ty, islData)) {
+            bot.x = tx;
+            bot.y = ty;
+            return true;
+        }
+    }
+
+    // إذا فشلت كل المحاولات القريبة، جرب مواقع أبعد (حلزون)
+    for (let r = 2; r <= 5; r++) {
+        for (const offset of dirs) {
+            const angle = baseAngle + offset;
+            const tx = bot.x + Math.cos(angle) * step * r * 2;
+            const ty = bot.y + Math.sin(angle) * step * r * 2;
+
+            if (!isInsideIsland(tx, ty, islData)) {
+                bot.x = tx;
+                bot.y = ty;
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -441,6 +485,62 @@ function startBotTick(roomId) {
             let nx = bot.x + (moveDx / moveLen) * step;
             let ny = bot.y + (moveDy / moveLen) * step;
 
+            // ═══════════════════════════════════════════════════════
+            // ⭐ كشف العلق ومحاولة الخروج بحركة حلزونية
+            // ═══════════════════════════════════════════════════════
+            if (!bot.stuckCheck) {
+                bot.stuckCheck = { lastX: bot.x, lastY: bot.y, timer: 0, stuckCount: 0 };
+                bot.anchorX = closest.x;
+                bot.anchorY = closest.y;
+            }
+
+            bot.stuckCheck.timer += TICK_MS / 1000;
+
+            // كل ثانيتين، افحص هل تحرك البوت
+            if (bot.stuckCheck.timer >= 2.0) {
+                const movedDist = Math.hypot(bot.x - bot.stuckCheck.lastX, bot.y - bot.stuckCheck.lastY);
+                
+                if (movedDist < 60) {
+                    bot.stuckCheck.stuckCount++;
+                } else {
+                    bot.stuckCheck.stuckCount = 0;
+                }
+                
+                bot.stuckCheck.lastX = bot.x;
+                bot.stuckCheck.lastY = bot.y;
+                bot.stuckCheck.timer = 0;
+            }
+
+            // إذا عالق لأكثر من 3 ثوانٍ → حاول الخروج
+            if (bot.stuckCheck.stuckCount >= 2) {
+                bot.anchorX = closest.x;
+                bot.anchorY = closest.y;
+                
+                // محاولة الخروج بحركة حلزونية
+                tryUnstuck(bot, step, islData);
+                
+                // أعد ضبط المؤقت
+                bot.stuckCheck.stuckCount = 0;
+                bot.stuckCheck.lastX = bot.x;
+                bot.stuckCheck.lastY = bot.y;
+
+                // تخطى الفحص العادي لهذه الدورة (البوت تحرك)
+                const targetHeading = Math.atan2(closest.x - bot.x, -(closest.y - bot.y)) * 180 / Math.PI;
+                if (bot.isChaser) {
+                    let diff = targetHeading - bot.heading;
+                    while (diff > 180) diff -= 360;
+                    while (diff < -180) diff += 360;
+                    bot.heading += diff * 0.4;
+                } else {
+                    bot.heading = targetHeading;
+                }
+
+                continue;  // انتقل للبوت التالي، لا تكمل الحركة العادية
+            }
+
+            // ═══════════════════════════════════════════════════════
+            // الحركة العادية
+            // ═══════════════════════════════════════════════════════
             let blocked = false;
             for (let i = 0; i < islData.length; i++) {
                 if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -451,16 +551,34 @@ function startBotTick(roomId) {
             if (!blocked) {
                 bot.x = nx; bot.y = ny;
             } else {
-                const perp = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                const tX = bot.x + Math.cos(perp) * step;
-                const tY = bot.y + Math.sin(perp) * step;
-                let b2 = false;
+                // حاول الانحراف يميناً
+                const perp1 = Math.atan2(moveDy, moveDx) + Math.PI / 2;
+                const tX1 = bot.x + Math.cos(perp1) * step;
+                const tY1 = bot.y + Math.sin(perp1) * step;
+                let b1 = false;
                 for (let i = 0; i < islData.length; i++) {
-                    if (dist2(tX, tY, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        b2 = true; break;
+                    if (dist2(tX1, tY1, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        b1 = true; break;
                     }
                 }
-                if (!b2) { bot.x = tX; bot.y = tY; }
+                if (!b1) {
+                    bot.x = tX1; bot.y = tY1;
+                } else {
+                    // حاول الانحراف يساراً
+                    const perp2 = Math.atan2(moveDy, moveDx) - Math.PI / 2;
+                    const tX2 = bot.x + Math.cos(perp2) * step;
+                    const tY2 = bot.y + Math.sin(perp2) * step;
+                    let b2 = false;
+                    for (let i = 0; i < islData.length; i++) {
+                        if (dist2(tX2, tY2, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                            b2 = true; break;
+                        }
+                    }
+                    if (!b2) {
+                        bot.x = tX2; bot.y = tY2;
+                    }
+                    // إذا فشل، البوت يبقى مكانه (لكن stuckCheck سيكتشفه)
+                }
             }
 
             if (bot.x < 700) bot.x = 700; else if (bot.x > r.worldSize - 700) bot.x = r.worldSize - 700;
@@ -595,7 +713,11 @@ function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, pla
         abilityTimer: rnd(0, 3),
         dashingUntil: 0,
         shieldUntil: 0,
-        lastSent: null
+        lastSent: null,
+        // ⭐ جديد: تتبع العلق
+        stuckCheck: null,
+        anchorX: cx,
+        anchorY: cy
     };
     return room.bots[id];
 }
