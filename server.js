@@ -61,7 +61,7 @@ const SHIPS_CONFIG = {
     'sport':             { hp: 4500, speed: 20.5, damage: 365 },
     'sportpro':          { hp: 5100, speed: 21.0, damage: 420 },
     'dumpling':          { hp: 5800, speed: 21.5, damage: 480 },
-    'splittingtheseas':  { hp: 6800, speed: 22.0, damage: 550 }
+    'splittingtheseas':  { hp: 10500, speed: 23.0, damage: 780 }
 };
 
 function getShipStats(hullId) {
