@@ -23,7 +23,7 @@ const BOT_SPAWN_MAX_DIST = 6000;
 
 const FPS_RATIO = 6.0;
 
-const BOT_MAX_SPEED = 20.0;
+const BOT_MAX_SPEED = 25.0;
 const BOT_BASE_SPEED = 10.0;
 const CHASER_SPEED_RATIO = 0.9;
 
@@ -39,28 +39,86 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
+// ⭐ قيم السفن (HP × 10)
 const SHIPS_CONFIG = {
-    'bot':               { hp:  150, speed: 11.0, damage:  10 },
-    'devilahorns':       { hp:  200, speed: 12.0, damage:  15 },
-    'devilsfangs':       { hp:  280, speed: 13.0, damage:  22 },
-    'finish':            { hp:  380, speed: 14.0, damage:  30 },
-    'proskin':           { hp:  500, speed: 14.5, damage:  40 },
-    'suphigh':           { hp:  650, speed: 15.0, damage:  52 },
-    'suplis':            { hp:  820, speed: 15.5, damage:  65 },
-    'suplis2':           { hp: 1000, speed: 16.0, damage:  80 },
-    'gemini':            { hp: 1250, speed: 16.5, damage:  98 },
-    'war':               { hp: 1500, speed: 17.0, damage: 118 },
-    'geminiprosimple':   { hp: 1800, speed: 17.5, damage: 140 },
-    'deepseek':          { hp: 2100, speed: 18.0, damage: 165 },
-    'geminipro':         { hp: 2500, speed: 18.5, damage: 195 },
-    'legendary':         { hp: 2900, speed: 19.0, damage: 230 },
-    'sovereignabyss':    { hp: 3400, speed: 19.5, damage: 270 },
-    'sovereignabysspro': { hp: 3900, speed: 20.0, damage: 315 },
-    'sport':             { hp: 4500, speed: 20.5, damage: 365 },
-    'sportpro':          { hp: 5100, speed: 21.0, damage: 420 },
-    'dumpling':          { hp: 5800, speed: 21.5, damage: 480 },
-    'splittingtheseas':  { hp: 10500, speed: 23.0, damage: 780 }
+    'bot':               { hp:  100, speed: 10.0, damage:  10 },
+    'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
+    'devilsfangs':       { hp:  300, speed: 12.0, damage:  30 },
+    'finish':            { hp:  400, speed: 13.0, damage:  40 },
+    'proskin':           { hp:  500, speed: 14.0, damage:  50 },
+    'suphigh':           { hp:  600, speed: 15.0, damage:  60 },
+    'suplis':            { hp:  700, speed: 15.5, damage:  70 },
+    'suplis2':           { hp:  800, speed: 16.0, damage:  80 },
+    'gemini':            { hp:  900, speed: 16.5, damage:  90 },
+    'war':               { hp: 1000, speed: 17.0, damage: 100 },
+    'geminiprosimple':   { hp: 1100, speed: 17.5, damage: 110 },
+    'deepseek':          { hp: 1200, speed: 18.0, damage: 120 },
+    'geminipro':         { hp: 1300, speed: 18.5, damage: 130 },
+    'legendary':         { hp: 1400, speed: 19.0, damage: 140 },
+    'sovereignabyss':    { hp: 1500, speed: 19.5, damage: 150 },
+    'sovereignabysspro': { hp: 1600, speed: 20.0, damage: 160 },
+    'sport':             { hp: 1700, speed: 20.5, damage: 170 },
+    'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
+    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 },
+    'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
+
+// ⭐ جدول السفن
+const SHIP_LEVELS = [
+    { level: 1,   id: 'bot' },
+    { level: 30,  id: 'devilahorns' },
+    { level: 60,  id: 'devilsfangs' },
+    { level: 90,  id: 'finish' },
+    { level: 120, id: 'proskin' },
+    { level: 150, id: 'suphigh' },
+    { level: 180, id: 'suplis' },
+    { level: 210, id: 'suplis2' },
+    { level: 240, id: 'gemini' },
+    { level: 270, id: 'war' },
+    { level: 300, id: 'geminiprosimple' },
+    { level: 330, id: 'deepseek' },
+    { level: 360, id: 'geminipro' },
+    { level: 390, id: 'legendary' },
+    { level: 420, id: 'sovereignabyss' },
+    { level: 450, id: 'sovereignabysspro' },
+    { level: 480, id: 'sport' },
+    { level: 510, id: 'sportpro' },
+    { level: 540, id: 'dumpling' },
+    { level: 570, id: 'splittingtheseas' }
+];
+
+// ⭐ دالة: حساب قيم البوت مع interpolation
+function getBotStatsForWave(wave) {
+    const wv = Math.max(1, wave);
+    const lastLevel = SHIP_LEVELS[SHIP_LEVELS.length - 1].level;
+
+    if (wv >= lastLevel) {
+        const lastShip = SHIP_LEVELS[SHIP_LEVELS.length - 1].id;
+        return SHIPS_CONFIG[lastShip];
+    }
+
+    let shipA = SHIP_LEVELS[0];
+    let shipB = SHIP_LEVELS[1];
+
+    for (let i = 0; i < SHIP_LEVELS.length - 1; i++) {
+        if (wv >= SHIP_LEVELS[i].level && wv < SHIP_LEVELS[i + 1].level) {
+            shipA = SHIP_LEVELS[i];
+            shipB = SHIP_LEVELS[i + 1];
+            break;
+        }
+    }
+
+    const statsA = SHIPS_CONFIG[shipA.id];
+    const statsB = SHIPS_CONFIG[shipB.id];
+
+    const ratio = (wv - shipA.level) / (shipB.level - shipA.level);
+
+    return {
+        hp: Math.round(statsA.hp + ratio * (statsB.hp - statsA.hp)),
+        speed: Math.round((statsA.speed + ratio * (statsB.speed - statsA.speed)) * 10) / 10,
+        damage: Math.round(statsA.damage + ratio * (statsB.damage - statsA.damage))
+    };
+}
 
 function getShipStats(hullId) {
     return SHIPS_CONFIG[(hullId || 'bot').toLowerCase()] || SHIPS_CONFIG['bot'];
@@ -113,13 +171,12 @@ function getMapStats(level) {
     return { size, count };
 }
 
-
 function generateIslands(count, worldSize) {
     const islands = [];
-    const rng = Math.random; 
+    const rng = Math.random;
     let placed = 0, attempts = 0;
-    
-    const MIN_MARGIN = 1450; 
+
+    const MIN_MARGIN = 1450;
 
     while (placed < count && attempts < 8000) {
         attempts++;
@@ -130,7 +187,6 @@ function generateIslands(count, worldSize) {
         let clash = false;
         for (const o of islands) {
             const dx = ix - o.x, dy = iy - o.y;
-
             if (Math.hypot(dx, dy) < o.radius + 900) { clash = true; break; }
         }
         if (clash) continue;
@@ -147,7 +203,6 @@ function generateIslands(count, worldSize) {
     return islands;
 }
 
-
 function seededRandom(seed) {
     let s = seed >>> 0;
     return function () {
@@ -158,13 +213,14 @@ function seededRandom(seed) {
 
 function computeRoomStats(room) {
     const wave = room.wave || 1;
-    const waveSpeed = Math.min(BOT_BASE_SPEED + (wave * 0.03), BOT_MAX_SPEED);
+    const botStats = getBotStatsForWave(wave);
+    const waveSpeed = botStats.speed;
 
     return {
         avgLevel: wave,
         maxSpeed: 15.0,
         normalSpeed: waveSpeed,
-        chaserSpeed: Math.min(waveSpeed * 1.2, BOT_MAX_SPEED + 2),
+        chaserSpeed: Math.min(waveSpeed * 1.2, BOT_MAX_SPEED),
         predictionTime: 0.3 + Math.min(1.0, wave / 100) * 0.3,
         missChance: Math.max(0, 0.4 - wave / 200),
         torpedoSpeed: 22.0,
@@ -200,17 +256,20 @@ function getTorpedoSpeed(room) {
 
 function botSpeedForRoom(room) {
     const wv = room.wave || 1;
-    return Math.min(BOT_BASE_SPEED + (wv * 0.03), BOT_MAX_SPEED);
+    const botStats = getBotStatsForWave(wv);
+    return botStats.speed;
 }
 
 function botHPForRoom(room) {
     const wv = room.wave || 1;
-    return 1 + Math.floor(Math.pow(wv / 12, 1.7));
+    const botStats = getBotStatsForWave(wv);
+    return botStats.hp;
 }
 
 function botDamageForRoom(room) {
     const wv = room.wave || 1;
-    return 15 + Math.floor(Math.pow(wv / 10, 1.2));
+    const botStats = getBotStatsForWave(wv);
+    return botStats.damage;
 }
 
 function getPlayerDamageCooldownMs(room) {
@@ -336,7 +395,6 @@ function isInsideIsland(x, y, islData) {
     }
     return false;
 }
-
 
 function tryUnstuck(bot, step, islData) {
     let trappingIsland = null;
@@ -685,7 +743,7 @@ function startBotTick(roomId) {
                 io.to(roomId).emit('bots_update', changedBots);
             }
         } catch (err) {
-
+            // تجاهل
         }
     }, TICK_MS);
 }
@@ -707,7 +765,6 @@ function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, pla
         dashingUntil: 0,
         shieldUntil: 0,
         lastSent: null,
-
         stuckCheck: null,
         anchorX: cx,
         anchorY: cy
@@ -1201,7 +1258,7 @@ io.on('connection', (socket) => {
 
         const p = room.players[socket.uid];
         const shipStats = getShipStats(p ? p.hullId : 'bot');
-        const playerDamage = shipStats.damage || 5;
+        const playerDamage = shipStats.damage || 10;
 
         const hitPower = playerDamage / 10.0;
 
@@ -1280,13 +1337,14 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const clientDamage = typeof data.damage === 'number' && isFinite(data.damage) ? data.damage : 15;
+        const clientDamage = typeof data.damage === 'number' && isFinite(data.damage) ? data.damage : 10;
         let serverDamage;
 
         if (clientDamage > 50) {
             serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
         } else {
-            serverDamage = botDamageForRoom(room);
+            // ⭐ البوت يضرب بنفس قوة السفينة / 10
+            serverDamage = botDamageForRoom(room) / 10.0;
         }
 
         p.lastDamageTime = now;
