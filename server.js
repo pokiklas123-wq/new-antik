@@ -36,8 +36,8 @@ const TORPEDO_MIN_SPEED = 22.0;
 const TORPEDO_MAX_SPEED = 42.0;
 
 const PLAYER_SAFE_FRONT_ANGLE = 90;
-const SURPRISE_SPAWN_MIN = 4000; 
-const SURPRISE_SPAWN_MAX = 6000; 
+const SURPRISE_SPAWN_MIN = 4000;
+const SURPRISE_SPAWN_MAX = 6000;
 
 const SHIPS_CONFIG = {
     'bot':               { hp:  150, speed: 11.0, damage:  10 },
@@ -70,22 +70,30 @@ let rooms = {};
 let nextRoomId = 1;
 let wipedRoomsLog = new Set();
 
-let activeTimeouts = new Set();
+// تتبع الـ timeouts حسب roomId
+let activeTimeouts = new Map();
 
-function safeSetTimeout(fn, ms) {
+function safeSetTimeout(roomId, fn, ms) {
     const id = setTimeout(() => {
-        activeTimeouts.delete(id);
-        fn();
+        const set = activeTimeouts.get(roomId);
+        if (set) {
+            set.delete(id);
+            if (set.size === 0) activeTimeouts.delete(roomId);
+        }
+        try { fn(); } catch (e) {}
     }, ms);
-    activeTimeouts.add(id);
+    if (!activeTimeouts.has(roomId)) activeTimeouts.set(roomId, new Set());
+    activeTimeouts.get(roomId).add(id);
     return id;
 }
 
 function clearRoomTimeouts(roomId) {
-    for (const id of activeTimeouts) {
+    const set = activeTimeouts.get(roomId);
+    if (!set) return;
+    for (const id of set) {
         clearTimeout(id);
-        activeTimeouts.delete(id);
     }
+    activeTimeouts.delete(roomId);
 }
 
 app.get('/', (req, res) => {
@@ -114,7 +122,7 @@ function generateIslands(count, worldSize) {
         attempts++;
         const ix = 800 + rng() * (worldSize - 1600);
         const iy = 800 + rng() * (worldSize - 1600);
-        if (Math.hypot(ix - (worldSize / 2), iy - (worldSize / 2)) < 200) continue;
+        if (Math.hypot(ix - (worldSize / 2), iy - (worldSize / 2)) < 50) continue;
 
         let clash = false;
         for (const o of islands) {
@@ -144,25 +152,17 @@ function seededRandom(seed) {
 }
 
 function computeRoomStats(room) {
-    let aliveCount = 0;
-
-    for (const uid in room.players) {
-        const p = room.players[uid];
-        if (p.online && p.hp > 0) aliveCount++;
-    }
-
     const wave = room.wave || 1;
     const waveSpeed = Math.min(BOT_BASE_SPEED + (wave * 0.03), BOT_MAX_SPEED);
-    
+
     return {
-        avgLevel: wave, 
-        aliveCount: aliveCount,
-        maxSpeed: 15.0, 
+        avgLevel: wave,
+        maxSpeed: 15.0,
         normalSpeed: waveSpeed,
-        chaserSpeed: Math.min(waveSpeed * 1.2, BOT_MAX_SPEED + 2), 
+        chaserSpeed: Math.min(waveSpeed * 1.2, BOT_MAX_SPEED + 2),
         predictionTime: 0.3 + Math.min(1.0, wave / 100) * 0.3,
         missChance: Math.max(0, 0.4 - wave / 200),
-        torpedoSpeed: 22.0, 
+        torpedoSpeed: 22.0,
         botAbility: (() => {
             if (wave >= 100) return 'shield';
             if (wave >= 50) return 'barrage';
@@ -173,7 +173,7 @@ function computeRoomStats(room) {
 }
 
 function getRoomAvgLevel(room) {
-    return room.wave || 1; 
+    return room.wave || 1;
 }
 
 function getRoomMaxSpeed(room) {
@@ -323,9 +323,6 @@ function createRoom(mode, startWave) {
     return id;
 }
 
-// ═══════════════════════════════════════════════════════════
-// دالة مساعدة: هل الموقع داخل جزيرة؟
-// ═══════════════════════════════════════════════════════════
 function isInsideIsland(x, y, islData) {
     for (let i = 0; i < islData.length; i++) {
         if (dist2(x, y, islData[i].x, islData[i].y) < islData[i].r100sq) {
@@ -335,20 +332,15 @@ function isInsideIsland(x, y, islData) {
     return false;
 }
 
-// ═══════════════════════════════════════════════════════════
-// محاولة الخروج من الحصار بحركة حلزونية متعددة الاتجاهات
-// ═══════════════════════════════════════════════════════════
 function tryUnstuck(bot, step, islData) {
-    // الاتجاه الأساسي: من البوت إلى آخر موقع معروف للمركز
     const baseAngle = Math.atan2(bot.y - (bot.anchorY || bot.y), bot.x - (bot.anchorX || bot.x));
 
-    // 8 اتجاهات حلزونية
-    const dirs = [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2, 
+    const dirs = [0, Math.PI / 4, -Math.PI / 4, Math.PI / 2, -Math.PI / 2,
                   3 * Math.PI / 4, -3 * Math.PI / 4, Math.PI];
 
     for (const offset of dirs) {
         const angle = baseAngle + offset;
-        const tx = bot.x + Math.cos(angle) * step * 3;   // خطوة كبيرة 3x
+        const tx = bot.x + Math.cos(angle) * step * 3;
         const ty = bot.y + Math.sin(angle) * step * 3;
 
         if (!isInsideIsland(tx, ty, islData)) {
@@ -358,7 +350,6 @@ function tryUnstuck(bot, step, islData) {
         }
     }
 
-    // إذا فشلت كل المحاولات القريبة، جرب مواقع أبعد (حلزون)
     for (let r = 2; r <= 5; r++) {
         for (const offset of dirs) {
             const angle = baseAngle + offset;
@@ -381,151 +372,197 @@ function startBotTick(roomId) {
     if (!room) return;
 
     room.botTickInterval = setInterval(() => {
-        const r = rooms[roomId];
-        if (!r || r.wiped) {
-            if (room.botTickInterval) {
-                clearInterval(room.botTickInterval);
-                room.botTickInterval = null;
+        try {
+            const r = rooms[roomId];
+            if (!r || r.wiped) {
+                if (room.botTickInterval) {
+                    clearInterval(room.botTickInterval);
+                    room.botTickInterval = null;
+                }
+                return;
             }
-            return;
-        }
 
-        const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
-        if (playersList.length === 0) {
-            io.to(roomId).emit('bots_update', []);
-            return;
-        }
+            const playersList = Object.values(r.players).filter(p => p.hp > 0 && p.online);
+            if (playersList.length === 0) {
+                io.to(roomId).emit('bots_update', []);
+                return;
+            }
 
-        for (let i = 0; i < playersList.length; i++) {
-            const p = playersList[i];
-            p.vx = p.x - (p.lastX || p.x);
-            p.vy = p.y - (p.lastY || p.y);
-            p.lastX = p.x;
-            p.lastY = p.y;
-        }
-
-        const islData = r.islData || [];
-        const stats = computeRoomStats(r);
-
-        const chaserSpeed = stats.chaserSpeed;
-        const normalSpeed = stats.normalSpeed;
-        const predictionTime = stats.predictionTime;
-        const missChance = stats.missChance;
-        const botAbility = stats.botAbility;
-        const torpedoSpeed = stats.torpedoSpeed;
-        const fireCooldown = stats.fireCooldown;
-        const now = Date.now();
-
-        for (const botId in r.bots) {
-            const bot = r.bots[botId];
-            if (bot.hp <= 0) continue;
-
-            let closest = null, closestD2 = Infinity;
             for (let i = 0; i < playersList.length; i++) {
                 const p = playersList[i];
-                const d2 = dist2(p.x, p.y, bot.x, bot.y);
-                if (d2 < closestD2) { closestD2 = d2; closest = p; }
+                p.vx = p.x - (p.lastX || p.x);
+                p.vy = p.y - (p.lastY || p.y);
+                p.lastX = p.x;
+                p.lastY = p.y;
             }
-            if (!closest) continue;
 
-            let dx = closest.x - bot.x;
-            let dy = closest.y - bot.y;
-            let len = Math.sqrt(closestD2) || 1;
+            const islData = r.islData || [];
+            const stats = computeRoomStats(r);
 
-            let speed = bot.isChaser ? chaserSpeed : normalSpeed;
+            const chaserSpeed = stats.chaserSpeed;
+            const normalSpeed = stats.normalSpeed;
+            const predictionTime = stats.predictionTime;
+            const missChance = stats.missChance;
+            const botAbility = stats.botAbility;
+            const torpedoSpeed = stats.torpedoSpeed;
+            const fireCooldown = stats.fireCooldown;
+            const now = Date.now();
 
-            const step = speed * FPS_RATIO;
+            for (const botId in r.bots) {
+                const bot = r.bots[botId];
+                if (!bot || bot.hp <= 0) continue;
 
-            let moveDx = 0, moveDy = 0;
-            const role = bot.role || 'pusher';
+                let closest = null, closestD2 = Infinity;
+                for (let i = 0; i < playersList.length; i++) {
+                    const p = playersList[i];
+                    const d2 = dist2(p.x, p.y, bot.x, bot.y);
+                    if (d2 < closestD2) { closestD2 = d2; closest = p; }
+                }
+                if (!closest) continue;
 
-            if (bot.isChaser) {
-                moveDx = dx;
-                moveDy = dy;
-                speed = chaserSpeed;
-            } else {
-                if (len > BOT_LEASH_DIST) {
+                let dx = closest.x - bot.x;
+                let dy = closest.y - bot.y;
+                let len = Math.sqrt(closestD2) || 1;
+
+                let speed = bot.isChaser ? chaserSpeed : normalSpeed;
+
+                const step = speed * FPS_RATIO;
+
+                let moveDx = 0, moveDy = 0;
+                const role = bot.role || 'pusher';
+
+                if (bot.isChaser) {
                     moveDx = dx;
                     moveDy = dy;
-                    speed *= 1.8;
-                } else if (len > BOT_FREE_ROAM_RADIUS) {
-                    moveDx = dx;
-                    moveDy = dy;
+                    speed = chaserSpeed;
                 } else {
-                    if (role === 'pusher') {
-                        moveDx = dx; moveDy = dy;
-                    } else if (role === 'flanker') {
-                        const baseAngle = Math.atan2(dy, dx);
-                        const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
-                        if (len > 2500) {
+                    if (len > BOT_LEASH_DIST) {
+                        moveDx = dx;
+                        moveDy = dy;
+                        speed *= 1.8;
+                    } else if (len > BOT_FREE_ROAM_RADIUS) {
+                        moveDx = dx;
+                        moveDy = dy;
+                    } else {
+                        if (role === 'pusher') {
                             moveDx = dx; moveDy = dy;
-                        } else {
-                            const fa = baseAngle + flankOffset;
-                            moveDx = Math.cos(fa) * len * 0.7 + dx * 0.3;
-                            moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
+                        } else if (role === 'flanker') {
+                            const baseAngle = Math.atan2(dy, dx);
+                            const flankOffset = (bot.id % 2 === 0 ? Math.PI / 3 : -Math.PI / 3);
+                            if (len > 2500) {
+                                moveDx = dx; moveDy = dy;
+                            } else {
+                                const fa = baseAngle + flankOffset;
+                                moveDx = Math.cos(fa) * len * 0.7 + dx * 0.3;
+                                moveDy = Math.sin(fa) * len * 0.7 + dy * 0.3;
+                            }
+                        } else if (role === 'sniper') {
+                            if (len > 1900) { moveDx = dx; moveDy = dy; }
+                            else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
+                            else {
+                                const cd = (bot.id % 2 === 0) ? 1 : -1;
+                                moveDx = dy * cd + dx * 0.1;
+                                moveDy = -dx * cd + dy * 0.1;
+                            }
+                        } else if (role === 'blocker') {
+                            const toPlayer = Math.atan2(dy, dx);
+                            const blockAngle = toPlayer + Math.PI / 2;
+                            moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
+                            moveDy = Math.sin(blockAngle) * 0.65 + (dy / len) * 0.35;
                         }
-                    } else if (role === 'sniper') {
-                        if (len > 1900) { moveDx = dx; moveDy = dy; }
-                        else if (len < 1300) { moveDx = -dx; moveDy = -dy; }
-                        else {
-                            const cd = (bot.id % 2 === 0) ? 1 : -1;
-                            moveDx = dy * cd + dx * 0.1;
-                            moveDy = -dx * cd + dy * 0.1;
-                        }
-                    } else if (role === 'blocker') {
-                        const toPlayer = Math.atan2(dy, dx);
-                        const blockAngle = toPlayer + Math.PI / 2;
-                        moveDx = Math.cos(blockAngle) * 0.65 + (dx / len) * 0.35;
-                        moveDy = Math.sin(blockAngle) * 0.65 + (dy / len) * 0.35;
                     }
                 }
-            }
 
-            const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
-            let nx = bot.x + (moveDx / moveLen) * step;
-            let ny = bot.y + (moveDy / moveLen) * step;
+                const moveLen = Math.sqrt(moveDx * moveDx + moveDy * moveDy) || 1;
+                let nx = bot.x + (moveDx / moveLen) * step;
+                let ny = bot.y + (moveDy / moveLen) * step;
 
-            // ═══════════════════════════════════════════════════════
-            // ⭐ كشف العلق ومحاولة الخروج بحركة حلزونية
-            // ═══════════════════════════════════════════════════════
-            if (!bot.stuckCheck) {
-                bot.stuckCheck = { lastX: bot.x, lastY: bot.y, timer: 0, stuckCount: 0 };
-                bot.anchorX = closest.x;
-                bot.anchorY = closest.y;
-            }
-
-            bot.stuckCheck.timer += TICK_MS / 1000;
-
-            // كل ثانيتين، افحص هل تحرك البوت
-            if (bot.stuckCheck.timer >= 2.0) {
-                const movedDist = Math.hypot(bot.x - bot.stuckCheck.lastX, bot.y - bot.stuckCheck.lastY);
-                
-                if (movedDist < 60) {
-                    bot.stuckCheck.stuckCount++;
-                } else {
-                    bot.stuckCheck.stuckCount = 0;
+                if (!bot.stuckCheck) {
+                    bot.stuckCheck = { lastX: bot.x, lastY: bot.y, timer: 0, stuckCount: 0 };
+                    bot.anchorX = closest.x;
+                    bot.anchorY = closest.y;
                 }
-                
-                bot.stuckCheck.lastX = bot.x;
-                bot.stuckCheck.lastY = bot.y;
-                bot.stuckCheck.timer = 0;
-            }
 
-            // إذا عالق لأكثر من 3 ثوانٍ → حاول الخروج
-            if (bot.stuckCheck.stuckCount >= 2) {
-                bot.anchorX = closest.x;
-                bot.anchorY = closest.y;
-                
-                // محاولة الخروج بحركة حلزونية
-                tryUnstuck(bot, step, islData);
-                
-                // أعد ضبط المؤقت
-                bot.stuckCheck.stuckCount = 0;
-                bot.stuckCheck.lastX = bot.x;
-                bot.stuckCheck.lastY = bot.y;
+                bot.stuckCheck.timer += TICK_MS / 1000;
 
-                // تخطى الفحص العادي لهذه الدورة (البوت تحرك)
-                const targetHeading = Math.atan2(closest.x - bot.x, -(closest.y - bot.y)) * 180 / Math.PI;
+                if (bot.stuckCheck.timer >= 2.0) {
+                    const movedDist = Math.hypot(bot.x - bot.stuckCheck.lastX, bot.y - bot.stuckCheck.lastY);
+
+                    if (movedDist < 60) {
+                        bot.stuckCheck.stuckCount++;
+                    } else {
+                        bot.stuckCheck.stuckCount = 0;
+                    }
+
+                    bot.stuckCheck.lastX = bot.x;
+                    bot.stuckCheck.lastY = bot.y;
+                    bot.stuckCheck.timer = 0;
+                }
+
+                if (bot.stuckCheck.stuckCount >= 2) {
+                    bot.anchorX = closest.x;
+                    bot.anchorY = closest.y;
+
+                    tryUnstuck(bot, step, islData);
+
+                    bot.stuckCheck.stuckCount = 0;
+                    bot.stuckCheck.lastX = bot.x;
+                    bot.stuckCheck.lastY = bot.y;
+
+                    const targetHeading = Math.atan2(closest.x - bot.x, -(closest.y - bot.y)) * 180 / Math.PI;
+                    if (bot.isChaser) {
+                        let diff = targetHeading - bot.heading;
+                        while (diff > 180) diff -= 360;
+                        while (diff < -180) diff += 360;
+                        bot.heading += diff * 0.4;
+                    } else {
+                        bot.heading = targetHeading;
+                    }
+
+                    continue;
+                }
+
+                let blocked = false;
+                for (let i = 0; i < islData.length; i++) {
+                    if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                        blocked = true; break;
+                    }
+                }
+
+                if (!blocked) {
+                    bot.x = nx; bot.y = ny;
+                } else {
+                    const perp1 = Math.atan2(moveDy, moveDx) + Math.PI / 2;
+                    const tX1 = bot.x + Math.cos(perp1) * step;
+                    const tY1 = bot.y + Math.sin(perp1) * step;
+                    let b1 = false;
+                    for (let i = 0; i < islData.length; i++) {
+                        if (dist2(tX1, tY1, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                            b1 = true; break;
+                        }
+                    }
+                    if (!b1) {
+                        bot.x = tX1; bot.y = tY1;
+                    } else {
+                        const perp2 = Math.atan2(moveDy, moveDx) - Math.PI / 2;
+                        const tX2 = bot.x + Math.cos(perp2) * step;
+                        const tY2 = bot.y + Math.sin(perp2) * step;
+                        let b2 = false;
+                        for (let i = 0; i < islData.length; i++) {
+                            if (dist2(tX2, tY2, islData[i].x, islData[i].y) < islData[i].r100sq) {
+                                b2 = true; break;
+                            }
+                        }
+                        if (!b2) {
+                            bot.x = tX2; bot.y = tY2;
+                        }
+                    }
+                }
+
+                if (bot.x < 700) bot.x = 700; else if (bot.x > r.worldSize - 700) bot.x = r.worldSize - 700;
+                if (bot.y < 700) bot.y = 700; else if (bot.y > r.worldSize - 700) bot.y = r.worldSize - 700;
+
+                const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
                 if (bot.isChaser) {
                     let diff = targetHeading - bot.heading;
                     while (diff > 180) diff -= 360;
@@ -535,172 +572,117 @@ function startBotTick(roomId) {
                     bot.heading = targetHeading;
                 }
 
-                continue;  // انتقل للبوت التالي، لا تكمل الحركة العادية
-            }
+                bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
 
-            // ═══════════════════════════════════════════════════════
-            // الحركة العادية
-            // ═══════════════════════════════════════════════════════
-            let blocked = false;
-            for (let i = 0; i < islData.length; i++) {
-                if (dist2(nx, ny, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                    blocked = true; break;
-                }
-            }
+                if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
+                    bot.abilityTimer = 0;
 
-            if (!blocked) {
-                bot.x = nx; bot.y = ny;
-            } else {
-                // حاول الانحراف يميناً
-                const perp1 = Math.atan2(moveDy, moveDx) + Math.PI / 2;
-                const tX1 = bot.x + Math.cos(perp1) * step;
-                const tY1 = bot.y + Math.sin(perp1) * step;
-                let b1 = false;
-                for (let i = 0; i < islData.length; i++) {
-                    if (dist2(tX1, tY1, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                        b1 = true; break;
-                    }
-                }
-                if (!b1) {
-                    bot.x = tX1; bot.y = tY1;
-                } else {
-                    // حاول الانحراف يساراً
-                    const perp2 = Math.atan2(moveDy, moveDx) - Math.PI / 2;
-                    const tX2 = bot.x + Math.cos(perp2) * step;
-                    const tY2 = bot.y + Math.sin(perp2) * step;
-                    let b2 = false;
-                    for (let i = 0; i < islData.length; i++) {
-                        if (dist2(tX2, tY2, islData[i].x, islData[i].y) < islData[i].r100sq) {
-                            b2 = true; break;
+                    if (botAbility === 'barrage') {
+                        const pTime = predictionTime * FPS_RATIO;
+                        const tx = closest.x + (closest.vx * pTime);
+                        const ty = closest.y + (closest.vy * pTime);
+                        const capturedBotId = bot.id;
+                        const capturedX = Math.round(bot.x);
+                        const capturedY = Math.round(bot.y);
+
+                        for (let k = 0; k < 3; k++) {
+                            safeSetTimeout(roomId, () => {
+                                const rr = rooms[roomId];
+                                if (!rr || rr.wiped) return;
+                                io.to(roomId).emit('bot_fired', {
+                                    botId: capturedBotId,
+                                    x: capturedX, y: capturedY,
+                                    targetX: Math.round(tx + rnd(-80, 80)),
+                                    targetY: Math.round(ty + rnd(-80, 80)),
+                                    speed: torpedoSpeed
+                                });
+                            }, k * 150);
                         }
+                        io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'barrage' });
+                    } else if (botAbility === 'shield') {
+                        bot.shieldUntil = now + 2000;
+                        io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'shield' });
                     }
-                    if (!b2) {
-                        bot.x = tX2; bot.y = tY2;
-                    }
-                    // إذا فشل، البوت يبقى مكانه (لكن stuckCheck سيكتشفه)
                 }
-            }
 
-            if (bot.x < 700) bot.x = 700; else if (bot.x > r.worldSize - 700) bot.x = r.worldSize - 700;
-            if (bot.y < 700) bot.y = 700; else if (bot.y > r.worldSize - 700) bot.y = r.worldSize - 700;
+                bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
+                const fireRange = bot.isChaser ? 3000 : 2000;
 
-            const targetHeading = Math.atan2(dx, -dy) * 180 / Math.PI;
-            if (bot.isChaser) {
-                let diff = targetHeading - bot.heading;
-                while (diff > 180) diff -= 360;
-                while (diff < -180) diff += 360;
-                bot.heading += diff * 0.4;
-            } else {
-                bot.heading = targetHeading;
-            }
+                if (bot.fireTimer > fireCooldown && closestD2 < fireRange * fireRange) {
+                    bot.fireTimer = 0;
 
-            bot.abilityTimer = (bot.abilityTimer || 0) + (TICK_MS / 1000);
-
-            if (botAbility !== 'none' && bot.abilityTimer > 5.0 && closestD2 < 2500 * 2500) {
-                bot.abilityTimer = 0;
-
-                if (botAbility === 'barrage') {
                     const pTime = predictionTime * FPS_RATIO;
-                    const tx = closest.x + (closest.vx * pTime);
-                    const ty = closest.y + (closest.vy * pTime);
-                    const capturedBotId = bot.id;
-                    const capturedX = Math.round(bot.x);
-                    const capturedY = Math.round(bot.y);
-                    
-                    for (let k = 0; k < 3; k++) {
-                        safeSetTimeout(() => {
-                            const rr = rooms[roomId];
-                            if (!rr || rr.wiped) return;
-                            io.to(roomId).emit('bot_fired', {
-                                botId: capturedBotId,
-                                x: capturedX, y: capturedY,
-                                targetX: Math.round(tx + rnd(-80, 80)),
-                                targetY: Math.round(ty + rnd(-80, 80)),
-                                speed: torpedoSpeed
-                            });
-                        }, k * 150);
+                    let targetX = closest.x + (closest.vx * pTime);
+                    let targetY = closest.y + (closest.vy * pTime);
+
+                    if (Math.random() < missChance) {
+                        const missAmount = 300;
+                        targetX += rnd(-missAmount, missAmount);
+                        targetY += rnd(-missAmount, missAmount);
                     }
-                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'barrage' });
-                } else if (botAbility === 'shield') {
-                    bot.shieldUntil = now + 2000;
-                    io.to(roomId).emit('bot_ability', { botId: bot.id, ability: 'shield' });
+
+                    io.to(roomId).emit('bot_fired', {
+                        botId: bot.id,
+                        x: Math.round(bot.x),
+                        y: Math.round(bot.y),
+                        targetX: Math.round(targetX),
+                        targetY: Math.round(targetY),
+                        speed: torpedoSpeed
+                    });
                 }
             }
 
-            bot.fireTimer = (bot.fireTimer || 0) + (TICK_MS / 1000);
-            const fireRange = bot.isChaser ? 3000 : 2000;
+            const changedBots = [];
+            for (const botId in r.bots) {
+                const b = r.bots[botId];
+                if (!b) continue;
 
-            if (bot.fireTimer > fireCooldown && closestD2 < fireRange * fireRange) {
-                bot.fireTimer = 0;
+                const roundedX = Math.round(b.x);
+                const roundedY = Math.round(b.y);
+                const roundedHeading = Math.round(b.heading);
+                const shielded = !!(b.shieldUntil && now < b.shieldUntil);
 
-                const pTime = predictionTime * FPS_RATIO;
-                let targetX = closest.x + (closest.vx * pTime);
-                let targetY = closest.y + (closest.vy * pTime);
+                if (!b.lastSent ||
+                    b.lastSent.x !== roundedX ||
+                    b.lastSent.y !== roundedY ||
+                    b.lastSent.hp !== b.hp ||
+                    b.lastSent.heading !== roundedHeading ||
+                    b.lastSent.shielded !== shielded) {
 
-                if (Math.random() < missChance) {
-                    const missAmount = 300;
-                    targetX += rnd(-missAmount, missAmount);
-                    targetY += rnd(-missAmount, missAmount);
+                    changedBots.push({
+                        id: b.id,
+                        x: roundedX,
+                        y: roundedY,
+                        heading: roundedHeading,
+                        hp: b.hp,
+                        role: b.role || 'pusher',
+                        isChaser: !!b.isChaser,
+                        shielded: shielded
+                    });
+
+                    b.lastSent = {
+                        x: roundedX,
+                        y: roundedY,
+                        hp: b.hp,
+                        heading: roundedHeading,
+                        shielded: shielded
+                    };
                 }
-
-                io.to(roomId).emit('bot_fired', {
-                    botId: bot.id,
-                    x: Math.round(bot.x),
-                    y: Math.round(bot.y),
-                    targetX: Math.round(targetX),
-                    targetY: Math.round(targetY),
-                    speed: torpedoSpeed
-                });
             }
-        }
 
-        const changedBots = [];
-        for (const botId in r.bots) {
-            const b = r.bots[botId];
-
-            const roundedX = Math.round(b.x);
-            const roundedY = Math.round(b.y);
-            const roundedHeading = Math.round(b.heading);
-            const shielded = !!(b.shieldUntil && now < b.shieldUntil);
-
-            if (!b.lastSent ||
-                b.lastSent.x !== roundedX ||
-                b.lastSent.y !== roundedY ||
-                b.lastSent.hp !== b.hp ||
-                b.lastSent.heading !== roundedHeading ||
-                b.lastSent.shielded !== shielded) {
-
-                changedBots.push({
-                    id: b.id,
-                    x: roundedX,
-                    y: roundedY,
-                    heading: roundedHeading,
-                    hp: b.hp,
-                    role: b.role || 'pusher',
-                    isChaser: !!b.isChaser,
-                    shielded: shielded
-                });
-
-                b.lastSent = {
-                    x: roundedX,
-                    y: roundedY,
-                    hp: b.hp,
-                    heading: roundedHeading,
-                    shielded: shielded
-                };
+            if (changedBots.length > 0) {
+                io.to(roomId).emit('bots_update', changedBots);
             }
+        } catch (err) {
+            // تجاهل إطار واحد فقط، لا نوقف interval
         }
-
-        if (changedBots.length > 0) {
-            io.to(roomId).emit('bots_update', changedBots);
-        }
-
     }, TICK_MS);
 }
 
 function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, playerHeading = 0) {
     const sp = randomSpawnNearSafe(cx, cy, minD, maxD, room.islands, room.worldSize, playerHeading);
     const id = room.botIdCounter++;
+    const spawnIndex = room.botsSpawnedThisWave;
     room.botsSpawnedThisWave++;
 
     room.bots[id] = {
@@ -709,12 +691,12 @@ function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, pla
         hp: hpVal,
         fireTimer: 0,
         isChaser: isSurprise,
-        role: isSurprise ? 'pusher' : assignBotRole(room.botsSpawnedThisWave, room.totalBotsForWave),
+        role: isSurprise ? 'pusher' : assignBotRole(spawnIndex, room.totalBotsForWave),
         abilityTimer: rnd(0, 3),
         dashingUntil: 0,
         shieldUntil: 0,
         lastSent: null,
-        // ⭐ جديد: تتبع العلق
+
         stuckCheck: null,
         anchorX: cx,
         anchorY: cy
@@ -777,6 +759,17 @@ let lastFetch = 0;
 const CACHE_MS = 10000;
 let pendingLeaderboardFetch = null;
 
+async function fetchWithTimeout(url, options = {}, ms = 5000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        const res = await fetch(url, { ...options, signal: controller.signal });
+        return res;
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function fetchLeaderboard() {
     const now = Date.now();
     if (now - lastFetch < CACHE_MS && cachedLeaderboard.length > 0) {
@@ -790,11 +783,11 @@ async function fetchLeaderboard() {
     pendingLeaderboardFetch = (async () => {
         try {
             const url = DB_URL + "/users.json?orderBy=\"level\"&limitToLast=5";
-            const res = await fetch(url);
+            const res = await fetchWithTimeout(url);
             if (!res.ok) return cachedLeaderboard;
             const data = await res.json();
             if (!data) return cachedLeaderboard;
-            
+
             const arr = Object.values(data).map(u => ({
                 name: (u && u.username) || "Commander",
                 kills: (u && u.total_kills) || 0,
@@ -822,7 +815,7 @@ function sendLeaderboard(roomId) {
 
 function fetchUserKills(uid, callback) {
     if (!uid) return callback(0);
-    fetch(DB_URL + "/users/" + uid + "/total_kills.json")
+    fetchWithTimeout(DB_URL + "/users/" + uid + "/total_kills.json")
         .then(res => res.json())
         .then(v => {
             const current = (typeof v === 'number') ? v : 0;
@@ -834,12 +827,12 @@ function fetchUserKills(uid, callback) {
 function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
     if (kills != null) {
-        fetch(DB_URL + "/users/" + uid + "/total_kills.json", {
+        fetchWithTimeout(DB_URL + "/users/" + uid + "/total_kills.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
         }).catch(() => {});
     }
     if (level != null && level > 0) {
-        fetch(DB_URL + "/users/" + uid + "/level.json", {
+        fetchWithTimeout(DB_URL + "/users/" + uid + "/level.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
     }
@@ -865,8 +858,8 @@ function flushWaveStats(roomId) {
 io.on('connection', (socket) => {
 
     socket.on('check_active_session', (data) => {
-        const { uid } = data || {};
-        if (!uid) {
+        const uid = data && data.uid;
+        if (!uid || typeof uid !== 'string') {
             socket.emit('no_active_session');
             return;
         }
@@ -909,7 +902,10 @@ io.on('connection', (socket) => {
     });
 
     socket.on('reconnect_session', (data) => {
-        const { uid, roomId, hullId, skinPath, finisherId } = data || {};
+        if (!data) { socket.emit('session_recovery_failed'); return; }
+        const { uid, roomId, hullId, skinPath, finisherId } = data;
+        if (!uid || !roomId) { socket.emit('session_recovery_failed'); return; }
+
         const room = rooms[roomId];
         if (!room || room.wiped) {
             socket.emit('session_recovery_failed');
@@ -992,12 +988,21 @@ io.on('connection', (socket) => {
     });
 
     socket.on('join_match', (data) => {
-        const { mode, username, uid, level, total_kills, hullId, skinPath, finisherId } = data || {};
+        if (!data) return;
+        const { mode, username, uid, level, total_kills, hullId, skinPath, finisherId } = data;
+
+        if (!uid || typeof uid !== 'string') {
+            socket.emit('mode_rejected');
+            return;
+        }
 
         if (socket.currentRoom) {
             const oldRoom = rooms[socket.currentRoom];
             if (oldRoom && socket.uid && oldRoom.players[socket.uid]) {
-                if (oldRoom.players[socket.uid].deathTimer) clearTimeout(oldRoom.players[socket.uid].deathTimer);
+                if (oldRoom.players[socket.uid].deathTimer) {
+                    clearTimeout(oldRoom.players[socket.uid].deathTimer);
+                    oldRoom.players[socket.uid].deathTimer = null;
+                }
                 delete oldRoom.players[socket.uid];
                 io.to(socket.currentRoom).emit('player_left', { id: socket.id });
                 if (Object.keys(oldRoom.players).length === 0) endRoom(socket.currentRoom);
@@ -1009,7 +1014,10 @@ io.on('connection', (socket) => {
         for (const rId in rooms) {
             const r = rooms[rId];
             if (r.players[uid]) {
-                if (r.players[uid].deathTimer) clearTimeout(r.players[uid].deathTimer);
+                if (r.players[uid].deathTimer) {
+                    clearTimeout(r.players[uid].deathTimer);
+                    r.players[uid].deathTimer = null;
+                }
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: socket.id });
                 if (Object.keys(r.players).length === 0) endRoom(rId);
@@ -1017,7 +1025,7 @@ io.on('connection', (socket) => {
         }
 
         socket.username = username || 'Commander';
-        socket.uid = uid || '';
+        socket.uid = uid;
         socket.mode = mode || '4VBOT';
         socket.startLevel = Math.max(1, level || 1);
 
@@ -1129,6 +1137,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('player_fired', (data) => {
+        if (!data || typeof data.x !== 'number' || typeof data.y !== 'number') return;
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
         const p = room.players[socket.uid];
@@ -1144,13 +1153,17 @@ io.on('connection', (socket) => {
     });
 
     socket.on('player_moved', (data) => {
+        if (!data) return;
+        if (typeof data.x !== 'number' || typeof data.y !== 'number') return;
+        if (!isFinite(data.x) || !isFinite(data.y)) return;
+
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
-        p.x = data.x; p.y = data.y; p.heading = data.heading;
-        if (data.hullId && data.hullId !== p.hullId) {
-            p.hullId = data.hullId;
-        }
+
+        p.x = data.x; p.y = data.y;
+        p.heading = typeof data.heading === 'number' && isFinite(data.heading) ? data.heading : p.heading;
+        if (data.hullId && data.hullId !== p.hullId) p.hullId = data.hullId;
         if (data.skinPath) p.skinPath = data.skinPath;
         if (data.finisherId) p.finisherId = data.finisherId;
 
@@ -1164,6 +1177,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('hit_bot', (data) => {
+        if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
         const bot = room.bots[data.botId];
@@ -1176,10 +1190,10 @@ io.on('connection', (socket) => {
 
         const p = room.players[socket.uid];
         const shipStats = getShipStats(p ? p.hullId : 'bot');
-        const playerDamage = shipStats.damage || 5; 
-        
+        const playerDamage = shipStats.damage || 5;
+
         const hitPower = playerDamage / 10.0;
-        
+
         bot.hp -= hitPower;
 
         if (bot.hp <= 0.001) {
@@ -1200,12 +1214,14 @@ io.on('connection', (socket) => {
             });
 
             if (!isWaveComplete && room.botsSpawnedThisWave < room.totalBotsForWave) {
-                const targetX = room.worldSize / 2;
-                const targetY = room.worldSize / 2;
-                const playerHeading = p ? p.heading : 0;
+                if (Object.keys(room.bots).length < MAX_BOTS_ON_FIELD) {
+                    const targetX = room.worldSize / 2;
+                    const targetY = room.worldSize / 2;
+                    const playerHeading = p ? p.heading : 0;
 
-                spawnSingleBot(room, targetX, targetY, SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
-                    botHPForRoom(room), true, playerHeading);
+                    spawnSingleBot(room, targetX, targetY, SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
+                        botHPForRoom(room), true, playerHeading);
+                }
             }
 
             if (isWaveComplete) {
@@ -1228,8 +1244,9 @@ io.on('connection', (socket) => {
                     }
                 }
 
-                setTimeout(() => {
-                    spawnWave(socket.currentRoom);
+                const roomIdForSpawn = socket.currentRoom;
+                safeSetTimeout(roomIdForSpawn, () => {
+                    spawnWave(roomIdForSpawn);
                 }, 2500);
             }
         } else {
@@ -1238,6 +1255,7 @@ io.on('connection', (socket) => {
     });
 
     socket.on('bot_hit_player', (data) => {
+        if (!data) return;
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
         const p = room.players[socket.uid];
@@ -1251,7 +1269,7 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const clientDamage = data.damage || 15;
+        const clientDamage = typeof data.damage === 'number' && isFinite(data.damage) ? data.damage : 15;
         let serverDamage;
 
         if (clientDamage > 50) {
@@ -1263,6 +1281,8 @@ io.on('connection', (socket) => {
         p.lastDamageTime = now;
         p.hp -= serverDamage;
 
+        if (!isFinite(p.hp) || p.hp < 0) p.hp = 0;
+
         if (p.hp <= 0) {
             p.hp = 0;
             io.to(socket.currentRoom).emit('player_died', { id: socket.id, name: p.name });
@@ -1270,7 +1290,7 @@ io.on('connection', (socket) => {
             const roomIdAtDeath = socket.currentRoom;
             const uidAtDeath = socket.uid;
 
-            safeSetTimeout(() => {
+            safeSetTimeout(roomIdAtDeath, () => {
                 const r = rooms[roomIdAtDeath];
                 if (!r || r.wiped) return;
 
@@ -1294,7 +1314,10 @@ io.on('connection', (socket) => {
                     flushWaveStats(roomIdAtDeath);
                     io.to(roomIdAtDeath).emit('team_wipe');
 
-                    for (const uid in r.players) { wipedRoomsLog.add(uid); }
+                    for (const uid in r.players) {
+                        wipedRoomsLog.add(uid);
+                        setTimeout(() => wipedRoomsLog.delete(uid), 5 * 60 * 1000);
+                    }
                     endRoom(roomIdAtDeath);
                     return;
                 }
@@ -1332,46 +1355,59 @@ function leaveRoom(socket, immediate) {
         return;
     }
 
-    const player = room.players[socket.uid];
+    const playerUid = socket.uid;
+    const socketId = socket.id;
+    const player = room.players[playerUid];
     if (!player) {
         cleanSocket(socket);
         return;
     }
 
     if (immediate) {
-        if (player.deathTimer) clearTimeout(player.deathTimer);
+        if (player.deathTimer) {
+            clearTimeout(player.deathTimer);
+            player.deathTimer = null;
+        }
+
+        const finalize = () => {
+            const r = rooms[roomId];
+            if (!r) return;
+            if (!r.players[playerUid]) return;
+
+            delete r.players[playerUid];
+            io.to(roomId).emit('player_left', { id: socketId });
+
+            const s = io.sockets.sockets.get(socketId);
+            if (s) {
+                s.leave(roomId);
+                cleanSocket(s);
+            }
+
+            const anyOnline = Object.values(r.players).some(pl => pl.online);
+            if (!anyOnline) endRoom(roomId);
+        };
 
         if (player.uid) {
             fetchUserKills(player.uid, (oldKills) => {
                 const newTotal = oldKills + (player.kills || 0);
                 pushUserStatsAsync(player.uid, newTotal, player.level);
-
-                delete room.players[socket.uid];
-                io.to(roomId).emit('player_left', { id: socket.id });
-                socket.leave(roomId);
-                cleanSocket(socket);
-
-                const anyOnline = Object.values(room.players).some(pl => pl.online);
-                if (!anyOnline) endRoom(roomId);
+                finalize();
             });
         } else {
-            delete room.players[socket.uid];
-            io.to(roomId).emit('player_left', { id: socket.id });
-            socket.leave(roomId);
-            cleanSocket(socket);
-
-            const anyOnline = Object.values(room.players).some(pl => pl.online);
-            if (!anyOnline) endRoom(roomId);
+            finalize();
         }
     } else {
         player.online = false;
-        io.to(roomId).emit('player_left', { id: socket.id });
+        io.to(roomId).emit('player_left', { id: socketId });
+
+        if (player.deathTimer) clearTimeout(player.deathTimer);
 
         player.deathTimer = setTimeout(() => {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
+            if (!r.players[playerUid]) return;
 
-            delete r.players[socket.uid];
+            delete r.players[playerUid];
 
             const anyOnlineAlive = Object.values(r.players).some(pl => pl.online);
             if (!anyOnlineAlive) {
@@ -1388,16 +1424,19 @@ function endRoom(roomId) {
     if (!room) return;
     room.wiped = true;
 
+    clearRoomTimeouts(roomId);
+
     if (room.botTickInterval) {
         clearInterval(room.botTickInterval);
         room.botTickInterval = null;
     }
 
-    clearRoomTimeouts(roomId);
-
     for (const uid in room.players) {
         const p = room.players[uid];
-        if (p.deathTimer) clearTimeout(p.deathTimer);
+        if (p.deathTimer) {
+            clearTimeout(p.deathTimer);
+            p.deathTimer = null;
+        }
         if (!p.id) continue;
         const s = io.sockets.sockets.get(p.id);
         if (s) {
