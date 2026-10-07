@@ -1344,7 +1344,7 @@ io.on('connection', (socket) => {
             serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
         } else {
             // ⭐ البوت يضرب بنفس قوة السفينة / 10
-            serverDamage = botDamageForRoom(room) / 10.0;
+            serverDamage = botDamageForRoom(room);
         }
 
         p.lastDamageTime = now;
