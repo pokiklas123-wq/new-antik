@@ -113,15 +113,13 @@ function getMapStats(level) {
     return { size, count };
 }
 
-// 🟢 تم التعديل: إبعاد الجزر عن الحواف الميتة لمنع انحشار البوتات
+// 🟢 التعديل الأول: إبعاد الجزر عن الحدود لمنع انحشار البوتات 
 function generateIslands(count, worldSize) {
     const islands = [];
     const rng = seededRandom(777);
     let placed = 0, attempts = 0;
-    
-    // مسافة الأمان: 700 (الحد) + 530 (أقصى تصادم) + 220 (مساحة مرور) = 1450
     const MIN_MARGIN = 1450; 
-
+    
     while (placed < count && attempts < 8000) {
         attempts++;
         const ix = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
@@ -230,6 +228,11 @@ function assignBotRole(index, total) {
     return 'blocker';
 }
 
+function botCountForWave(wave) {
+    let progress = Math.min((wave - 1) / 249.0, 1.0);
+    return Math.floor(5 + (95 * progress));
+}
+
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize, playerHeading) {
     const playerHeadingRad = (playerHeading || 0) * Math.PI / 180;
 
@@ -331,12 +334,11 @@ function isInsideIsland(x, y, islData) {
     return false;
 }
 
-// 🟢 تم التعديل: دفع البوت شعاعياً للخارج بعيداً عن مركز الجزيرة بدلاً من دفعه باتجاه اللاعب
+// 🟢 التعديل الثاني: دفع البوت للخارج بدلاً من دفعه باتجاه اللاعب
 function tryUnstuck(bot, step, islData) {
     let trappingIsland = null;
     let minD2 = Infinity;
-    
-    // البحث عن الجزيرة التي علق فيها البوت
+
     for (let i = 0; i < islData.length; i++) {
         let d2 = dist2(bot.x, bot.y, islData[i].x, islData[i].y);
         if (d2 < islData[i].r100sq * 1.5 && d2 < minD2) {
@@ -346,36 +348,30 @@ function tryUnstuck(bot, step, islData) {
     }
 
     if (trappingIsland) {
-        // حساب زاوية الهروب من مركز الجزيرة باتجاه البوت لدفع البوت للخارج
         const escapeAngle = Math.atan2(bot.y - trappingIsland.y, bot.x - trappingIsland.x);
-        
-        // محاولة دفع البوت للخارج تدريجياً
         for (let r = 2; r <= 8; r++) {
             const tx = bot.x + Math.cos(escapeAngle) * step * r;
             const ty = bot.y + Math.sin(escapeAngle) * step * r;
-
             if (!isInsideIsland(tx, ty, islData)) {
                 bot.x = tx;
                 bot.y = ty;
-                return true; 
+                return true;
             }
         }
     }
 
-    // الطريقة الاحتياطية (إذا علق في الحائط وليس في جزيرة)
     const dirs = [0, Math.PI / 2, -Math.PI / 2, Math.PI, Math.PI / 4, -Math.PI / 4];
     for (const offset of dirs) {
         const tx = bot.x + Math.cos(offset) * step * 5;
         const ty = bot.y + Math.sin(offset) * step * 5;
-        // التأكد أن نقطة الهروب ليست خلف الحدود الوهمية
-        if (tx >= 700 && ty >= 700) { 
+        if (tx >= 700 && ty >= 700) {
             if (!isInsideIsland(tx, ty, islData)) {
                 bot.x = tx; bot.y = ty;
                 return true;
             }
         }
     }
-    
+
     return false;
 }
 
