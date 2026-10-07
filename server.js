@@ -108,23 +108,86 @@ function getMapStats(level) {
 
 function generateIslands(count, worldSize) {
     const islands = [];
-    const rng = seededRandom(777);
-    let placed = 0, attempts = 0;
-    while (placed < count && attempts < 8000) {
+    const rng = seededRandom(Date.now() & 0xFFFFFF); // ← seed عشوائي لكل لعبة
+    
+    // منطقة آمنة في المركز (لا جزر)
+    const SAFE_ZONE_RADIUS = worldSize * 0.20;  // 20% من الخريطة
+    const centerX = worldSize / 2;
+    const centerY = worldSize / 2;
+    
+    // شبكة: عدد الأعمدة والصفوف
+    const gridSize = Math.ceil(Math.sqrt(count)) + 2;
+    const cellSize = worldSize / gridSize;
+    
+    let placed = 0;
+    
+    for (let gy = 0; gy < gridSize && placed < count; gy++) {
+        for (let gx = 0; gx < gridSize && placed < count; gx++) {
+            // موقع عشوائي في الخلية
+            const cellCenterX = (gx + 0.5) * cellSize;
+            const cellCenterY = (gy + 0.5) * cellSize;
+            
+            // حاول 5 مرات لوضع الجزيرة في هذه الخلية
+            for (let attempt = 0; attempt < 5; attempt++) {
+                const offsetX = (rng() - 0.5) * cellSize * 0.7;
+                const offsetY = (rng() - 0.5) * cellSize * 0.7;
+                
+                const ix = cellCenterX + offsetX;
+                const iy = cellCenterY + offsetY;
+                
+                // داخل الخريطة؟
+                if (ix < 400 || ix > worldSize - 400) continue;
+                if (iy < 400 || iy > worldSize - 400) continue;
+                
+                // خارج المنطقة الآمنة؟
+                if (Math.hypot(ix - centerX, iy - centerY) < SAFE_ZONE_RADIUS) continue;
+                
+                // لا تتراكم مع جزيرة أخرى
+                let clash = false;
+                for (const o of islands) {
+                    const dx = ix - o.x, dy = iy - o.y;
+                    // مسافة آمنة = مجموع الأنصاف + مساحة فارغة
+                    if (Math.hypot(dx, dy) < o.radius + 280 + 150) { 
+                        clash = true; break; 
+                    }
+                }
+                if (clash) continue;
+                
+                // جزيرة صغيرة نسبياً (لتجنب التراكم)
+                const r = 120 + rng() * 160;   // 120-280 (كان 160-380)
+                const h = 120 + rng() * 160;
+                
+                islands.push({
+                    x: ix, y: iy,
+                    radius: r, height: h,
+                    seed: Math.floor(rng() * 9999)
+                });
+                placed++;
+                break;
+            }
+        }
+    }
+    
+    // إذا لم نضع كل الجزر، أضف الباقي عشوائياً
+    let attempts = 0;
+    while (placed < count && attempts < 3000) {
         attempts++;
-        const ix = 800 + rng() * (worldSize - 1600);
-        const iy = 800 + rng() * (worldSize - 1600);
-        if (Math.hypot(ix - (worldSize / 2), iy - (worldSize / 2)) < 900) continue;
-
+        const ix = 400 + rng() * (worldSize - 800);
+        const iy = 400 + rng() * (worldSize - 800);
+        
+        if (Math.hypot(ix - centerX, iy - centerY) < SAFE_ZONE_RADIUS) continue;
+        
         let clash = false;
         for (const o of islands) {
-            const dx = ix - o.x, dy = iy - o.y;
-            if (Math.hypot(dx, dy) < o.radius + 400) { clash = true; break; }
+            if (Math.hypot(ix - o.x, iy - o.y) < o.radius + 280 + 100) { 
+                clash = true; break; 
+            }
         }
         if (clash) continue;
-
-        const r = 160 + rng() * 220;
-        const h = 140 + rng() * 180;
+        
+        const r = 120 + rng() * 160;
+        const h = 120 + rng() * 160;
+        
         islands.push({
             x: ix, y: iy,
             radius: r, height: h,
@@ -132,6 +195,7 @@ function generateIslands(count, worldSize) {
         });
         placed++;
     }
+    
     return islands;
 }
 
