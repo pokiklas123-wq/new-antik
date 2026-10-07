@@ -41,7 +41,7 @@ const SURPRISE_SPAWN_MAX = 6000;
 
 // ⭐ قيم السفن (HP × 10)
 const SHIPS_CONFIG = {
-    'bot':               { hp:  100, speed: 10.0, damage:  10 },
+    'bot':               { hp:  10, speed: 10.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
     'devilsfangs':       { hp:  300, speed: 12.0, damage:  30 },
     'finish':            { hp:  400, speed: 13.0, damage:  40 },
