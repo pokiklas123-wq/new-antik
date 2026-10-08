@@ -59,7 +59,7 @@ const SHIPS_CONFIG = {
     'sovereignabysspro': { hp: 1600, speed: 20.0, damage: 160 },
     'sport':             { hp: 1700, speed: 20.5, damage: 170 },
     'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
-    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 },
+    'dumpling':          { hp: 19000, speed: 25.5, damage: 1990 },
     'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
 
@@ -1260,7 +1260,7 @@ io.on('connection', (socket) => {
         const shipStats = getShipStats(p ? p.hullId : 'bot');
         const playerDamage = shipStats.damage || 10;
 
-        const hitPower = playerDamage;
+        const hitPower = playerDamage *2;
 
         bot.hp -= hitPower;
 
