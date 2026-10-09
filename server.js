@@ -39,6 +39,12 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
+// ✅ [FIX #3] حدود الغش والتحقق
+const HIT_BOT_MIN_INTERVAL_MS = 40;         // أدنى فاصل بين ضربتين
+const PLAYER_MAX_DIST_PER_SEC = 60.0;       // أقصى مسافة في الثانية (60 م/ث)
+const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.2; // هامش 200ms
+const PLAYER_DAMAGE_MAX_PER_HIT = 999999;   // حد أقصى لضربة الوحش
+
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
@@ -89,6 +95,9 @@ const onlineUsers = new Map();
 const activeParties = new Map();
 const userPartyMap = new Map();
 const partyRoomMap = new Map();
+
+// ✅ [FIX #2] أقفال لمنع تسريب الغرف الميتة
+const partyRoomLocks = new Map();
 
 function getBotStatsForWave(wave) {
     const wv = Math.max(1, wave);
@@ -205,14 +214,6 @@ function generateIslands(count, worldSize) {
     return islands;
 }
 
-function seededRandom(seed) {
-    let s = seed >>> 0;
-    return function () {
-        s = (s * 1664525 + 1013904223) >>> 0;
-        return s / 4294967296;
-    };
-}
-
 function computeRoomStats(room) {
     const wave = room.wave || 1;
     const botStats = getBotStatsForWave(wave);
@@ -235,10 +236,6 @@ function computeRoomStats(room) {
     };
 }
 
-function getRoomAvgLevel(room) {
-    return room.wave || 1;
-}
-
 function getRoomMaxSpeed(room) {
     let maxSpd = 10.0;
     for (const uid in room.players) {
@@ -254,12 +251,6 @@ function getRoomMaxSpeed(room) {
 function getTorpedoSpeed(room) {
     const wv = room.wave || 1;
     return Math.min(22.0 + Math.floor(wv / 20), TORPEDO_MAX_SPEED);
-}
-
-function botSpeedForRoom(room) {
-    const wv = room.wave || 1;
-    const botStats = getBotStatsForWave(wv);
-    return botStats.speed;
 }
 
 function botHPForRoom(room) {
@@ -349,11 +340,20 @@ function cleanSocket(socket) {
     socket.startLevel = null;
 }
 
-function findOpenRoom(mode) {
+// ✅ [FIX #1] فلترة الغرف حسب partyId — الأهم!
+function findOpenRoom(mode, partyId) {
     for (const id in rooms) {
         const r = rooms[id];
         if (r.mode !== mode) continue;
         if (r.wiped) continue;
+
+        // ✅ لو الغرفة فيها فريق، ما يدخلها إلا نفس الفريق
+        if (r.partyId) {
+            if (!partyId || r.partyId !== partyId) continue;
+        }
+        // ✅ لو اللاعب في فريق، لا يدخل غرفة منفردة
+        if (partyId && !r.partyId) continue;
+
         if (mode === '1VBOT' && Object.keys(r.players).length === 0) return id;
         if (mode === '4VBOT' && Object.keys(r.players).length < MAX_PLAYERS_4V) return id;
     }
@@ -384,7 +384,8 @@ function createRoom(mode, startWave, partyId = null) {
         totalBotsForWave: 0,
         botsSpawnedThisWave: 0,
         botsKilledThisWave: 0,
-        partyId: partyId
+        partyId: partyId,
+        createdAt: Date.now()
     };
     startBotTick(id);
     return id;
@@ -497,7 +498,6 @@ function startBotTick(roomId) {
                 let len = Math.sqrt(closestD2) || 1;
 
                 let speed = bot.isChaser ? chaserSpeed : normalSpeed;
-
                 const step = speed * FPS_RATIO;
 
                 let moveDx = 0, moveDy = 0;
@@ -943,7 +943,21 @@ function handleUserLeavingParty(socket, uid, partyId) {
 
     if (party.members.length === 0) {
         activeParties.delete(partyId);
-        partyRoomMap.delete(partyId);
+        // ✅ [FIX #2] تنظيف غرفة الفريق نهائياً عند فراغه
+        const roomId = partyRoomMap.get(partyId);
+        if (roomId) {
+            const r = rooms[roomId];
+            if (r) {
+                // لو الغرفة فيها لاعبون من خارج الحفلة، لا نمسها
+                const strangers = Object.values(r.players).filter(p => !p.uid);
+                if (strangers.length === 0 && Object.keys(r.players).length === 0) {
+                    endRoom(roomId);
+                } else {
+                    r.partyId = null;
+                }
+            }
+            partyRoomMap.delete(partyId);
+        }
     } else {
         if (party.leaderUid === uid) {
             party.members.sort((a, b) => b.level - a.level);
@@ -957,7 +971,6 @@ function handleUserLeavingParty(socket, uid, partyId) {
 
 io.on('connection', (socket) => {
 
-    // ✅ إصلاح مشكل 2: تنظيف الغرفة عند الانقطاع
     socket.on('disconnect', () => {
         if (socket.uid) {
             onlineUsers.delete(socket.uid);
@@ -974,7 +987,6 @@ io.on('connection', (socket) => {
                 }
             }
 
-            // ✅ تنظيف الغرفة
             const roomId = socket.currentRoom;
             const uid = socket.uid;
             if (roomId && rooms[roomId] && rooms[roomId].players[uid]) {
@@ -1201,13 +1213,28 @@ io.on('connection', (socket) => {
         socket.emit("party_update", party);
     });
 
+    // ✅ [FIX #1] قائد الفريق يطلب بدء المباراة — إنشاء الغرفة مسبقاً
     socket.on("party_start_matchmaking", (data) => {
         if (!data) return;
         const { partyId, mode } = data;
         const party = activeParties.get(partyId);
         if (!party) return;
         if (party.leaderUid !== socket.uid) return;
-        io.to(partyId).emit("party_matchmaking_started", { mode: mode });
+
+        // لو الغرفة موجودة مسبقاً، أعد استخدامها
+        let existingRoomId = partyRoomMap.get(partyId);
+        if (existingRoomId && rooms[existingRoomId] && !rooms[existingRoomId].wiped) {
+            io.to(partyId).emit("party_matchmaking_started", { mode, roomId: existingRoomId });
+            return;
+        }
+
+        // أنشئ غرفة الفريق فوراً — قبل أن يدخلها أي عضو
+        const leaderPlayer = party.members.find(m => m.uid === party.leaderUid);
+        const startLevel = leaderPlayer ? leaderPlayer.level : 1;
+        const newRoomId = createRoom(mode, startLevel + 1, partyId);
+        partyRoomMap.set(partyId, newRoomId);
+
+        io.to(partyId).emit("party_matchmaking_started", { mode, roomId: newRoomId });
     });
 
     socket.on("party_cancel_matchmaking", (data) => {
@@ -1396,24 +1423,30 @@ io.on('connection', (socket) => {
             return;
         }
 
+        // ✅ [FIX #1] منطق الانضمام المحسّن
         let roomId = null;
         if (partyId) {
+            // ✅ الفريق: استخدم غرفة الفريق المحجوزة، وإلا أنشئ واحدة
             roomId = partyRoomMap.get(partyId);
             if (roomId && (!rooms[roomId] || rooms[roomId].wiped)) {
                 partyRoomMap.delete(partyId);
                 roomId = null;
             }
             if (!roomId) {
-                roomId = findOpenRoom(socket.mode);
-                if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
+                roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
                 partyRoomMap.set(partyId, roomId);
             }
         } else {
-            roomId = findOpenRoom(socket.mode);
+            // ✅ لاعب منفرد: لا يدخل غرفة فريق
+            roomId = findOpenRoom(socket.mode, null);
             if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
         }
 
         const room = rooms[roomId];
+        if (!room) {
+            socket.emit('mode_rejected');
+            return;
+        }
 
         socket.join(roomId);
         socket.currentRoom = roomId;
@@ -1452,7 +1485,9 @@ io.on('connection', (socket) => {
             finisherId: finisherId || 'none',
             vx: 0, vy: 0,
             lastX: sx, lastY: sy,
-            lastDamageTime: 0
+            lastDamageTime: 0,
+            lastHitBotTime: 0,
+            lastMoveTime: Date.now()
         };
 
         socket.emit('match_found', {
@@ -1528,6 +1563,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ✅ [FIX #4] التحقق من صحة حركة اللاعب (منع الغش بالتنقل)
     socket.on('player_moved', (data) => {
         if (!data) return;
         if (typeof data.x !== 'number' || typeof data.y !== 'number') return;
@@ -1536,6 +1572,20 @@ io.on('connection', (socket) => {
         const room = rooms[socket.currentRoom];
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
+
+        // تحقق من الفيزياء
+        const dx = data.x - p.x;
+        const dy = data.y - p.y;
+        const distSq = dx * dx + dy * dy;
+        const maxAllowed = PLAYER_MAX_DIST_PER_PACKET;
+        if (distSq > maxAllowed * maxAllowed) {
+            // تجاهل الحركة المشبوهة (احتمال غش)
+            return;
+        }
+
+        // التحقق من البقاء داخل حدود العالم
+        const ws = room.worldSize;
+        if (data.x < 0 || data.y < 0 || data.x > ws || data.y > ws) return;
 
         p.x = data.x; p.y = data.y;
         p.heading = typeof data.heading === 'number' && isFinite(data.heading) ? data.heading : p.heading;
@@ -1552,6 +1602,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ✅ [FIX #3] Rate Limiting + التحقق من الضرر
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1559,15 +1610,21 @@ io.on('connection', (socket) => {
         const bot = room.bots[data.botId];
         if (!bot || bot.hp <= 0) return;
 
-        if (bot.shieldUntil && Date.now() < bot.shieldUntil) {
+        const p = room.players[socket.uid];
+        if (!p) return;
+
+        const now = Date.now();
+        // منع الضرب المتكرر السريع
+        if (p.lastHitBotTime && (now - p.lastHitBotTime) < HIT_BOT_MIN_INTERVAL_MS) return;
+        p.lastHitBotTime = now;
+
+        if (bot.shieldUntil && now < bot.shieldUntil) {
             io.to(socket.id).emit('bot_shield_block', { botId: data.botId });
             return;
         }
 
-        const p = room.players[socket.uid];
-        const shipStats = getShipStats(p ? p.hullId : 'bot');
+        const shipStats = getShipStats(p.hullId);
         const playerDamage = shipStats.damage || 10;
-
         const hitPower = playerDamage * 2;
 
         bot.hp -= hitPower;
@@ -1630,6 +1687,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ✅ [FIX #5] التحقق الصارم من ضرر الوحوش
     socket.on('bot_hit_player', (data) => {
         if (!data) return;
         const room = rooms[socket.currentRoom];
@@ -1645,13 +1703,12 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const clientDamage = typeof data.damage === 'number' && isFinite(data.damage) ? data.damage : 10;
-        let serverDamage;
+        // نثق بالسيرفر فقط — نتجاهل قيمة العميل تماماً
+        let serverDamage = botDamageForRoom(room);
 
-        if (clientDamage > 50) {
-            serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
-        } else {
-            serverDamage = botDamageForRoom(room);
+        // استثناء: ضرر الاصطدام بالجزيرة (يمكن للعميل إعلامنا بذلك صراحة)
+        if (data.isCrash === true) {
+            serverDamage = Math.max(serverDamage, p.maxHp * 0.4);
         }
 
         p.lastDamageTime = now;
@@ -1722,7 +1779,6 @@ io.on('connection', (socket) => {
         leaveRoom(socket, true);
     });
 
-    // ✅ إصلاح مشكل 1: temp_leave_match يُبقي اللاعب 60 ثانية للعودة
     socket.on('temp_leave_match', () => {
         leaveRoom(socket, false);
     });
@@ -1814,8 +1870,12 @@ function endRoom(roomId) {
         room.botTickInterval = null;
     }
 
+    // ✅ [FIX #2] تنظيف مرجع الغرفة من الفريق
     if (room.partyId) {
-        partyRoomMap.delete(room.partyId);
+        const currentMapped = partyRoomMap.get(room.partyId);
+        if (currentMapped === roomId) {
+            partyRoomMap.delete(room.partyId);
+        }
     }
 
     for (const uid in room.players) {
@@ -1835,8 +1895,13 @@ function endRoom(roomId) {
 }
 
 setInterval(() => {
+    const now = Date.now();
     for (const id in rooms) {
-        if (Object.keys(rooms[id].players).length === 0) endRoom(id);
+        const r = rooms[id];
+        // ✅ [FIX #2] الغرفة الفارغة تُحذف بعد 30 ثانية كحد أدنى من الإنشاء (لتفادي سباق التسجيل)
+        if (Object.keys(r.players).length === 0 && (now - r.createdAt) > 30000) {
+            endRoom(id);
+        }
     }
 }, 60000);
 
