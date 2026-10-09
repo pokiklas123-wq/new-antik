@@ -957,9 +957,11 @@ function handleUserLeavingParty(socket, uid, partyId) {
 
 io.on('connection', (socket) => {
 
+    // ✅ إصلاح مشكل 2: تنظيف الغرفة عند الانقطاع
     socket.on('disconnect', () => {
         if (socket.uid) {
             onlineUsers.delete(socket.uid);
+
             const partyId = userPartyMap.get(socket.uid);
             if (partyId) {
                 const party = activeParties.get(partyId);
@@ -970,6 +972,31 @@ io.on('connection', (socket) => {
                         io.to(partyId).emit("party_update", party);
                     }
                 }
+            }
+
+            // ✅ تنظيف الغرفة
+            const roomId = socket.currentRoom;
+            const uid = socket.uid;
+            if (roomId && rooms[roomId] && rooms[roomId].players[uid]) {
+                const r = rooms[roomId];
+                const p = r.players[uid];
+                p.online = false;
+                io.to(roomId).emit('player_left', { id: socket.id });
+
+                if (p.deathTimer) clearTimeout(p.deathTimer);
+                p.deathTimer = setTimeout(() => {
+                    const r2 = rooms[roomId];
+                    if (!r2 || r2.wiped) return;
+                    if (!r2.players[uid]) return;
+                    delete r2.players[uid];
+
+                    const anyOnlineAlive = Object.values(r2.players).some(pl => pl.online);
+                    if (!anyOnlineAlive) {
+                        flushWaveStats(roomId);
+                        io.to(roomId).emit('team_wipe');
+                        endRoom(roomId);
+                    }
+                }, OFFLINE_DEATH_MS);
             }
         }
     });
@@ -1001,92 +1028,85 @@ io.on('connection', (socket) => {
             }
         }
     });
-socket.on("invite_to_party", (data) => {
-    if (!data) return;
-    const { senderUid, senderName, targetUid } = data;
-    const senderLevel = data.senderLevel || 1;
-    const senderHullId = data.senderHullId || "bot";
-    const senderSkinPath = data.senderSkinPath || "bt/bt.png";
 
-    // البحث عن socketId الحقيقي للهدف
-    let targetSocketId = onlineUsers.get(targetUid);
-    if (targetSocketId && !io.sockets.sockets.has(targetSocketId)) {
-        onlineUsers.delete(targetUid);
-        targetSocketId = null;
-    }
-    if (!targetSocketId) {
-        for (const roomId in rooms) {
-            const room = rooms[roomId];
-            if (room.players[targetUid] && room.players[targetUid].id) {
-                const sid = room.players[targetUid].id;
-                if (io.sockets.sockets.has(sid)) {
+    socket.on("invite_to_party", (data) => {
+        if (!data) return;
+        const { senderUid, senderName, targetUid } = data;
+        const senderLevel = data.senderLevel || 1;
+        const senderHullId = data.senderHullId || "bot";
+        const senderSkinPath = data.senderSkinPath || "bt/bt.png";
+
+        let targetSocketId = onlineUsers.get(targetUid);
+        if (targetSocketId && !io.sockets.sockets.has(targetSocketId)) {
+            onlineUsers.delete(targetUid);
+            targetSocketId = null;
+        }
+        if (!targetSocketId) {
+            for (const roomId in rooms) {
+                const room = rooms[roomId];
+                if (room.players[targetUid] && room.players[targetUid].id) {
+                    const sid = room.players[targetUid].id;
+                    if (io.sockets.sockets.has(sid)) {
+                        targetSocketId = sid;
+                        onlineUsers.set(targetUid, sid);
+                        break;
+                    }
+                }
+            }
+        }
+        if (!targetSocketId) {
+            for (const [sid, s] of io.sockets.sockets) {
+                if (s.uid === targetUid) {
                     targetSocketId = sid;
                     onlineUsers.set(targetUid, sid);
                     break;
                 }
             }
         }
-    }
-    if (!targetSocketId) {
-        for (const [sid, s] of io.sockets.sockets) {
-            if (s.uid === targetUid) {
-                targetSocketId = sid;
-                onlineUsers.set(targetUid, sid);
-                break;
-            }
-        }
-    }
-    if (!targetSocketId) {
-        socket.emit("party_error", { message: "Player is offline" });
-        return;
-    }
-
-    // ✅ احصل على فريق المُرسل أو أنشئ واحداً جديداً
-    let partyId = userPartyMap.get(senderUid);
-    let party = partyId ? activeParties.get(partyId) : null;
-
-    if (!party || !party.members.some(m => m.uid === senderUid)) {
-        // نظف الفريق القديم إن وُجد
-        if (partyId) {
-            userPartyMap.delete(senderUid);
-            if (party && party.members.length === 0) {
-                activeParties.delete(partyId);
-                partyRoomMap.delete(partyId);
-            }
+        if (!targetSocketId) {
+            socket.emit("party_error", { message: "Player is offline" });
+            return;
         }
 
-        // ✅ أنشئ فريقاً جديداً مع A كقائد
-        partyId = "party_" + Math.random().toString(36).substring(2, 9);
-        party = {
-            partyId: partyId,
-            leaderUid: senderUid,
-            members: [{
-                uid: senderUid,
-                username: senderName || "Commander",
-                level: senderLevel,
-                hullId: senderHullId,
-                skinPath: senderSkinPath,
-                isLeader: true,
-                online: true
-            }]
-        };
-        activeParties.set(partyId, party);
-        userPartyMap.set(senderUid, partyId);
+        let partyId = userPartyMap.get(senderUid);
+        let party = partyId ? activeParties.get(partyId) : null;
 
-        // ✅ A ينضم لغرفة الفريق
-        socket.join(partyId);
+        if (!party || !party.members.some(m => m.uid === senderUid)) {
+            if (partyId) {
+                userPartyMap.delete(senderUid);
+                if (party && party.members.length === 0) {
+                    activeParties.delete(partyId);
+                    partyRoomMap.delete(partyId);
+                }
+            }
 
-        // ✅ أعلم A أنه قائد فريق الآن
-        socket.emit("party_update", party);
-    }
+            partyId = "party_" + Math.random().toString(36).substring(2, 9);
+            party = {
+                partyId: partyId,
+                leaderUid: senderUid,
+                members: [{
+                    uid: senderUid,
+                    username: senderName || "Commander",
+                    level: senderLevel,
+                    hullId: senderHullId,
+                    skinPath: senderSkinPath,
+                    isLeader: true,
+                    online: true
+                }]
+            };
+            activeParties.set(partyId, party);
+            userPartyMap.set(senderUid, partyId);
 
-    // إرسال الدعوة للهدف
-    io.to(targetSocketId).emit("party_invite_received", {
-        senderUid: senderUid,
-        senderName: senderName,
-        partyId: partyId
+            socket.join(partyId);
+            socket.emit("party_update", party);
+        }
+
+        io.to(targetSocketId).emit("party_invite_received", {
+            senderUid: senderUid,
+            senderName: senderName,
+            partyId: partyId
+        });
     });
-});
 
     socket.on("join_party", (data) => {
         if (!data) return;
@@ -1700,6 +1720,11 @@ socket.on("invite_to_party", (data) => {
 
     socket.on('leave_match', () => {
         leaveRoom(socket, true);
+    });
+
+    // ✅ إصلاح مشكل 1: temp_leave_match يُبقي اللاعب 60 ثانية للعودة
+    socket.on('temp_leave_match', () => {
+        leaveRoom(socket, false);
     });
 
 });
