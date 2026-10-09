@@ -39,12 +39,14 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
+// ✅ [FIX] فلتر مكافحة الغش - القيم الصحيحة
+//    أسرع سفينة: splittingtheseas بسرعة 22 → 22 × 60 = 1320 وحدة/ث
+//    نضع 2000 كحد أقصى مع هامش أمان لتفادي رفض الحركات الطبيعية
 const HIT_BOT_MIN_INTERVAL_MS = 40;
-const PLAYER_MAX_DIST_PER_SEC = 60.0;
-const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.2;
+const PLAYER_MAX_DIST_PER_SEC = 2000.0;
+const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.3;
 const PLAYER_DAMAGE_MAX_PER_HIT = 999999;
 
-// ✅ [FIX #1] dumpling: وحّدنا القيم مع العميل (1900 / 21.5 / 190)
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
@@ -64,7 +66,7 @@ const SHIPS_CONFIG = {
     'sovereignabysspro': { hp: 1600, speed: 20.0, damage: 160 },
     'sport':             { hp: 1700, speed: 20.5, damage: 170 },
     'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
-    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 }, // ✅ [FIX]
+    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 },
     'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
 
@@ -95,8 +97,6 @@ const onlineUsers = new Map();
 const activeParties = new Map();
 const userPartyMap = new Map();
 const partyRoomMap = new Map();
-
-// ✅ [FIX #2] أقفال لمنع تسريب الغرف الميتة ومنع سباق إنشاء غرفتين
 const partyRoomLocks = new Map();
 
 function getBotStatsForWave(wave) {
@@ -1208,9 +1208,6 @@ io.on('connection', (socket) => {
         socket.emit("party_update", party);
     });
 
-    // ✅ [FIX #2 + #3] قائد الفريق يطلب بدء المباراة
-    //   - فحص تطابق mode
-    //   - استخدام partyRoomLocks لمنع سباق إنشاء غرفتين
     socket.on("party_start_matchmaking", (data) => {
         if (!data) return;
         const { partyId, mode } = data;
@@ -1218,7 +1215,6 @@ io.on('connection', (socket) => {
         if (!party) return;
         if (party.leaderUid !== socket.uid) return;
 
-        // ✅ قفل الفريق لمنع سباق مع join_match
         if (partyRoomLocks.get(partyId)) {
             io.to(partyId).emit("party_matchmaking_started", { mode });
             return;
@@ -1226,7 +1222,6 @@ io.on('connection', (socket) => {
         partyRoomLocks.set(partyId, true);
 
         try {
-            // لو الغرفة موجودة مسبقاً ووضعها يطابق، أعد استخدامها
             let existingRoomId = partyRoomMap.get(partyId);
             if (existingRoomId) {
                 const existingRoom = rooms[existingRoomId];
@@ -1234,12 +1229,10 @@ io.on('connection', (socket) => {
                     partyRoomMap.delete(partyId);
                     existingRoomId = null;
                 } else if (existingRoom.mode !== mode) {
-                    // ✅ الوضع اختلف → تخلّص من الغرفة القديمة قبل إنشاء واحدة جديدة
                     const strangers = Object.values(existingRoom.players).filter(p => !p.uid);
                     if (strangers.length === 0 && Object.keys(existingRoom.players).length === 0) {
                         endRoom(existingRoomId);
                     } else {
-                        // الغرفة لا تزال فيها لاعبون آخرون → فقط افصل ربط الفريق بها
                         existingRoom.partyId = null;
                     }
                     partyRoomMap.delete(partyId);
@@ -1252,7 +1245,6 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            // أنشئ غرفة الفريق فوراً
             const leaderPlayer = party.members.find(m => m.uid === party.leaderUid);
             const startLevel = leaderPlayer ? leaderPlayer.level : 1;
             const newRoomId = createRoom(mode, startLevel + 1, partyId);
@@ -1450,10 +1442,8 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ✅ [FIX #2] منطق الانضمام المحسّن مع قفل الفريق
         let roomId = null;
         if (partyId) {
-            // ✅ الفريق: استخدم غرفة الفريق المحجوزة، وإلا أنشئ واحدة
             roomId = partyRoomMap.get(partyId);
             if (roomId) {
                 const r = rooms[roomId];
@@ -1463,7 +1453,6 @@ io.on('connection', (socket) => {
                 }
             }
             if (!roomId) {
-                // ✅ قفل لمنع إنشاء غرفتين متزامنتين
                 if (!partyRoomLocks.get(partyId)) {
                     partyRoomLocks.set(partyId, true);
                     try {
@@ -1473,7 +1462,6 @@ io.on('connection', (socket) => {
                         partyRoomLocks.delete(partyId);
                     }
                 } else {
-                    // قائد الفريق مشغول بالإنشاء الآن → استخدم الغرفة التي أنشأها
                     roomId = partyRoomMap.get(partyId);
                     if (!roomId) {
                         roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
@@ -1482,7 +1470,6 @@ io.on('connection', (socket) => {
                 }
             }
         } else {
-            // ✅ لاعب منفرد: لا يدخل غرفة فريق
             roomId = findOpenRoom(socket.mode, null);
             if (!roomId) roomId = createRoom(socket.mode, socket.startLevel + 1);
         }
@@ -1906,7 +1893,6 @@ function endRoom(roomId) {
         room.botTickInterval = null;
     }
 
-    // ✅ [FIX #2] تنظيف مرجع الغرفة من الفريق + قفل الفريق
     if (room.partyId) {
         const currentMapped = partyRoomMap.get(room.partyId);
         if (currentMapped === roomId) {
