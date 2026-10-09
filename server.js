@@ -1001,74 +1001,92 @@ io.on('connection', (socket) => {
             }
         }
     });
+socket.on("invite_to_party", (data) => {
+    if (!data) return;
+    const { senderUid, senderName, targetUid } = data;
+    const senderLevel = data.senderLevel || 1;
+    const senderHullId = data.senderHullId || "bot";
+    const senderSkinPath = data.senderSkinPath || "bt/bt.png";
 
-    // ✅✅✅ إصلاح: invite_to_party مع بحث احتياطي
-    socket.on("invite_to_party", (data) => {
-        if (!data) return;
-        const { senderUid, senderName, targetUid } = data;
-
-        let targetSocketId = onlineUsers.get(targetUid);
-
-        // ✅ تحقق من صلاحية الـ socketId
-        if (targetSocketId && !io.sockets.sockets.has(targetSocketId)) {
-            onlineUsers.delete(targetUid);
-            targetSocketId = null;
-        }
-
-        // ✅ بحث احتياطي 1: ابحث في الغرف النشطة
-        if (!targetSocketId) {
-            for (const roomId in rooms) {
-                const room = rooms[roomId];
-                if (room.players[targetUid] && room.players[targetUid].id) {
-                    const sid = room.players[targetUid].id;
-                    if (io.sockets.sockets.has(sid)) {
-                        targetSocketId = sid;
-                        onlineUsers.set(targetUid, sid);
-                        break;
-                    }
-                }
-            }
-        }
-
-        // ✅ بحث احتياطي 2: ابحث في كل الـ sockets المتصلة
-        if (!targetSocketId) {
-            for (const [sid, s] of io.sockets.sockets) {
-                if (s.uid === targetUid) {
+    // البحث عن socketId الحقيقي للهدف
+    let targetSocketId = onlineUsers.get(targetUid);
+    if (targetSocketId && !io.sockets.sockets.has(targetSocketId)) {
+        onlineUsers.delete(targetUid);
+        targetSocketId = null;
+    }
+    if (!targetSocketId) {
+        for (const roomId in rooms) {
+            const room = rooms[roomId];
+            if (room.players[targetUid] && room.players[targetUid].id) {
+                const sid = room.players[targetUid].id;
+                if (io.sockets.sockets.has(sid)) {
                     targetSocketId = sid;
                     onlineUsers.set(targetUid, sid);
                     break;
                 }
             }
         }
-
-        if (!targetSocketId) {
-            socket.emit("party_error", { message: "Player is offline" });
-            return;
+    }
+    if (!targetSocketId) {
+        for (const [sid, s] of io.sockets.sockets) {
+            if (s.uid === targetUid) {
+                targetSocketId = sid;
+                onlineUsers.set(targetUid, sid);
+                break;
+            }
         }
+    }
+    if (!targetSocketId) {
+        socket.emit("party_error", { message: "Player is offline" });
+        return;
+    }
 
-        let partyId = userPartyMap.get(senderUid);
+    // ✅ احصل على فريق المُرسل أو أنشئ واحداً جديداً
+    let partyId = userPartyMap.get(senderUid);
+    let party = partyId ? activeParties.get(partyId) : null;
+
+    if (!party || !party.members.some(m => m.uid === senderUid)) {
+        // نظف الفريق القديم إن وُجد
         if (partyId) {
-            const existingParty = activeParties.get(partyId);
-            if (!existingParty || !existingParty.members.some(m => m.uid === senderUid)) {
-                userPartyMap.delete(senderUid);
-                if (existingParty && existingParty.members.length === 0) {
-                    activeParties.delete(partyId);
-                    partyRoomMap.delete(partyId);
-                }
-                partyId = null;
+            userPartyMap.delete(senderUid);
+            if (party && party.members.length === 0) {
+                activeParties.delete(partyId);
+                partyRoomMap.delete(partyId);
             }
         }
 
-        if (!partyId) {
-            partyId = "party_" + Math.random().toString(36).substring(2, 9);
-        }
+        // ✅ أنشئ فريقاً جديداً مع A كقائد
+        partyId = "party_" + Math.random().toString(36).substring(2, 9);
+        party = {
+            partyId: partyId,
+            leaderUid: senderUid,
+            members: [{
+                uid: senderUid,
+                username: senderName || "Commander",
+                level: senderLevel,
+                hullId: senderHullId,
+                skinPath: senderSkinPath,
+                isLeader: true,
+                online: true
+            }]
+        };
+        activeParties.set(partyId, party);
+        userPartyMap.set(senderUid, partyId);
 
-        io.to(targetSocketId).emit("party_invite_received", {
-            senderUid: senderUid,
-            senderName: senderName,
-            partyId: partyId
-        });
+        // ✅ A ينضم لغرفة الفريق
+        socket.join(partyId);
+
+        // ✅ أعلم A أنه قائد فريق الآن
+        socket.emit("party_update", party);
+    }
+
+    // إرسال الدعوة للهدف
+    io.to(targetSocketId).emit("party_invite_received", {
+        senderUid: senderUid,
+        senderName: senderName,
+        partyId: partyId
     });
+});
 
     socket.on("join_party", (data) => {
         if (!data) return;
