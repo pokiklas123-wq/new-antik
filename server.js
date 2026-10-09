@@ -390,7 +390,7 @@ function createRoom(mode, startWave, partyId = null) {
         totalBotsForWave: 0,
         botsSpawnedThisWave: 0,
         botsKilledThisWave: 0,
-        partyId: partyId // ربط الغرفة بالفريق إذا وجد
+        partyId: partyId
     };
     startBotTick(id);
     return id;
@@ -977,7 +977,7 @@ io.on('connection', (socket) => {
     socket.on("invite_to_party", (data) => {
         if (!data) return;
         const { senderUid, senderName, targetUid } = data;
-        
+
         const targetSocketId = onlineUsers.get(targetUid);
         if (!targetSocketId) {
             socket.emit("party_error", { message: "Player is offline" });
@@ -1034,6 +1034,20 @@ io.on('connection', (socket) => {
         if (!data) return;
         const { uid, partyId } = data;
         handleUserLeavingParty(socket, uid, partyId);
+    });
+
+    // ✅ مستمع جديد: القائد يبلغ السيرفر ببدء البحث الجماعي
+    socket.on("party_start_matchmaking", (data) => {
+        if (!data) return;
+        const { partyId, mode } = data;
+        const party = activeParties.get(partyId);
+        if (!party) return;
+
+        // تأكد أن المرسل هو القائد
+        if (party.leaderUid !== socket.uid) return;
+
+        // أبلغ كل الأعضاء ببدء البحث
+        io.to(partyId).emit("party_matchmaking_started", { mode: mode });
     });
 
     // ==========================================
@@ -1221,7 +1235,6 @@ io.on('connection', (socket) => {
         let roomId = null;
         if (partyId) {
             roomId = partyRoomMap.get(partyId);
-            // التحقق من أن الغرفة المربوطة بالفريق لا تزال نشطة ولم تُدمر
             if (roomId && (!rooms[roomId] || rooms[roomId].wiped)) {
                 partyRoomMap.delete(partyId);
                 roomId = null;
@@ -1474,7 +1487,6 @@ io.on('connection', (socket) => {
         if (clientDamage > 50) {
             serverDamage = Math.min(clientDamage, p.maxHp * 0.6);
         } else {
-            // ⭐ البوت يضرب بنفس قوة السفينة / 10
             serverDamage = botDamageForRoom(room);
         }
 
@@ -1542,19 +1554,19 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('leave_match', () => leaveRoom(socket, true));
-    
-    socket.on('disconnect', () => {
-        // تنظيف بيانات الفريق والاتصال عند الخروج المفاجئ
-        if (socket.uid) {
-            onlineUsers.delete(socket.uid);
-            const partyId = userPartyMap.get(socket.uid);
-            if (partyId) {
-                handleUserLeavingParty(socket, socket.uid, partyId);
+    // ✅ مستمع واحد فقط لـ leave_match (مدموج)
+    socket.on('leave_match', () => {
+        // إذا كان اللاعب قائد فريق، ألغِ البحث لجميع الأعضاء
+        const partyId = userPartyMap.get(socket.uid);
+        if (partyId) {
+            const party = activeParties.get(partyId);
+            if (party && party.leaderUid === socket.uid) {
+                io.to(partyId).emit('party_matchmaking_canceled');
             }
         }
-        leaveRoom(socket, false);
+        leaveRoom(socket, true);
     });
+
 });
 
 function leaveRoom(socket, immediate) {
@@ -1642,7 +1654,6 @@ function endRoom(roomId) {
         room.botTickInterval = null;
     }
 
-    // تنظيف خريطة توجيه الفريق عند انتهاء الغرفة
     if (room.partyId) {
         partyRoomMap.delete(room.partyId);
     }
