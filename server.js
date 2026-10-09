@@ -39,7 +39,6 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
-// ⭐ قيم السفن (HP × 10)
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
@@ -63,7 +62,6 @@ const SHIPS_CONFIG = {
     'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
 
-// ⭐ جدول السفن
 const SHIP_LEVELS = [
     { level: 1,   id: 'bot' },
     { level: 30,  id: 'devilahorns' },
@@ -87,15 +85,11 @@ const SHIP_LEVELS = [
     { level: 570, id: 'splittingtheseas' }
 ];
 
-// ==========================================
-// جداول بيانات نظام الفريق (Party System)
-// ==========================================
-const onlineUsers = new Map();   // [uid] => socket.id
-const activeParties = new Map(); // [partyId] => { partyId, leaderUid, members: [] }
-const userPartyMap = new Map();  // [uid] => partyId
-const partyRoomMap = new Map();  // [partyId] => roomId
+const onlineUsers = new Map();
+const activeParties = new Map();
+const userPartyMap = new Map();
+const partyRoomMap = new Map();
 
-// ⭐ دالة: حساب قيم البوت مع interpolation
 function getBotStatsForWave(wave) {
     const wv = Math.max(1, wave);
     const lastLevel = SHIP_LEVELS[SHIP_LEVELS.length - 1].level;
@@ -932,9 +926,6 @@ function flushWaveStats(roomId) {
     sendLeaderboard(roomId);
 }
 
-// ==========================================
-// ✅ دالة مساعدة: تنظيف الفريق وإعلام الأعضاء
-// ==========================================
 function handleUserLeavingParty(socket, uid, partyId) {
     const party = activeParties.get(partyId);
     if (!party) return;
@@ -946,7 +937,6 @@ function handleUserLeavingParty(socket, uid, partyId) {
         try { socket.leave(partyId); } catch (e) {}
     }
 
-    // إعلام اللاعب المغادر بأن فريقه فارغ
     if (socket) {
         socket.emit("party_update", { partyId: "", members: [] });
     }
@@ -955,7 +945,6 @@ function handleUserLeavingParty(socket, uid, partyId) {
         activeParties.delete(partyId);
         partyRoomMap.delete(partyId);
     } else {
-        // إذا كان المغادر هو القائد، ننقل القيادة للأقوى (صاحب أعلى مستوى)
         if (party.leaderUid === uid) {
             party.members.sort((a, b) => b.level - a.level);
             const newLeader = party.members[0];
@@ -968,9 +957,6 @@ function handleUserLeavingParty(socket, uid, partyId) {
 
 io.on('connection', (socket) => {
 
-    // ==========================================
-    // ✅ عند قطع الاتصال: نظف الفريق
-    // ==========================================
     socket.on('disconnect', () => {
         if (socket.uid) {
             onlineUsers.delete(socket.uid);
@@ -988,11 +974,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ==========================================
-    // مستمعات أحداث نظام الفريق (Party System)
-    // ==========================================
-
-    // تسجيل اللاعب وربط الـ UID بالـ Socket ID
     socket.on("register_user", (data) => {
         if (data && data.uid) {
             onlineUsers.set(data.uid, socket.id);
@@ -1021,12 +1002,45 @@ io.on('connection', (socket) => {
         }
     });
 
-    // إرسال دعوة انضمام لصديق
+    // ✅✅✅ إصلاح: invite_to_party مع بحث احتياطي
     socket.on("invite_to_party", (data) => {
         if (!data) return;
         const { senderUid, senderName, targetUid } = data;
 
-        const targetSocketId = onlineUsers.get(targetUid);
+        let targetSocketId = onlineUsers.get(targetUid);
+
+        // ✅ تحقق من صلاحية الـ socketId
+        if (targetSocketId && !io.sockets.sockets.has(targetSocketId)) {
+            onlineUsers.delete(targetUid);
+            targetSocketId = null;
+        }
+
+        // ✅ بحث احتياطي 1: ابحث في الغرف النشطة
+        if (!targetSocketId) {
+            for (const roomId in rooms) {
+                const room = rooms[roomId];
+                if (room.players[targetUid] && room.players[targetUid].id) {
+                    const sid = room.players[targetUid].id;
+                    if (io.sockets.sockets.has(sid)) {
+                        targetSocketId = sid;
+                        onlineUsers.set(targetUid, sid);
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ✅ بحث احتياطي 2: ابحث في كل الـ sockets المتصلة
+        if (!targetSocketId) {
+            for (const [sid, s] of io.sockets.sockets) {
+                if (s.uid === targetUid) {
+                    targetSocketId = sid;
+                    onlineUsers.set(targetUid, sid);
+                    break;
+                }
+            }
+        }
+
         if (!targetSocketId) {
             socket.emit("party_error", { message: "Player is offline" });
             return;
@@ -1056,7 +1070,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // معالجة انضمام لاعب للفريق
     socket.on("join_party", (data) => {
         if (!data) return;
         const { uid, username, level, hullId, skinPath, partyId } = data;
@@ -1096,14 +1109,12 @@ io.on('connection', (socket) => {
         io.to(partyId).emit("party_update", party);
     });
 
-    // مغادرة الفريق
     socket.on("leave_party", (data) => {
         if (!data) return;
         const { uid, partyId } = data;
         handleUserLeavingParty(socket, uid, partyId);
     });
 
-    // ✅ إعلام السيرفر أن اللاعب غير متصل (بدون قطع الاتصال)
     socket.on("user_offline", (data) => {
         if (!data || !data.uid) return;
         const partyId = userPartyMap.get(data.uid);
@@ -1118,7 +1129,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ✅ إعلام السيرفر أن اللاعب عاد
     socket.on("user_online", (data) => {
         if (!data || !data.uid) return;
         const partyId = userPartyMap.get(data.uid);
@@ -1136,7 +1146,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ✅ طلب تحديث حالة الفريق
     socket.on("request_party_refresh", (data) => {
         if (!data || !data.uid) return;
         const partyId = userPartyMap.get(data.uid);
@@ -1154,7 +1163,6 @@ io.on('connection', (socket) => {
         socket.emit("party_update", party);
     });
 
-    // ✅ القائد يبدأ البحث الجماعي
     socket.on("party_start_matchmaking", (data) => {
         if (!data) return;
         const { partyId, mode } = data;
@@ -1164,7 +1172,6 @@ io.on('connection', (socket) => {
         io.to(partyId).emit("party_matchmaking_started", { mode: mode });
     });
 
-    // ✅ إلغاء البحث الجماعي (يدوياً)
     socket.on("party_cancel_matchmaking", (data) => {
         if (!data) return;
         const { partyId } = data;
@@ -1173,10 +1180,6 @@ io.on('connection', (socket) => {
         if (party.leaderUid !== socket.uid) return;
         io.to(partyId).emit("party_matchmaking_canceled");
     });
-
-    // ==========================================
-    // مستمعات أحداث اللعبة الأساسية
-    // ==========================================
 
     socket.on('check_active_session', (data) => {
         const uid = data && data.uid;
@@ -1677,10 +1680,7 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ✅ مستمع leave_match — لا يُرسل party_matchmaking_canceled تلقائياً
     socket.on('leave_match', () => {
-        // ❌ لا نُرسل party_matchmaking_canceled هنا
-        // لأن الخروج من اللعبة شيء، والإلغاء اليدوي شيء آخر
         leaveRoom(socket, true);
     });
 
