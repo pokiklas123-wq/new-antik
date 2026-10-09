@@ -39,12 +39,12 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
-// ✅ [FIX #3] حدود الغش والتحقق
-const HIT_BOT_MIN_INTERVAL_MS = 40;         // أدنى فاصل بين ضربتين
-const PLAYER_MAX_DIST_PER_SEC = 60.0;       // أقصى مسافة في الثانية (60 م/ث)
-const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.2; // هامش 200ms
-const PLAYER_DAMAGE_MAX_PER_HIT = 999999;   // حد أقصى لضربة الوحش
+const HIT_BOT_MIN_INTERVAL_MS = 40;
+const PLAYER_MAX_DIST_PER_SEC = 60.0;
+const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.2;
+const PLAYER_DAMAGE_MAX_PER_HIT = 999999;
 
+// ✅ [FIX #1] dumpling: وحّدنا القيم مع العميل (1900 / 21.5 / 190)
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
@@ -64,7 +64,7 @@ const SHIPS_CONFIG = {
     'sovereignabysspro': { hp: 1600, speed: 20.0, damage: 160 },
     'sport':             { hp: 1700, speed: 20.5, damage: 170 },
     'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
-    'dumpling':          { hp: 19000, speed: 25.5, damage: 1990 },
+    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 }, // ✅ [FIX]
     'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
 
@@ -96,7 +96,7 @@ const activeParties = new Map();
 const userPartyMap = new Map();
 const partyRoomMap = new Map();
 
-// ✅ [FIX #2] أقفال لمنع تسريب الغرف الميتة
+// ✅ [FIX #2] أقفال لمنع تسريب الغرف الميتة ومنع سباق إنشاء غرفتين
 const partyRoomLocks = new Map();
 
 function getBotStatsForWave(wave) {
@@ -340,18 +340,15 @@ function cleanSocket(socket) {
     socket.startLevel = null;
 }
 
-// ✅ [FIX #1] فلترة الغرف حسب partyId — الأهم!
 function findOpenRoom(mode, partyId) {
     for (const id in rooms) {
         const r = rooms[id];
         if (r.mode !== mode) continue;
         if (r.wiped) continue;
 
-        // ✅ لو الغرفة فيها فريق، ما يدخلها إلا نفس الفريق
         if (r.partyId) {
             if (!partyId || r.partyId !== partyId) continue;
         }
-        // ✅ لو اللاعب في فريق، لا يدخل غرفة منفردة
         if (partyId && !r.partyId) continue;
 
         if (mode === '1VBOT' && Object.keys(r.players).length === 0) return id;
@@ -943,12 +940,10 @@ function handleUserLeavingParty(socket, uid, partyId) {
 
     if (party.members.length === 0) {
         activeParties.delete(partyId);
-        // ✅ [FIX #2] تنظيف غرفة الفريق نهائياً عند فراغه
         const roomId = partyRoomMap.get(partyId);
         if (roomId) {
             const r = rooms[roomId];
             if (r) {
-                // لو الغرفة فيها لاعبون من خارج الحفلة، لا نمسها
                 const strangers = Object.values(r.players).filter(p => !p.uid);
                 if (strangers.length === 0 && Object.keys(r.players).length === 0) {
                     endRoom(roomId);
@@ -1213,7 +1208,9 @@ io.on('connection', (socket) => {
         socket.emit("party_update", party);
     });
 
-    // ✅ [FIX #1] قائد الفريق يطلب بدء المباراة — إنشاء الغرفة مسبقاً
+    // ✅ [FIX #2 + #3] قائد الفريق يطلب بدء المباراة
+    //   - فحص تطابق mode
+    //   - استخدام partyRoomLocks لمنع سباق إنشاء غرفتين
     socket.on("party_start_matchmaking", (data) => {
         if (!data) return;
         const { partyId, mode } = data;
@@ -1221,20 +1218,50 @@ io.on('connection', (socket) => {
         if (!party) return;
         if (party.leaderUid !== socket.uid) return;
 
-        // لو الغرفة موجودة مسبقاً، أعد استخدامها
-        let existingRoomId = partyRoomMap.get(partyId);
-        if (existingRoomId && rooms[existingRoomId] && !rooms[existingRoomId].wiped) {
-            io.to(partyId).emit("party_matchmaking_started", { mode, roomId: existingRoomId });
+        // ✅ قفل الفريق لمنع سباق مع join_match
+        if (partyRoomLocks.get(partyId)) {
+            io.to(partyId).emit("party_matchmaking_started", { mode });
             return;
         }
+        partyRoomLocks.set(partyId, true);
 
-        // أنشئ غرفة الفريق فوراً — قبل أن يدخلها أي عضو
-        const leaderPlayer = party.members.find(m => m.uid === party.leaderUid);
-        const startLevel = leaderPlayer ? leaderPlayer.level : 1;
-        const newRoomId = createRoom(mode, startLevel + 1, partyId);
-        partyRoomMap.set(partyId, newRoomId);
+        try {
+            // لو الغرفة موجودة مسبقاً ووضعها يطابق، أعد استخدامها
+            let existingRoomId = partyRoomMap.get(partyId);
+            if (existingRoomId) {
+                const existingRoom = rooms[existingRoomId];
+                if (!existingRoom || existingRoom.wiped) {
+                    partyRoomMap.delete(partyId);
+                    existingRoomId = null;
+                } else if (existingRoom.mode !== mode) {
+                    // ✅ الوضع اختلف → تخلّص من الغرفة القديمة قبل إنشاء واحدة جديدة
+                    const strangers = Object.values(existingRoom.players).filter(p => !p.uid);
+                    if (strangers.length === 0 && Object.keys(existingRoom.players).length === 0) {
+                        endRoom(existingRoomId);
+                    } else {
+                        // الغرفة لا تزال فيها لاعبون آخرون → فقط افصل ربط الفريق بها
+                        existingRoom.partyId = null;
+                    }
+                    partyRoomMap.delete(partyId);
+                    existingRoomId = null;
+                }
+            }
 
-        io.to(partyId).emit("party_matchmaking_started", { mode, roomId: newRoomId });
+            if (existingRoomId) {
+                io.to(partyId).emit("party_matchmaking_started", { mode, roomId: existingRoomId });
+                return;
+            }
+
+            // أنشئ غرفة الفريق فوراً
+            const leaderPlayer = party.members.find(m => m.uid === party.leaderUid);
+            const startLevel = leaderPlayer ? leaderPlayer.level : 1;
+            const newRoomId = createRoom(mode, startLevel + 1, partyId);
+            partyRoomMap.set(partyId, newRoomId);
+
+            io.to(partyId).emit("party_matchmaking_started", { mode, roomId: newRoomId });
+        } finally {
+            partyRoomLocks.delete(partyId);
+        }
     });
 
     socket.on("party_cancel_matchmaking", (data) => {
@@ -1423,18 +1450,36 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ✅ [FIX #1] منطق الانضمام المحسّن
+        // ✅ [FIX #2] منطق الانضمام المحسّن مع قفل الفريق
         let roomId = null;
         if (partyId) {
             // ✅ الفريق: استخدم غرفة الفريق المحجوزة، وإلا أنشئ واحدة
             roomId = partyRoomMap.get(partyId);
-            if (roomId && (!rooms[roomId] || rooms[roomId].wiped)) {
-                partyRoomMap.delete(partyId);
-                roomId = null;
+            if (roomId) {
+                const r = rooms[roomId];
+                if (!r || r.wiped || r.mode !== socket.mode) {
+                    partyRoomMap.delete(partyId);
+                    roomId = null;
+                }
             }
             if (!roomId) {
-                roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
-                partyRoomMap.set(partyId, roomId);
+                // ✅ قفل لمنع إنشاء غرفتين متزامنتين
+                if (!partyRoomLocks.get(partyId)) {
+                    partyRoomLocks.set(partyId, true);
+                    try {
+                        roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
+                        partyRoomMap.set(partyId, roomId);
+                    } finally {
+                        partyRoomLocks.delete(partyId);
+                    }
+                } else {
+                    // قائد الفريق مشغول بالإنشاء الآن → استخدم الغرفة التي أنشأها
+                    roomId = partyRoomMap.get(partyId);
+                    if (!roomId) {
+                        roomId = createRoom(socket.mode, socket.startLevel + 1, partyId);
+                        partyRoomMap.set(partyId, roomId);
+                    }
+                }
             }
         } else {
             // ✅ لاعب منفرد: لا يدخل غرفة فريق
@@ -1563,7 +1608,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ✅ [FIX #4] التحقق من صحة حركة اللاعب (منع الغش بالتنقل)
     socket.on('player_moved', (data) => {
         if (!data) return;
         if (typeof data.x !== 'number' || typeof data.y !== 'number') return;
@@ -1573,17 +1617,14 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
 
-        // تحقق من الفيزياء
         const dx = data.x - p.x;
         const dy = data.y - p.y;
         const distSq = dx * dx + dy * dy;
         const maxAllowed = PLAYER_MAX_DIST_PER_PACKET;
         if (distSq > maxAllowed * maxAllowed) {
-            // تجاهل الحركة المشبوهة (احتمال غش)
             return;
         }
 
-        // التحقق من البقاء داخل حدود العالم
         const ws = room.worldSize;
         if (data.x < 0 || data.y < 0 || data.x > ws || data.y > ws) return;
 
@@ -1602,7 +1643,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ✅ [FIX #3] Rate Limiting + التحقق من الضرر
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1614,7 +1654,6 @@ io.on('connection', (socket) => {
         if (!p) return;
 
         const now = Date.now();
-        // منع الضرب المتكرر السريع
         if (p.lastHitBotTime && (now - p.lastHitBotTime) < HIT_BOT_MIN_INTERVAL_MS) return;
         p.lastHitBotTime = now;
 
@@ -1687,7 +1726,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ✅ [FIX #5] التحقق الصارم من ضرر الوحوش
     socket.on('bot_hit_player', (data) => {
         if (!data) return;
         const room = rooms[socket.currentRoom];
@@ -1703,10 +1741,8 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // نثق بالسيرفر فقط — نتجاهل قيمة العميل تماماً
         let serverDamage = botDamageForRoom(room);
 
-        // استثناء: ضرر الاصطدام بالجزيرة (يمكن للعميل إعلامنا بذلك صراحة)
         if (data.isCrash === true) {
             serverDamage = Math.max(serverDamage, p.maxHp * 0.4);
         }
@@ -1870,12 +1906,13 @@ function endRoom(roomId) {
         room.botTickInterval = null;
     }
 
-    // ✅ [FIX #2] تنظيف مرجع الغرفة من الفريق
+    // ✅ [FIX #2] تنظيف مرجع الغرفة من الفريق + قفل الفريق
     if (room.partyId) {
         const currentMapped = partyRoomMap.get(room.partyId);
         if (currentMapped === roomId) {
             partyRoomMap.delete(room.partyId);
         }
+        partyRoomLocks.delete(room.partyId);
     }
 
     for (const uid in room.players) {
@@ -1898,7 +1935,6 @@ setInterval(() => {
     const now = Date.now();
     for (const id in rooms) {
         const r = rooms[id];
-        // ✅ [FIX #2] الغرفة الفارغة تُحذف بعد 30 ثانية كحد أدنى من الإنشاء (لتفادي سباق التسجيل)
         if (Object.keys(r.players).length === 0 && (now - r.createdAt) > 30000) {
             endRoom(id);
         }
@@ -1910,6 +1946,7 @@ setInterval(() => {
         if (party.members.length === 0) {
             activeParties.delete(partyId);
             partyRoomMap.delete(partyId);
+            partyRoomLocks.delete(partyId);
         }
     }
 }, 30000);
