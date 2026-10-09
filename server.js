@@ -976,8 +976,6 @@ io.on('connection', (socket) => {
             onlineUsers.delete(socket.uid);
             const partyId = userPartyMap.get(socket.uid);
             if (partyId) {
-                // ضع اللاعب offline لكن لا تحذفه من الفريق فوراً
-                // (لأنه قد يعود سريعاً)
                 const party = activeParties.get(partyId);
                 if (party) {
                     const member = party.members.find(m => m.uid === socket.uid);
@@ -1000,29 +998,24 @@ io.on('connection', (socket) => {
             onlineUsers.set(data.uid, socket.id);
             socket.uid = data.uid;
 
-            // ✅ إذا كان في فريق، تأكد من حالته
             const partyId = userPartyMap.get(data.uid);
             if (partyId) {
                 const party = activeParties.get(partyId);
                 if (!party) {
-                    // الفريق محذوف
                     userPartyMap.delete(data.uid);
                     socket.emit("party_update", { partyId: "", members: [] });
                 } else {
                     const member = party.members.find(m => m.uid === data.uid);
                     if (!member) {
-                        // اللاعب ليس في الفريق
                         userPartyMap.delete(data.uid);
                         socket.emit("party_update", { partyId: "", members: [] });
                     } else {
-                        // ✅ اللاعب في الفريق → أعلمه أنه online
                         member.online = true;
                         socket.join(partyId);
                         socket.emit("party_update", party);
                     }
                 }
             } else {
-                // ليس في فريق
                 socket.emit("party_update", { partyId: "", members: [] });
             }
         }
@@ -1039,12 +1032,10 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ✅ تحقق من partyId القديم
         let partyId = userPartyMap.get(senderUid);
         if (partyId) {
             const existingParty = activeParties.get(partyId);
             if (!existingParty || !existingParty.members.some(m => m.uid === senderUid)) {
-                // فريقديم/فارغ → احذفه
                 userPartyMap.delete(senderUid);
                 if (existingParty && existingParty.members.length === 0) {
                     activeParties.delete(partyId);
@@ -1082,7 +1073,6 @@ io.on('connection', (socket) => {
             activeParties.set(partyId, party);
         }
 
-        // ✅ أضف أو حدّث العضو
         const existingIdx = party.members.findIndex(m => m.uid === uid);
         if (existingIdx === -1) {
             party.members.push({
@@ -1095,7 +1085,6 @@ io.on('connection', (socket) => {
                 online: true
             });
         } else {
-            // حدّث بيانات العضو
             party.members[existingIdx].username = username;
             party.members[existingIdx].level = parseInt(level) || 1;
             party.members[existingIdx].hullId = hullId || "bot";
@@ -1104,9 +1093,6 @@ io.on('connection', (socket) => {
         }
 
         userPartyMap.set(uid, partyId);
-
-        // ✅ إذا كان اللاعب ليس ضمن الأعضاء (حالة نادرة)، اجعل الآخرين يعرفون بوجوده
-        // أبلغ كل أعضاء الفريق بالقائمة المحدثة (بما فيهم القائد الجديد)
         io.to(partyId).emit("party_update", party);
     });
 
@@ -1176,6 +1162,16 @@ io.on('connection', (socket) => {
         if (!party) return;
         if (party.leaderUid !== socket.uid) return;
         io.to(partyId).emit("party_matchmaking_started", { mode: mode });
+    });
+
+    // ✅ إلغاء البحث الجماعي (يدوياً)
+    socket.on("party_cancel_matchmaking", (data) => {
+        if (!data) return;
+        const { partyId } = data;
+        const party = activeParties.get(partyId);
+        if (!party) return;
+        if (party.leaderUid !== socket.uid) return;
+        io.to(partyId).emit("party_matchmaking_canceled");
     });
 
     // ==========================================
@@ -1681,15 +1677,10 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ✅ مستمع واحد لـ leave_match
+    // ✅ مستمع leave_match — لا يُرسل party_matchmaking_canceled تلقائياً
     socket.on('leave_match', () => {
-        const partyId = userPartyMap.get(socket.uid);
-        if (partyId) {
-            const party = activeParties.get(partyId);
-            if (party && party.leaderUid === socket.uid) {
-                io.to(partyId).emit('party_matchmaking_canceled');
-            }
-        }
+        // ❌ لا نُرسل party_matchmaking_canceled هنا
+        // لأن الخروج من اللعبة شيء، والإلغاء اليدوي شيء آخر
         leaveRoom(socket, true);
     });
 
@@ -1806,7 +1797,6 @@ setInterval(() => {
     }
 }, 60000);
 
-// ✅ تنظيف الفرق الفارغة دورياً
 setInterval(() => {
     for (const [partyId, party] of activeParties.entries()) {
         if (party.members.length === 0) {
