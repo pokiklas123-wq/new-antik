@@ -39,13 +39,7 @@ const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
 const SURPRISE_SPAWN_MAX = 6000;
 
-// ✅ [FIX] فلتر مكافحة الغش - القيم الصحيحة
-//    أسرع سفينة: splittingtheseas بسرعة 22 → 22 × 60 = 1320 وحدة/ث
-//    نضع 2000 كحد أقصى مع هامش أمان لتفادي رفض الحركات الطبيعية
 const HIT_BOT_MIN_INTERVAL_MS = 40;
-const PLAYER_MAX_DIST_PER_SEC = 2000.0;
-const PLAYER_MAX_DIST_PER_PACKET = PLAYER_MAX_DIST_PER_SEC * 0.3;
-const PLAYER_DAMAGE_MAX_PER_HIT = 999999;
 
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
@@ -165,7 +159,7 @@ function clearRoomTimeouts(roomId) {
 }
 
 app.get('/', (req, res) => {
-    res.send('Grand3D Co-op Server - Optimized with Party System');
+    res.send('Grand3D Co-op Server - Optimized');
 });
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
@@ -234,18 +228,6 @@ function computeRoomStats(room) {
         })(),
         fireCooldown: Math.max(1.0, 2.5 - (wave * 0.015))
     };
-}
-
-function getRoomMaxSpeed(room) {
-    let maxSpd = 10.0;
-    for (const uid in room.players) {
-        const p = room.players[uid];
-        if (!p.online || !p.hp || p.hp <= 0) continue;
-        const hull = (p.hullId || 'bot').toLowerCase();
-        const stats = SHIPS_CONFIG[hull] || SHIPS_CONFIG['bot'];
-        if (stats.speed > maxSpd) maxSpd = stats.speed;
-    }
-    return maxSpd;
 }
 
 function getTorpedoSpeed(room) {
@@ -477,6 +459,7 @@ function startBotTick(roomId) {
             const torpedoSpeed = stats.torpedoSpeed;
             const fireCooldown = stats.fireCooldown;
             const now = Date.now();
+            const currentBotDamage = botDamageForRoom(r);
 
             for (const botId in r.bots) {
                 const bot = r.bots[botId];
@@ -663,7 +646,8 @@ function startBotTick(roomId) {
                                     x: capturedX, y: capturedY,
                                     targetX: Math.round(tx + rnd(-80, 80)),
                                     targetY: Math.round(ty + rnd(-80, 80)),
-                                    speed: torpedoSpeed
+                                    speed: torpedoSpeed,
+                                    damage: currentBotDamage
                                 });
                             }, k * 150);
                         }
@@ -696,7 +680,8 @@ function startBotTick(roomId) {
                         y: Math.round(bot.y),
                         targetX: Math.round(targetX),
                         targetY: Math.round(targetY),
-                        speed: torpedoSpeed
+                        speed: torpedoSpeed,
+                        damage: currentBotDamage
                     });
                 }
             }
@@ -1595,6 +1580,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ✅ بدون أي فحص للمسافة — نثق بالعميل
     socket.on('player_moved', (data) => {
         if (!data) return;
         if (typeof data.x !== 'number' || typeof data.y !== 'number') return;
@@ -1604,18 +1590,8 @@ io.on('connection', (socket) => {
         if (!room || !room.players[socket.uid]) return;
         const p = room.players[socket.uid];
 
-        const dx = data.x - p.x;
-        const dy = data.y - p.y;
-        const distSq = dx * dx + dy * dy;
-        const maxAllowed = PLAYER_MAX_DIST_PER_PACKET;
-        if (distSq > maxAllowed * maxAllowed) {
-            return;
-        }
-
-        const ws = room.worldSize;
-        if (data.x < 0 || data.y < 0 || data.x > ws || data.y > ws) return;
-
-        p.x = data.x; p.y = data.y;
+        p.x = data.x;
+        p.y = data.y;
         p.heading = typeof data.heading === 'number' && isFinite(data.heading) ? data.heading : p.heading;
         if (data.hullId && data.hullId !== p.hullId) p.hullId = data.hullId;
         if (data.skinPath) p.skinPath = data.skinPath;
