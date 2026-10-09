@@ -1580,7 +1580,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ✅ بدون أي فحص للمسافة — نثق بالعميل
     socket.on('player_moved', (data) => {
         if (!data) return;
         if (typeof data.x !== 'number' || typeof data.y !== 'number') return;
@@ -1689,6 +1688,7 @@ io.on('connection', (socket) => {
         }
     });
 
+    // ✅ [FIX] الجبل الملغم والموت القاطع — معدّلة
     socket.on('bot_hit_player', (data) => {
         if (!data) return;
         const room = rooms[socket.currentRoom];
@@ -1697,17 +1697,27 @@ io.on('connection', (socket) => {
         if (!p || p.hp <= 0) return;
 
         const now = Date.now();
-        const cooldown = getPlayerDamageCooldownMs(room);
 
-        if (p.lastDamageTime && (now - p.lastDamageTime) < cooldown) {
-            io.to(socket.id).emit('hp_update', { hp: p.hp });
-            return;
+        // ✅ [FIX] تعرّف على نوع الضربة
+        const isCrash = data.source === 'crash';
+        const isLethal = data.isLethal === true;
+
+        // ✅ [FIX] الـ crash والـ lethal يتجاوزان cooldown
+        if (!isCrash && !isLethal) {
+            const cooldown = getPlayerDamageCooldownMs(room);
+            if (p.lastDamageTime && (now - p.lastDamageTime) < cooldown) {
+                io.to(socket.id).emit('hp_update', { hp: p.hp });
+                return;
+            }
         }
 
-        let serverDamage = botDamageForRoom(room);
-
-        if (data.isCrash === true) {
-            serverDamage = Math.max(serverDamage, p.maxHp * 0.4);
+        let serverDamage;
+        if (isLethal) {
+            serverDamage = p.hp;  // ← يقتل فوراً
+        } else if (isCrash) {
+            serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
+        } else {
+            serverDamage = botDamageForRoom(room);
         }
 
         p.lastDamageTime = now;
