@@ -386,36 +386,34 @@ function startBotTick(roomId) {
 
             const now = Date.now();
 
-for (const uid in r.players) {
-    const p = r.players[uid];
-    
-    if (!p.online) continue;
+            for (const uid in r.players) {
+                const p = r.players[uid];
 
-    // ✅ 20 ثانية بدل 4
-    if (!p.isGhost && (now - (p.lastMoveTime || now) > 20000)) {
-        p.isGhost = true;
-        // ✅ لا نُخفي السفينة — تبقى ظاهرة، البوتات فقط تتجاهلها
+                if (!p.online) continue;
 
-        if (p.deathTimer) clearTimeout(p.deathTimer);
-        p.deathTimer = setTimeout(() => {
-            const r2 = rooms[roomId];
-            if (!r2 || r2.wiped || !r2.players[uid]) return;
-            delete r2.players[uid];
+                // ✅ 20 ثانية بدل 4
+                if (!p.isGhost && (now - (p.lastMoveTime || now) > 20000)) {
+                    p.isGhost = true;
 
-            const remaining = Object.values(r2.players);
-            if (remaining.length === 0) { endRoom(roomId); return; }
-            
-            const allDead = remaining.every(pl => pl.hp <= 0 && !pl.isGhost);
-            if (allDead) {
-                flushWaveStats(roomId);
-                io.to(roomId).emit('team_wipe');
-                endRoom(roomId);
+                    if (p.deathTimer) clearTimeout(p.deathTimer);
+                    p.deathTimer = setTimeout(() => {
+                        const r2 = rooms[roomId];
+                        if (!r2 || r2.wiped || !r2.players[uid]) return;
+                        delete r2.players[uid];
+
+                        const remaining = Object.values(r2.players);
+                        if (remaining.length === 0) { endRoom(roomId); return; }
+
+                        const allDead = remaining.every(pl => pl.hp <= 0 && !pl.isGhost);
+                        if (allDead) {
+                            flushWaveStats(roomId);
+                            io.to(roomId).emit('team_wipe');
+                            endRoom(roomId);
+                        }
+                    }, OFFLINE_DEATH_MS);
+                }
             }
-        }, OFFLINE_DEATH_MS);
-    }
-}
 
-            // البوتات تتجاهل الأشباح (isGhost) وتهاجم فقط اللاعبين المتحركين
             const allPlayers = Object.values(r.players);
             const playersList = allPlayers.filter(p => p.hp > 0 && p.online && !p.isGhost);
 
@@ -759,7 +757,8 @@ async function fetchLeaderboard() {
 
     pendingLeaderboardFetch = (async () => {
         try {
-            const url = DB_URL + "/users.json?orderBy=\"level\"&limitToLast=5";
+            // ✅ التعديل 1: /users.json → /players.json
+            const url = DB_URL + "/players.json?orderBy=\"level\"&limitToLast=5";
             const res = await fetchWithTimeout(url);
             if (!res.ok) return cachedLeaderboard;
             const data = await res.json();
@@ -789,7 +788,8 @@ function sendLeaderboard(roomId) {
 
 function fetchUserKills(uid, callback) {
     if (!uid) return callback(0);
-    fetchWithTimeout(DB_URL + "/users/" + uid + "/total_kills.json")
+    // ✅ التعديل 2: /users/ → /players/
+    fetchWithTimeout(DB_URL + "/players/" + uid + "/total_kills.json")
         .then(res => res.json())
         .then(v => callback((typeof v === 'number') ? v : 0))
         .catch(() => callback(0));
@@ -798,12 +798,14 @@ function fetchUserKills(uid, callback) {
 function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
     if (kills != null) {
-        fetchWithTimeout(DB_URL + "/users/" + uid + "/total_kills.json", {
+        // ✅ التعديل 3: /users/ → /players/
+        fetchWithTimeout(DB_URL + "/players/" + uid + "/total_kills.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
         }).catch(() => {});
     }
     if (level != null && level > 0) {
-        fetchWithTimeout(DB_URL + "/users/" + uid + "/level.json", {
+        // ✅ التعديل 4: /users/ → /players/
+        fetchWithTimeout(DB_URL + "/players/" + uid + "/level.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
     }
@@ -1242,7 +1244,7 @@ io.on('connection', (socket) => {
         if (player.deathTimer) { clearTimeout(player.deathTimer); player.deathTimer = null; }
 
         player.online = true;
-        player.isGhost = false; // عاد للحياة 
+        player.isGhost = false;
         player.id = socket.id;
         player.lastMoveTime = Date.now();
 
@@ -1500,10 +1502,8 @@ io.on('connection', (socket) => {
         if (data.skinPath) p.skinPath = data.skinPath;
         if (data.finisherId) p.finisherId = data.finisherId;
 
-        // ✅ 1. تسجيل وقت الحركة 
         p.lastMoveTime = Date.now();
 
-        // ✅ 2. إلغاء الشبح والعداد إذا عاد
         if (p.isGhost) {
             p.isGhost = false;
             if (p.deathTimer) {
@@ -1644,7 +1644,6 @@ io.on('connection', (socket) => {
                 const remaining = Object.values(r.players);
                 if (remaining.length === 0) { endRoom(roomIdAtDeath); return; }
 
-                // ✅ الغرفة تدمر فقط إذا مات الجميع ولا يوجد لاعب Ghost يحميها
                 const allDeadAndNoGhosts = remaining.every(pl => pl.hp <= 0 && !pl.isGhost);
 
                 if (allDeadAndNoGhosts) {
@@ -1664,7 +1663,6 @@ io.on('connection', (socket) => {
                     return;
                 }
 
-                // ✅ إذا وصل هنا معناه الغرفة محمية بسبب الشبح (أ)، نُحيي اللاعب (ب)
                 const currentPlayer = r.players[uidAtDeath];
                 if (currentPlayer && currentPlayer.hp <= 0) {
                     const sp = randomSpawnNearSafe(r.worldSize / 2, r.worldSize / 2, 300, 1200, r.islands, r.worldSize, undefined);
@@ -1714,7 +1712,7 @@ function leaveRoom(socket, immediate) {
 
             const remaining = Object.values(r.players);
             if (remaining.length === 0) { endRoom(roomId); return; }
-            
+
             const anyOnlineAlive = remaining.some(pl => pl.online && pl.hp > 0 && !pl.isGhost);
             if (!anyOnlineAlive) {
                 flushWaveStats(roomId);
