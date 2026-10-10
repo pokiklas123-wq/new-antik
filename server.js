@@ -18,6 +18,7 @@ const TICK_MS = 100;
 
 // مهلة العودة القصوى للاعب الذي انقطع (120 ثانية)
 const OFFLINE_DEATH_MS = 120000;
+const OFFLINE_GRACE_SECONDS = 120;
 
 const MAX_BOTS_ON_FIELD = 50;
 const BOT_SPAWN_MIN_DIST = 3500;
@@ -100,6 +101,25 @@ let rooms = {};
 let nextRoomId = 1;
 const wipedRoomsLog = new Set();
 const activeTimeouts = new Map();
+
+// 🎯 إيجاد أول Slot فارغ (1-4)
+function findFreeSlot(room) {
+    const used = new Set();
+    for (const uid in room.players) {
+        const p = room.players[uid];
+        if (p && p.slotNumber) used.add(p.slotNumber);
+    }
+    for (let i = 1; i <= 4; i++) {
+        if (!used.has(i)) return i;
+    }
+    return 1;
+}
+
+// 🎯 حساب الثواني المتبقية
+function computeRemaining(offlineAt) {
+    if (!offlineAt) return 0;
+    return Math.max(0, Math.ceil((offlineAt + OFFLINE_DEATH_MS - Date.now()) / 1000));
+}
 
 function getBotStatsForWave(wave) {
     const wv = Math.max(1, wave);
@@ -373,6 +393,8 @@ function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
 
+    let offlineTimerCounter = 0;
+
     room.botTickInterval = setInterval(() => {
         try {
             const r = rooms[roomId];
@@ -386,25 +408,70 @@ function startBotTick(roomId) {
 
             const now = Date.now();
 
+            // 🎯 إرسال offline_timers كل 10 ticks (= ثانية واحدة)
+            offlineTimerCounter++;
+            if (offlineTimerCounter >= 10) {
+                offlineTimerCounter = 0;
+                const offlineList = [];
+                for (const uid in r.players) {
+                    const p = r.players[uid];
+                    if (p.offlineAt && p.offlineAt > 0) {
+                        const rem = computeRemaining(p.offlineAt);
+                        if (rem > 0) {
+                            offlineList.push({ uid: uid, remaining: rem });
+                        }
+                    }
+                }
+                if (offlineList.length > 0) {
+                    io.to(roomId).emit('offline_timers', offlineList);
+                }
+            }
+
             for (const uid in r.players) {
                 const p = r.players[uid];
 
                 if (!p.online) continue;
 
-                // ✅ 20 ثانية بدل 4
                 if (!p.isGhost && (now - (p.lastMoveTime || now) > 20000)) {
                     p.isGhost = true;
+
+                    // 🎯 تعليم وقت الانقطاع + إرسال الحدث
+                    if (!p.offlineAt) {
+                        p.offlineAt = Date.now();
+                        p.offlineReason = "ghost";
+                        io.to(roomId).emit('player_offline', {
+                            id: p.id,
+                            uid: p.uid,
+                            name: p.name,
+                            slotNumber: p.slotNumber,
+                            offlineAt: p.offlineAt,
+                            remaining: OFFLINE_GRACE_SECONDS
+                        });
+                    }
 
                     if (p.deathTimer) clearTimeout(p.deathTimer);
                     p.deathTimer = setTimeout(() => {
                         const r2 = rooms[roomId];
                         if (!r2 || r2.wiped || !r2.players[uid]) return;
+
+                        // 🎯 إرسال player_removed قبل الحذف
+                        const removedUid = r2.players[uid].uid;
+                        const removedSlot = r2.players[uid].slotNumber;
+                        io.to(roomId).emit('player_removed', {
+                            uid: removedUid,
+                            slotNumber: removedSlot
+                        });
+
                         delete r2.players[uid];
 
                         const remaining = Object.values(r2.players);
                         if (remaining.length === 0) { endRoom(roomId); return; }
 
-                        const allDead = remaining.every(pl => pl.hp <= 0 && !pl.isGhost);
+                        const allDead = remaining.every(pl => {
+                            const isActuallyDead = pl.hp <= 0;
+                            const offlineExpired = !pl.offlineAt || (Date.now() - pl.offlineAt) >= OFFLINE_DEATH_MS;
+                            return isActuallyDead && offlineExpired && !pl.isGhost;
+                        });
                         if (allDead) {
                             flushWaveStats(roomId);
                             io.to(roomId).emit('team_wipe');
@@ -757,7 +824,6 @@ async function fetchLeaderboard() {
 
     pendingLeaderboardFetch = (async () => {
         try {
-            // ✅ التعديل 1: /users.json → /players.json
             const url = DB_URL + "/players.json?orderBy=\"level\"&limitToLast=5";
             const res = await fetchWithTimeout(url);
             if (!res.ok) return cachedLeaderboard;
@@ -788,7 +854,6 @@ function sendLeaderboard(roomId) {
 
 function fetchUserKills(uid, callback) {
     if (!uid) return callback(0);
-    // ✅ التعديل 2: /users/ → /players/
     fetchWithTimeout(DB_URL + "/players/" + uid + "/total_kills.json")
         .then(res => res.json())
         .then(v => callback((typeof v === 'number') ? v : 0))
@@ -798,13 +863,11 @@ function fetchUserKills(uid, callback) {
 function pushUserStatsAsync(uid, kills, level) {
     if (!uid) return;
     if (kills != null) {
-        // ✅ التعديل 3: /users/ → /players/
         fetchWithTimeout(DB_URL + "/players/" + uid + "/total_kills.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
         }).catch(() => {});
     }
     if (level != null && level > 0) {
-        // ✅ التعديل 4: /users/ → /players/
         fetchWithTimeout(DB_URL + "/players/" + uid + "/level.json", {
             method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
         }).catch(() => {});
@@ -912,6 +975,21 @@ io.on('connection', (socket) => {
             const r = rooms[roomId];
             const p = r.players[uid];
             p.online = false;
+
+            // 🎯 تعليم وقت الانقطاع + إرسال الحدث
+            if (!p.offlineAt) {
+                p.offlineAt = Date.now();
+                p.offlineReason = "disconnect";
+                io.to(roomId).emit('player_offline', {
+                    id: socket.id,
+                    uid: p.uid,
+                    name: p.name,
+                    slotNumber: p.slotNumber,
+                    offlineAt: p.offlineAt,
+                    remaining: OFFLINE_GRACE_SECONDS
+                });
+            }
+
             io.to(roomId).emit('player_left', { id: socket.id });
 
             if (p.deathTimer) clearTimeout(p.deathTimer);
@@ -919,6 +997,13 @@ io.on('connection', (socket) => {
                 const r2 = rooms[roomId];
                 if (!r2 || r2.wiped) return;
                 if (!r2.players[uid]) return;
+
+                // 🎯 إرسال player_removed قبل الحذف
+                io.to(roomId).emit('player_removed', {
+                    uid: r2.players[uid].uid,
+                    slotNumber: r2.players[uid].slotNumber
+                });
+
                 delete r2.players[uid];
 
                 const remaining = Object.values(r2.players);
@@ -1243,6 +1328,9 @@ io.on('connection', (socket) => {
 
         if (player.deathTimer) { clearTimeout(player.deathTimer); player.deathTimer = null; }
 
+        // 🎯 مسح وقت الانقطاع
+        player.offlineAt = 0;
+        player.offlineReason = null;
         player.online = true;
         player.isGhost = false;
         player.id = socket.id;
@@ -1274,14 +1362,23 @@ io.on('connection', (socket) => {
             hullId: player.hullId,
             skinPath: player.skinPath,
             worldSize: room.worldSize,
-            islands: room.islands
+            islands: room.islands,
+            slotNumber: player.slotNumber || 1
+        });
+
+        // 🎯 إرسال player_online للجميع
+        io.to(roomId).emit('player_online', {
+            id: socket.id,
+            uid: uid,
+            slotNumber: player.slotNumber
         });
 
         socket.to(roomId).emit('player_joined', {
             id: socket.id, name: player.name,
             x: Math.round(player.x), y: Math.round(player.y),
             heading: Math.round(player.heading),
-            hullId: player.hullId, skinPath: player.skinPath, finisherId: player.finisherId
+            hullId: player.hullId, skinPath: player.skinPath, finisherId: player.finisherId,
+            slotNumber: player.slotNumber
         });
 
         const existing = Object.values(room.players)
@@ -1290,7 +1387,9 @@ io.on('connection', (socket) => {
                 id: p.id, name: p.name,
                 x: Math.round(p.x), y: Math.round(p.y),
                 heading: Math.round(p.heading),
-                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
+                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
+                slotNumber: p.slotNumber || 0,
+                remaining: p.offlineAt ? computeRemaining(p.offlineAt) : 0
             }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
@@ -1404,6 +1503,9 @@ io.on('connection', (socket) => {
         const validHullId = hullId || 'bot';
         const stats = getShipStats(validHullId);
 
+        // 🎯 تعيين Slot
+        const assignedSlot = findFreeSlot(room);
+
         room.players[socket.uid] = {
             id: socket.id, uid: socket.uid, name: socket.username,
             x: sx, y: sy, heading: 0,
@@ -1413,6 +1515,9 @@ io.on('connection', (socket) => {
             hullId: validHullId,
             skinPath: skinPath || 'bt/bot/bot.png',
             finisherId: finisherId || 'none',
+            slotNumber: assignedSlot,
+            offlineAt: 0,
+            offlineReason: null,
             vx: 0, vy: 0, lastX: sx, lastY: sy,
             lastDamageTime: 0, lastHitBotTime: 0,
             lastMoveTime: Date.now()
@@ -1435,7 +1540,8 @@ io.on('connection', (socket) => {
             worldSize: room.worldSize,
             islands: room.islands || [],
             hullId: room.players[socket.uid].hullId,
-            skinPath: room.players[socket.uid].skinPath
+            skinPath: room.players[socket.uid].skinPath,
+            slotNumber: assignedSlot
         });
 
         const existing = Object.values(room.players)
@@ -1444,7 +1550,9 @@ io.on('connection', (socket) => {
                 id: p.id, name: p.name,
                 x: Math.round(p.x), y: Math.round(p.y),
                 heading: Math.round(p.heading),
-                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
+                hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
+                slotNumber: p.slotNumber || 0,
+                remaining: p.offlineAt ? computeRemaining(p.offlineAt) : 0
             }));
         socket.emit('room_state', { players: existing, wave: room.wave });
 
@@ -1453,7 +1561,8 @@ io.on('connection', (socket) => {
             x: Math.round(sx), y: Math.round(sy),
             heading: 0, hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath,
-            finisherId: room.players[socket.uid].finisherId
+            finisherId: room.players[socket.uid].finisherId,
+            slotNumber: assignedSlot
         });
 
         const botsPayload = Object.values(room.bots).map(b => {
@@ -1510,6 +1619,14 @@ io.on('connection', (socket) => {
                 clearTimeout(p.deathTimer);
                 p.deathTimer = null;
             }
+            // 🎯 مسح offlineAt
+            p.offlineAt = 0;
+            p.offlineReason = null;
+            io.to(socket.currentRoom).emit('player_online', {
+                id: socket.id,
+                uid: p.uid,
+                slotNumber: p.slotNumber
+            });
             io.to(socket.currentRoom).emit('player_respawned', { id: socket.id, x: Math.round(p.x), y: Math.round(p.y) });
         }
 
@@ -1517,7 +1634,9 @@ io.on('connection', (socket) => {
             id: socket.id,
             x: Math.round(p.x), y: Math.round(p.y),
             heading: Math.round(p.heading),
-            hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId
+            hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
+            slotNumber: p.slotNumber || 0,
+            remaining: p.offlineAt ? computeRemaining(p.offlineAt) : 0
         });
     });
 
@@ -1704,6 +1823,12 @@ function leaveRoom(socket, immediate) {
             const r = rooms[roomId];
             if (!r || !r.players[playerUid]) return;
 
+            // 🎯 إرسال player_removed قبل الحذف
+            io.to(roomId).emit('player_removed', {
+                uid: playerUid,
+                slotNumber: player.slotNumber
+            });
+
             delete r.players[playerUid];
             io.to(roomId).emit('player_left', { id: socketId });
 
@@ -1730,6 +1855,21 @@ function leaveRoom(socket, immediate) {
 
     } else {
         player.online = false;
+
+        // 🎯 تعليم وقت الانقطاع + إرسال الحدث
+        if (!player.offlineAt) {
+            player.offlineAt = Date.now();
+            player.offlineReason = "temp_leave";
+            io.to(roomId).emit('player_offline', {
+                id: socketId,
+                uid: playerUid,
+                name: player.name,
+                slotNumber: player.slotNumber,
+                offlineAt: player.offlineAt,
+                remaining: OFFLINE_GRACE_SECONDS
+            });
+        }
+
         io.to(roomId).emit('player_left', { id: socketId });
         if (player.deathTimer) clearTimeout(player.deathTimer);
 
@@ -1737,6 +1877,12 @@ function leaveRoom(socket, immediate) {
             const r = rooms[roomId];
             if (!r || r.wiped) return;
             if (!r.players[playerUid]) return;
+
+            // 🎯 إرسال player_removed قبل الحذف
+            io.to(roomId).emit('player_removed', {
+                uid: playerUid,
+                slotNumber: player.slotNumber
+            });
 
             delete r.players[playerUid];
 
