@@ -44,25 +44,16 @@ const HIT_BOT_MIN_INTERVAL_MS = 40;
 const MAX_PLAYER_COORD = 1000000;
 const MAX_DAMAGE_PER_HIT = 999999;
 
-// ═══════════════════════════════════════════════════════════
-// 💣 BOMB TOWER CONFIG
-// ═══════════════════════════════════════════════════════════
 const BOMB_BASE_TIME     = 10;
 const BOMB_WAVE_BONUS    = 100;
 const BOMB_MAX_TIME      = 15;
-const BOMB_DISARM_RADIUS = 250;
+const BOMB_DISARM_RADIUS = 300;
 
-// ═══════════════════════════════════════════════════════════
-// 💊 HEALTH PACK CONFIG
-// ═══════════════════════════════════════════════════════════
 const HEALTH_DROP_EVERY_KILLS   = 6;
 const HEALTH_PACK_DURATION_MS   = 5000;
 const HEALTH_PACK_PICKUP_RADIUS = 250;
 const HEALTH_HEAL_PERCENT       = 0.25;
 
-// ═══════════════════════════════════════════════════════════
-// ⚡ SHIELD (SUPER) CONFIG
-// ═══════════════════════════════════════════════════════════
 const SUPER_CHARGE_EVERY_KILLS = 20;
 const SHIELD_DURATION_MS       = 7000;
 const MAX_SUPER_CHARGES        = 2;
@@ -124,9 +115,6 @@ let nextRoomId = 1;
 const wipedRoomsLog = new Set();
 const activeTimeouts = new Map();
 
-// ═══════════════════════════════════════════════════════════
-// 🎯 HELPERS
-// ═══════════════════════════════════════════════════════════
 function findFreeSlot(room) {
     const used = new Set();
     for (const uid in room.players) {
@@ -259,9 +247,6 @@ function botCountForWave(wave) {
     return Math.floor(5 + (95 * Math.min((wave - 1) / 249.0, 1.0)));
 }
 
-// ═══════════════════════════════════════════════════════════
-// 💣 BOMB CALCULATION FUNCTIONS
-// ═══════════════════════════════════════════════════════════
 function computeBombSchedule(botCount) {
     let bombs, killsPerBomb;
     if (botCount <= 5)       { bombs = 1; killsPerBomb = 3; }
@@ -330,9 +315,6 @@ function findOpenRoom(mode, partyId) {
     return null;
 }
 
-// ═══════════════════════════════════════════════════════════
-// 🏠 ROOM CREATION
-// ═══════════════════════════════════════════════════════════
 function createRoom(mode, startWave, partyId = null) {
     const id = `${mode === '1VBOT' ? 'solo' : 'coop'}_${nextRoomId++}`;
     const mapStats = getMapStats(startWave);
@@ -354,8 +336,6 @@ function createRoom(mode, startWave, partyId = null) {
         botsKilledThisWave: 0,
         partyId,
         createdAt: Date.now(),
-
-        // 💣 نظام اللغم
         bombSchedule: null,
         bombKillsCount: 0,
         bombBombsTriggered: 0,
@@ -364,8 +344,6 @@ function createRoom(mode, startWave, partyId = null) {
         bombY: mapStats.size / 2,
         bombExpireAt: 0,
         bombTimerHandle: null,
-
-        // 💊 أكياس الدم
         healthPacks: {},
         healthPackIdCounter: 1,
         roomKillCounter: 0
@@ -404,9 +382,6 @@ function tryUnstuck(bot, step, islData) {
     return false;
 }
 
-// ═══════════════════════════════════════════════════════════
-// 🎯 BOT TICK
-// ═══════════════════════════════════════════════════════════
 function startBotTick(roomId) {
     const room = rooms[roomId];
     if (!room) return;
@@ -434,7 +409,6 @@ function startBotTick(roomId) {
                 }
                 if (offlineList.length > 0) io.to(roomId).emit('offline_timers', offlineList);
 
-                // 💊 تنظيف أكياس الدم المنتهية
                 const nowHP = Date.now();
                 for (const pid in r.healthPacks) {
                     if (r.healthPacks[pid].expiresAt <= nowHP) {
@@ -711,7 +685,6 @@ function spawnWave(roomId) {
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
 
-    // 💣 تهيئة جدول الألغام
     room.bombSchedule = computeBombSchedule(totalBots);
     room.bombKillsCount = 0;
     room.bombBombsTriggered = 0;
@@ -741,9 +714,6 @@ function spawnWave(roomId) {
     io.to(roomId).emit('bots_update', botsPayload);
 }
 
-// ═══════════════════════════════════════════════════════════
-// 💣 BOMB TRIGGER
-// ═══════════════════════════════════════════════════════════
 function triggerBomb(room, roomId) {
     if (!room || room.wiped) return;
     if (room.bombActive) return;
@@ -761,7 +731,6 @@ function triggerBomb(room, roomId) {
         if (!r || r.wiped) return;
         r.bombActive = false;
         io.to(roomId).emit('bomb_exploded', { x: r.bombX, y: r.bombY });
-        // 💀 موت جماعي
         for (const uid in r.players) {
             const pl = r.players[uid];
             if (pl.hp <= 0) continue;
@@ -780,9 +749,6 @@ function triggerBomb(room, roomId) {
     }, dur * 1000);
 }
 
-// ═══════════════════════════════════════════════════════════
-// 📊 LEADERBOARD
-// ═══════════════════════════════════════════════════════════
 let cachedLeaderboard = [];
 let lastFetch = 0;
 const CACHE_MS = 10000;
@@ -915,9 +881,6 @@ function endRoom(roomId) {
     delete rooms[roomId];
 }
 
-// ═══════════════════════════════════════════════════════════
-// 🔌 SOCKET HANDLER
-// ═══════════════════════════════════════════════════════════
 io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
@@ -1206,14 +1169,12 @@ io.on('connection', (socket) => {
             killsSinceSuperCharge: player.killsSinceSuperCharge || 0
         });
 
-        // 💊 إرسال أكياس الدم الموجودة
         const packsPayload = Object.values(room.healthPacks).map(hp => ({
             id: hp.id, x: Math.round(hp.x), y: Math.round(hp.y),
             remaining: Math.max(0, (hp.expiresAt - Date.now()) / 1000)
         }));
         if (packsPayload.length > 0) socket.emit('health_packs_state', packsPayload);
 
-        // 💣 إرسال حالة اللغم
         if (room.bombActive) {
             socket.emit('bomb_spawned', {
                 x: room.bombX, y: room.bombY,
@@ -1350,7 +1311,6 @@ io.on('connection', (socket) => {
             vx: 0, vy: 0, lastX: sx, lastY: sy,
             lastDamageTime: 0, lastHitBotTime: 0,
             lastMoveTime: Date.now(),
-            // ⚡ Shield fields
             superCharges: 0,
             killsSinceSuperCharge: 0,
             shieldUntil: 0
@@ -1369,14 +1329,12 @@ io.on('connection', (socket) => {
             slotNumber: assignedSlot
         });
 
-        // 💊 إرسال أكياس الدم الموجودة
         const packsPayload = Object.values(room.healthPacks).map(hp => ({
             id: hp.id, x: Math.round(hp.x), y: Math.round(hp.y),
             remaining: Math.max(0, (hp.expiresAt - Date.now()) / 1000)
         }));
         if (packsPayload.length > 0) socket.emit('health_packs_state', packsPayload);
 
-        // 💣 حالة اللغم
         if (room.bombActive) {
             socket.emit('bomb_spawned', {
                 x: room.bombX, y: room.bombY,
@@ -1463,9 +1421,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // 💥 HIT BOT — مع نظام اللغم + أكياس الدم + Super Charge
-    // ═══════════════════════════════════════════════════════════
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1494,7 +1449,6 @@ io.on('connection', (socket) => {
             room.botsKilledThisWave++;
             p.kills += 1;
 
-            // 💊 كل 3 قتلات في الغرفة → كيس دم
             room.roomKillCounter++;
             if (room.roomKillCounter % HEALTH_DROP_EVERY_KILLS === 0) {
                 const packId = room.healthPackIdCounter++;
@@ -1512,7 +1466,6 @@ io.on('connection', (socket) => {
                 });
             }
 
-            // ⚡ Super charge
             if ((p.superCharges || 0) < MAX_SUPER_CHARGES) {
                 p.killsSinceSuperCharge = (p.killsSinceSuperCharge || 0) + 1;
                 if (p.killsSinceSuperCharge >= SUPER_CHARGE_EVERY_KILLS) {
@@ -1528,7 +1481,6 @@ io.on('connection', (socket) => {
                 }
             }
 
-            // 💣 نظام اللغم
             if (!room.bombActive && room.bombSchedule) {
                 room.bombKillsCount++;
                 if (room.bombKillsCount >= room.bombSchedule.killsPerBomb &&
@@ -1550,7 +1502,6 @@ io.on('connection', (socket) => {
                 remainingBots
             });
 
-            // 🚫 منع spawn جديد أثناء اللغم النشط
             if (!isWaveComplete && room.botsSpawnedThisWave < room.totalBotsForWave && !room.bombActive) {
                 if (Object.keys(room.bots).length < MAX_BOTS_ON_FIELD) {
                     spawnSingleBot(room, room.worldSize / 2, room.worldSize / 2,
@@ -1583,9 +1534,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // 🛡️ DAMAGE TO PLAYER — مع احترام الدرع
-    // ═══════════════════════════════════════════════════════════
     socket.on('bot_hit_player', (data) => {
         if (!data) return;
         const room = rooms[socket.currentRoom];
@@ -1593,7 +1541,6 @@ io.on('connection', (socket) => {
         const p = room.players[socket.uid];
         if (!p || p.hp <= 0) return;
 
-        // 🛡️ الدرع يمنع كل الأضرار
         if (p.shieldUntil && p.shieldUntil > Date.now()) {
             io.to(socket.id).emit('hp_update', { hp: p.hp });
             return;
@@ -1656,9 +1603,6 @@ io.on('connection', (socket) => {
         }
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // 💊 HEALTH PACK COLLECT
-    // ═══════════════════════════════════════════════════════════
     socket.on('health_pack_collect', (data) => {
         if (!data || data.id === undefined) return;
         const room = rooms[socket.currentRoom];
@@ -1682,9 +1626,6 @@ io.on('connection', (socket) => {
         io.to(socket.currentRoom).emit('health_pack_removed', { id: data.id, byId: socket.id });
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // ⚡ SHIELD ACTIVATION (Super Ability)
-    // ═══════════════════════════════════════════════════════════
     socket.on('player_shield_activate', (data) => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped) return;
@@ -1697,13 +1638,11 @@ io.on('connection', (socket) => {
         p.superCharges--;
         p.shieldUntil = Date.now() + SHIELD_DURATION_MS;
 
-        // نبث لكل الغرفة — الكل يرى الدرع
         io.to(socket.currentRoom).emit('player_shield_activated', {
             id: socket.id, uid: socket.uid,
             duration: SHIELD_DURATION_MS / 1000
         });
 
-        // نحدّث صاحب الدرع فقط بحالته
         io.to(socket.id).emit('super_charge_update', {
             charges: p.superCharges,
             progress: p.killsSinceSuperCharge || 0,
@@ -1711,17 +1650,17 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ═══════════════════════════════════════════════════════════
-    // 💣 BOMB DISARM
-    // ═══════════════════════════════════════════════════════════
-    socket.on('bomb_disarm_request', (data) => {
+    // ✅ Server Authoritative — لا نستقبل أي بيانات من العميل
+    socket.on('bomb_disarm_request', () => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped || !room.bombActive) return;
         const p = room.players[socket.uid];
         if (!p) return;
+
         const dx = p.x - room.bombX;
         const dy = p.y - room.bombY;
-        if (Math.sqrt(dx * dx + dy * dy) > BOMB_DISARM_RADIUS) return;
+        const distSq = dx * dx + dy * dy;
+        if (distSq > BOMB_DISARM_RADIUS * BOMB_DISARM_RADIUS) return;
 
         room.bombActive = false;
         if (room.bombTimerHandle) { clearTimeout(room.bombTimerHandle); room.bombTimerHandle = null; }
@@ -1731,7 +1670,6 @@ io.on('connection', (socket) => {
             byId: socket.id, byName: p.name
         });
 
-        // استئناف spawn البوتات المتبقية
         if (room.botsSpawnedThisWave < room.totalBotsForWave) {
             const need = room.totalBotsForWave - room.botsSpawnedThisWave;
             const canSpawn = Math.min(need, MAX_BOTS_ON_FIELD - Object.keys(room.bots).length);
