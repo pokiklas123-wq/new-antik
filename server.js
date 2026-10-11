@@ -418,8 +418,9 @@ function startBotTick(roomId) {
                     if (p.offlineAt && p.offlineAt > 0) {
                         const rem = computeRemaining(p.offlineAt);
                         if (rem > 0) {
-                            offlineList.push({ uid: uid, remaining: rem });
+                            offlineList.push({ id: p.id, uid: uid, remaining: rem });
                         }
+
                     }
                 }
                 if (offlineList.length > 0) {
@@ -432,7 +433,8 @@ function startBotTick(roomId) {
 
                 if (!p.online) continue;
 
-                if (!p.isGhost && (now - (p.lastMoveTime || now) > 20000)) {
+                // 🎯 التعديل الأول: تقليل الوقت إلى 4 ثوانٍ
+                if (!p.isGhost && (now - (p.lastMoveTime || now) > 4000)) {
                     p.isGhost = true;
 
                     // 🎯 تعليم وقت الانقطاع + إرسال الحدث
@@ -454,10 +456,12 @@ function startBotTick(roomId) {
                         const r2 = rooms[roomId];
                         if (!r2 || r2.wiped || !r2.players[uid]) return;
 
-                        // 🎯 إرسال player_removed قبل الحذف
+                        // 🎯 إرسال player_removed قبل الحذف مع إضافة id
                         const removedUid = r2.players[uid].uid;
                         const removedSlot = r2.players[uid].slotNumber;
+                        const removedId = r2.players[uid].id;
                         io.to(roomId).emit('player_removed', {
+                            id: removedId,
                             uid: removedUid,
                             slotNumber: removedSlot
                         });
@@ -998,8 +1002,9 @@ io.on('connection', (socket) => {
                 if (!r2 || r2.wiped) return;
                 if (!r2.players[uid]) return;
 
-                // 🎯 إرسال player_removed قبل الحذف
+                // 🎯 إرسال player_removed قبل الحذف مع إضافة id
                 io.to(roomId).emit('player_removed', {
+                    id: r2.players[uid].id,
                     uid: r2.players[uid].uid,
                     slotNumber: r2.players[uid].slotNumber
                 });
@@ -1823,8 +1828,9 @@ function leaveRoom(socket, immediate) {
             const r = rooms[roomId];
             if (!r || !r.players[playerUid]) return;
 
-            // 🎯 إرسال player_removed قبل الحذف
+            // 🎯 إرسال player_removed قبل الحذف مع إضافة id
             io.to(roomId).emit('player_removed', {
+                id: player.id,
                 uid: playerUid,
                 slotNumber: player.slotNumber
             });
@@ -1870,7 +1876,6 @@ function leaveRoom(socket, immediate) {
             });
         }
 
-      // no remove player offline io.to(roomId).emit('player_left', { id: socketId });
         if (player.deathTimer) clearTimeout(player.deathTimer);
 
         player.deathTimer = setTimeout(() => {
@@ -1878,8 +1883,9 @@ function leaveRoom(socket, immediate) {
             if (!r || r.wiped) return;
             if (!r.players[playerUid]) return;
 
-            // 🎯 إرسال player_removed قبل الحذف
+            // 🎯 إرسال player_removed قبل الحذف مع إضافة id
             io.to(roomId).emit('player_removed', {
+                id: r.players[playerUid].id,
                 uid: playerUid,
                 slotNumber: player.slotNumber
             });
