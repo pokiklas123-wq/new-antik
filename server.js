@@ -47,15 +47,15 @@ const MAX_DAMAGE_PER_HIT = 999999;
 // ═══════════════════════════════════════════════════════════
 // 💣 BOMB TOWER CONFIG
 // ═══════════════════════════════════════════════════════════
-const BOMB_BASE_TIME     = 55;
-const BOMB_WAVE_BONUS    = 20;
-const BOMB_MAX_TIME      = 90;
+const BOMB_BASE_TIME     = 10;
+const BOMB_WAVE_BONUS    = 100;
+const BOMB_MAX_TIME      = 15;
 const BOMB_DISARM_RADIUS = 250;
 
 // ═══════════════════════════════════════════════════════════
 // 💊 HEALTH PACK CONFIG
 // ═══════════════════════════════════════════════════════════
-const HEALTH_DROP_EVERY_KILLS   = 3;
+const HEALTH_DROP_EVERY_KILLS   = 6;
 const HEALTH_PACK_DURATION_MS   = 5000;
 const HEALTH_PACK_PICKUP_RADIUS = 250;
 const HEALTH_HEAL_PERCENT       = 0.25;
@@ -64,8 +64,8 @@ const HEALTH_HEAL_PERCENT       = 0.25;
 // ⚡ SHIELD (SUPER) CONFIG
 // ═══════════════════════════════════════════════════════════
 const SUPER_CHARGE_EVERY_KILLS = 20;
-const SHIELD_DURATION_MS       = 5000;
-const MAX_SUPER_CHARGES        = 1;
+const SHIELD_DURATION_MS       = 7000;
+const MAX_SUPER_CHARGES        = 2;
 
 const SHIPS_CONFIG = {
     'bot':               { hp:  100, speed: 10.0, damage:  10 },
