@@ -46,26 +46,26 @@ const MAX_PLAYER_COORD = 1000000;
 const MAX_DAMAGE_PER_HIT = 999999;
 
 const SHIPS_CONFIG = {
-    'bot':               { hp:  100, speed: 10.0, damage:  10 },
-    'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
-    'devilsfangs':       { hp:  300, speed: 12.0, damage:  30 },
-    'finish':            { hp:  400, speed: 13.0, damage:  40 },
-    'proskin':           { hp:  500, speed: 14.0, damage:  50 },
-    'suphigh':           { hp:  600, speed: 15.0, damage:  60 },
-    'suplis':            { hp:  700, speed: 15.5, damage:  70 },
-    'suplis2':           { hp:  800, speed: 16.0, damage:  80 },
-    'gemini':            { hp:  900, speed: 16.5, damage:  90 },
-    'war':               { hp: 1000, speed: 17.0, damage: 100 },
-    'geminiprosimple':   { hp: 1100, speed: 17.5, damage: 110 },
-    'deepseek':          { hp: 1200, speed: 18.0, damage: 120 },
-    'geminipro':         { hp: 1300, speed: 18.5, damage: 130 },
-    'legendary':         { hp: 1400, speed: 19.0, damage: 140 },
-    'sovereignabyss':    { hp: 1500, speed: 19.5, damage: 150 },
-    'sovereignabysspro': { hp: 1600, speed: 20.0, damage: 160 },
-    'sport':             { hp: 1700, speed: 20.5, damage: 170 },
-    'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
-    'dumpling':          { hp: 1900, speed: 21.5, damage: 190 },
-    'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
+    'bot':               { hp:  100, speed: 12.0, damage:  10 },
+    'devilahorns':       { hp:  200, speed: 13.5, damage:  20 },
+    'devilsfangs':       { hp:  300, speed: 14.0, damage:  30 },
+    'finish':            { hp:  400, speed: 14.5, damage:  40 },
+    'proskin':           { hp:  500, speed: 15.5, damage:  50 },
+    'suphigh':           { hp:  600, speed: 16.0, damage:  60 },
+    'suplis':            { hp:  700, speed: 16.5, damage:  70 },
+    'suplis2':           { hp:  800, speed: 17.0, damage:  80 },
+    'gemini':            { hp:  900, speed: 17.5, damage:  90 },
+    'war':               { hp: 1000, speed: 18.0, damage: 100 },
+    'geminiprosimple':   { hp: 1100, speed: 18.5, damage: 110 },
+    'deepseek':          { hp: 1200, speed: 19.0, damage: 120 },
+    'geminipro':         { hp: 1300, speed: 19.0, damage: 130 },
+    'legendary':         { hp: 1400, speed: 20.0, damage: 140 },
+    'sovereignabyss':    { hp: 1500, speed: 21.0, damage: 150 },
+    'sovereignabysspro': { hp: 1600, speed: 22.5, damage: 160 },
+    'sport':             { hp: 1700, speed: 23.5, damage: 180 },
+    'sportpro':          { hp: 1800, speed: 24.5, damage: 190 },
+    'dumpling':          { hp: 1900, speed: 24.0, damage: 200 },
+    'splittingtheseas':  { hp: 2000, speed: 25.0, damage: 220 }
 };
 
 const SHIP_LEVELS = [
