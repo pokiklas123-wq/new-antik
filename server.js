@@ -990,7 +990,7 @@ io.on('connection', (socket) => {
                 });
             }
 
-            io.to(roomId).emit('player_left', { id: socket.id });
+         //  no remove player  io.to(roomId).emit('player_left', { id: socket.id });
 
             if (p.deathTimer) clearTimeout(p.deathTimer);
             p.deathTimer = setTimeout(() => {
@@ -1870,7 +1870,7 @@ function leaveRoom(socket, immediate) {
             });
         }
 
-        io.to(roomId).emit('player_left', { id: socketId });
+      // no remove player offline io.to(roomId).emit('player_left', { id: socketId });
         if (player.deathTimer) clearTimeout(player.deathTimer);
 
         player.deathTimer = setTimeout(() => {
