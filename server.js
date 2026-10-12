@@ -7,7 +7,8 @@ const server = http.createServer(app);
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     pingInterval: 25000,
-    pingTimeout: 60000
+    pingTimeout: 60000,
+    maxHttpBufferSize: 1e7
 });
 
 const PORT = process.env.PORT || 3000;
@@ -685,12 +686,10 @@ function spawnWave(roomId) {
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
 
-    // 💣 جدول الموجة الجديدة (يعمل بعد أن يُلغى/ينفجر اللغم الحالي)
-room.bombSchedule = computeBombSchedule(totalBots);
-room.bombKillsCount = 0;
-room.bombBombsTriggered = 0;
-// ⚠️ لا نلمس bombActive / bombTimerHandle / bombExpireAt
-// اللغم الحالي يستمر حتى يُلغى يدوياً أو ينفجر (حتى لو الموجة انتهت)
+    room.bombSchedule = computeBombSchedule(totalBots);
+    room.bombKillsCount = 0;
+    room.bombBombsTriggered = 0;
+
     const initialSpawnCount = Math.min(totalBots, MAX_BOTS_ON_FIELD);
     const hpVal = botHPForRoom(room);
 
@@ -883,7 +882,77 @@ function endRoom(roomId) {
 
 io.on('connection', (socket) => {
 
+    // ═══════════════════════════════════════════════════════
+    //  🎙️ VOICE CHAT - state
+    // ═══════════════════════════════════════════════════════
+    socket.voiceChannel = null;
+    socket.voiceUid = null;
+    socket.voiceName = null;
+    socket.voiceMuted = false;
+
+    // ═══════════════════════════════════════════════════════
+    //  🎙️ VOICE CHAT - events
+    // ═══════════════════════════════════════════════════════
+    socket.on('voice_join', (data) => {
+        if (!data || !data.channelId || !data.uid) return;
+        if (socket.voiceChannel) {
+            socket.to('voice_' + socket.voiceChannel).emit('voice_peer_left', { uid: socket.voiceUid });
+            socket.leave('voice_' + socket.voiceChannel);
+        }
+        socket.voiceChannel = data.channelId;
+        socket.voiceUid = data.uid;
+        socket.voiceName = data.name || 'Player';
+        socket.join('voice_' + data.channelId);
+
+        const peers = [];
+        const room = io.sockets.adapter.rooms.get('voice_' + data.channelId);
+        if (room) {
+            for (const sid of room) {
+                const s = io.sockets.sockets.get(sid);
+                if (s && s.voiceUid && s.voiceUid !== data.uid) {
+                    peers.push({ uid: s.voiceUid, name: s.voiceName, muted: !!s.voiceMuted });
+                }
+            }
+        }
+        socket.emit('voice_peers', peers);
+        socket.to('voice_' + data.channelId).emit('voice_peer_joined', {
+            uid: data.uid, name: socket.voiceName
+        });
+        console.log(`[🎙️] ${data.uid} (${socket.voiceName}) joined voice room ${data.channelId}`);
+    });
+
+    socket.on('voice_leave', () => {
+        if (!socket.voiceChannel) return;
+        socket.to('voice_' + socket.voiceChannel).emit('voice_peer_left', { uid: socket.voiceUid });
+        socket.leave('voice_' + socket.voiceChannel);
+        console.log(`[🎙️] ${socket.voiceUid} left voice room ${socket.voiceChannel}`);
+        socket.voiceChannel = null;
+        socket.voiceUid = null;
+    });
+
+    socket.on('voice_data', (data) => {
+        if (!socket.voiceChannel || !socket.voiceUid) return;
+        if (!data || !data.chunk) return;
+        socket.to('voice_' + socket.voiceChannel).emit('voice_data', {
+            fromUid: socket.voiceUid,
+            seq: data.seq || 0,
+            chunk: data.chunk
+        });
+    });
+
+    socket.on('voice_mute_state', (data) => {
+        if (!socket.voiceChannel) return;
+        socket.voiceMuted = !!(data && data.muted);
+        socket.to('voice_' + socket.voiceChannel).emit('voice_mute_state', {
+            uid: socket.voiceUid, muted: socket.voiceMuted
+        });
+    });
+
     socket.on('disconnect', () => {
+        if (socket.voiceChannel) {
+            socket.to('voice_' + socket.voiceChannel).emit('voice_peer_left', { uid: socket.voiceUid });
+            socket.leave('voice_' + socket.voiceChannel);
+        }
         if (!socket.uid) return;
         onlineUsers.delete(socket.uid);
         const partyId = userPartyMap.get(socket.uid);
@@ -1650,7 +1719,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // ✅ Server Authoritative — لا نستقبل أي بيانات من العميل
     socket.on('bomb_disarm_request', () => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped || !room.bombActive) return;
@@ -1752,7 +1820,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D Co-op Server - Optimized'));
+app.get('/', (req, res) => res.send('Grand3D Co-op Server + Voice - Optimized'));
 
 setInterval(() => {
     const now = Date.now();
@@ -1772,4 +1840,4 @@ setInterval(() => {
     }
 }, 30000);
 
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server running on port ${PORT} (with VoiceChat)`));
