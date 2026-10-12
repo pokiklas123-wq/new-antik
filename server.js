@@ -44,23 +44,23 @@ const HIT_BOT_MIN_INTERVAL_MS = 40;
 const MAX_PLAYER_COORD = 1000000;
 const MAX_DAMAGE_PER_HIT = 999999;
 
-const BOMB_BASE_TIME     = 10;
+const BOMB_BASE_TIME     = 15;
 const BOMB_WAVE_BONUS    = 100;
-const BOMB_MAX_TIME      = 15;
-const BOMB_DISARM_RADIUS = 300;
+const BOMB_MAX_TIME      = 25;
+const BOMB_DISARM_RADIUS = 350;
 
 const HEALTH_DROP_EVERY_KILLS   = 6;
 const HEALTH_PACK_DURATION_MS   = 5000;
 const HEALTH_PACK_PICKUP_RADIUS = 250;
 const HEALTH_HEAL_PERCENT       = 0.25;
 
-const SUPER_CHARGE_EVERY_KILLS = 20;
+const SUPER_CHARGE_EVERY_KILLS = 15;
 const SHIELD_DURATION_MS       = 7000;
 const MAX_SUPER_CHARGES        = 2;
 
 const SHIPS_CONFIG = {
-    'bot':               { hp:  100, speed: 10.0, damage:  10 },
-    'devilahorns':       { hp:  200, speed: 11.0, damage:  20 },
+    'bot':               { hp:  110, speed: 11.0, damage:  15 },
+    'devilahorns':       { hp:  200, speed: 11.5, damage:  20 },
     'devilsfangs':       { hp:  300, speed: 12.0, damage:  30 },
     'finish':            { hp:  400, speed: 13.0, damage:  40 },
     'proskin':           { hp:  500, speed: 14.0, damage:  50 },
