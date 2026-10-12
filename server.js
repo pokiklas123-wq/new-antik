@@ -685,12 +685,12 @@ function spawnWave(roomId) {
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
 
-    room.bombSchedule = computeBombSchedule(totalBots);
-    room.bombKillsCount = 0;
-    room.bombBombsTriggered = 0;
-    room.bombActive = false;
-    if (room.bombTimerHandle) { clearTimeout(room.bombTimerHandle); room.bombTimerHandle = null; }
-
+    // 💣 جدول الموجة الجديدة (يعمل بعد أن يُلغى/ينفجر اللغم الحالي)
+room.bombSchedule = computeBombSchedule(totalBots);
+room.bombKillsCount = 0;
+room.bombBombsTriggered = 0;
+// ⚠️ لا نلمس bombActive / bombTimerHandle / bombExpireAt
+// اللغم الحالي يستمر حتى يُلغى يدوياً أو ينفجر (حتى لو الموجة انتهت)
     const initialSpawnCount = Math.min(totalBots, MAX_BOTS_ON_FIELD);
     const hpVal = botHPForRoom(room);
 
