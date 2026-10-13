@@ -669,6 +669,7 @@ function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, pla
     room.botsSpawnedThisWave++;
     room.bots[id] = {
         id, x: sp.x, y: sp.y, heading: rnd(0, 360), hp: hpVal,
+        maxHp: hpVal,   // ✅ مضافة لتحديد عدد الطلقات المطلوبة لقتل البوت
         fireTimer: 0, isChaser: isSurprise,
         role: isSurprise ? 'pusher' : assignBotRole(spawnIndex, room.totalBotsForWave),
         abilityTimer: rnd(0, 3), dashingUntil: 0, shieldUntil: 0,
@@ -1496,6 +1497,7 @@ io.on('connection', (socket) => {
         });
     });
 
+    // ✅✅✅ التعديل الأساسي: البوت يموت بطلقتين فقط ✅✅✅
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1514,9 +1516,9 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const shipStats = getShipStats(p.hullId);
-        const playerDamage = shipStats.damage || 10;
-        const hitPower = playerDamage * 2;
+        // 🔥 الضرر = نص الـ HP الأصلي مهما كانت قوة السفينة أو الموجة
+        const baseHp = bot.maxHp || bot.hp;
+        const hitPower = Math.max(1, Math.ceil(baseHp / 2));
         bot.hp -= hitPower;
 
         if (bot.hp <= 0.001) {
