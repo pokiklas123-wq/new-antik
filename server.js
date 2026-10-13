@@ -14,7 +14,7 @@ const io = new Server(server, {
 const PORT = process.env.PORT || 3000;
 const DB_URL = "https://game-worboat-default-rtdb.europe-west1.firebasedatabase.app";
 const MAX_PLAYERS_4V = 4;
-const RESPAWN_MS = 3000;
+const RESPAWN_MS = 2000;
 const TICK_MS = 100;
 
 const OFFLINE_DEATH_MS = 120000;
@@ -882,17 +882,11 @@ function endRoom(roomId) {
 
 io.on('connection', (socket) => {
 
-    // ═══════════════════════════════════════════════════════
-    //  🎙️ VOICE CHAT - state
-    // ═══════════════════════════════════════════════════════
     socket.voiceChannel = null;
     socket.voiceUid = null;
     socket.voiceName = null;
     socket.voiceMuted = false;
 
-    // ═══════════════════════════════════════════════════════
-    //  🎙️ VOICE CHAT - events
-    // ═══════════════════════════════════════════════════════
     socket.on('voice_join', (data) => {
         if (!data || !data.channelId || !data.uid) return;
         if (socket.voiceChannel) {
@@ -1255,7 +1249,9 @@ io.on('connection', (socket) => {
         io.to(roomId).emit('player_online', { id: socket.id, uid: uid, slotNumber: player.slotNumber });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: player.name,
+            id: socket.id,
+            uid: uid,
+            name: player.name,
             x: Math.round(player.x), y: Math.round(player.y),
             heading: Math.round(player.heading),
             hullId: player.hullId, skinPath: player.skinPath, finisherId: player.finisherId,
@@ -1263,7 +1259,9 @@ io.on('connection', (socket) => {
         });
 
         const existing = Object.values(room.players).filter(p => p.uid !== uid).map(p => ({
-            id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
+            id: p.id,
+            uid: p.uid,
+            name: p.name, x: Math.round(p.x), y: Math.round(p.y),
             heading: Math.round(p.heading),
             hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
             slotNumber: p.slotNumber || 0,
@@ -1295,8 +1293,9 @@ io.on('connection', (socket) => {
                     clearTimeout(oldRoom.players[socket.uid].deathTimer);
                     oldRoom.players[socket.uid].deathTimer = null;
                 }
+                const oldId = oldRoom.players[socket.uid].id;
                 delete oldRoom.players[socket.uid];
-                io.to(socket.currentRoom).emit('player_left', { id: socket.id });
+                io.to(socket.currentRoom).emit('player_left', { id: oldId });
                 if (Object.keys(oldRoom.players).length === 0) endRoom(socket.currentRoom);
             }
             socket.leave(socket.currentRoom);
@@ -1307,8 +1306,9 @@ io.on('connection', (socket) => {
             const r = rooms[rId];
             if (r.players[uid]) {
                 if (r.players[uid].deathTimer) { clearTimeout(r.players[uid].deathTimer); r.players[uid].deathTimer = null; }
+                const oldId = r.players[uid].id;
                 delete r.players[uid];
-                io.to(rId).emit('player_left', { id: socket.id });
+                io.to(rId).emit('player_left', { id: oldId });
                 if (Object.keys(r.players).length === 0) endRoom(rId);
             }
         }
@@ -1413,7 +1413,9 @@ io.on('connection', (socket) => {
         }
 
         const existing = Object.values(room.players).filter(p => p.uid !== socket.uid).map(p => ({
-            id: p.id, name: p.name, x: Math.round(p.x), y: Math.round(p.y),
+            id: p.id,
+            uid: p.uid,
+            name: p.name, x: Math.round(p.x), y: Math.round(p.y),
             heading: Math.round(p.heading),
             hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
             slotNumber: p.slotNumber || 0,
@@ -1422,7 +1424,9 @@ io.on('connection', (socket) => {
         socket.emit('room_state', { players: existing, wave: room.wave });
 
         socket.to(roomId).emit('player_joined', {
-            id: socket.id, name: socket.username,
+            id: socket.id,
+            uid: socket.uid,
+            name: socket.username,
             x: Math.round(sx), y: Math.round(sy), heading: 0,
             hullId: room.players[socket.uid].hullId,
             skinPath: room.players[socket.uid].skinPath,
@@ -1482,7 +1486,9 @@ io.on('connection', (socket) => {
         }
 
         socket.to(socket.currentRoom).emit('player_moved', {
-            id: socket.id, x: Math.round(p.x), y: Math.round(p.y),
+            id: socket.id,
+            uid: p.uid,
+            x: Math.round(p.x), y: Math.round(p.y),
             heading: Math.round(p.heading),
             hullId: p.hullId, skinPath: p.skinPath, finisherId: p.finisherId,
             slotNumber: p.slotNumber || 0,
