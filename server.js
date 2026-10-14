@@ -69,7 +69,9 @@ const PRISON_MAX_XP_MULT   = 1.0;
 // ===== XP & Tier System =====
 const XP_PER_LEVEL         = 100;
 const BASE_XP_PER_KILL     = 3;
-const PILLAR_XP_BASE       = 10; // ✅ تعديل نقطة فك الحاجز إلى 10
+const NEWBIE_LEVEL_THRESHOLD = 30; 
+const NEWBIE_XP_MULTIPLIER   = 3.0;  
+const PILLAR_XP_BASE       = 10;
 const OFFLINE_PILLAR_XP    = 3;
 const TIER_SIZE            = 30;
 const TOTAL_TIERS          = 20;
@@ -161,11 +163,19 @@ function getShipTier(hullId) {
 // ✅ المعادلة الخاصة بك للخبرة
 // إذا كنت تلعب في طابق مساوٍ أو أعلى: (الخبرة = 3 ، 6 ، 9)
 // إذا كنت تلعب في طابق أضعف من سفينتك: 0 خبرة (منع الاستغلال)
-function xpPerKill(hullId, roomTier) {
+function xpPerKill(hullId, roomTier, playerLevel) {
     const shipTier = getShipTier(hullId);
     const diff = (roomTier || 1) - shipTier;
     if (diff < 0) return 0;
-    return BASE_XP_PER_KILL * (diff + 1);
+    
+    let xp = BASE_XP_PER_KILL * (diff + 1);
+    
+    // ⭐ مكافأة المبتدئين (مستوى أقل من 30)
+    if (playerLevel && playerLevel < NEWBIE_LEVEL_THRESHOLD) {
+        xp = Math.round(xp * NEWBIE_XP_MULTIPLIER);
+    }
+    
+    return xp;
 }
 
 // ✅ المعادلة الخاصة بك للطلقات
@@ -980,10 +990,11 @@ function applyXpGain(player, gain) {
 }
 
 function awardKillXp(player, room) {
-    const gain = xpPerKill(player.hullId, room.tier);
+    const gain = xpPerKill(player.hullId, room.tier, player.level);
     if (gain <= 0) return;
     applyXpGain(player, gain);
 }
+
 
 function awardPillarXp(room, xpMult) {
     for (const uid in room.players) {
@@ -995,6 +1006,10 @@ function awardPillarXp(room, xpMult) {
             gain = OFFLINE_PILLAR_XP;
         } else {
             gain = Math.round(PILLAR_XP_BASE * xpMult);
+        }
+        // ⭐ مكافأة المبتدئين
+        if (!isOffline && pl.level && pl.level < NEWBIE_LEVEL_THRESHOLD) {
+            gain = Math.round(gain * NEWBIE_XP_MULTIPLIER);
         }
         applyXpGain(pl, gain);
     }
@@ -2125,12 +2140,17 @@ io.on('connection', (socket) => {
             byId: socket.id, byName: p.name
         });
 
-        // ✅ Award XP to whole team
-        for (const uid in room.players) {
-            const pl = room.players[uid];
-            if (!pl) continue;
-            applyXpGain(pl, BOMB_DISARM_XP);
-        }
+// ✅ Award XP to whole team (مع مضاعف المبتدئين)
+for (const uid in room.players) {
+    const pl = room.players[uid];
+    if (!pl) continue;
+    let gain = BOMB_DISARM_XP;
+    // ⭐ مكافأة المبتدئين
+    if (pl.level && pl.level < NEWBIE_LEVEL_THRESHOLD) {
+        gain = Math.round(gain * NEWBIE_XP_MULTIPLIER);
+    }
+    applyXpGain(pl, gain);
+}
 
         if (room.botsSpawnedThisWave < room.totalBotsForWave) {
             const need = room.totalBotsForWave - room.botsSpawnedThisWave;
