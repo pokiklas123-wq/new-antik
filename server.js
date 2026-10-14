@@ -20,7 +20,7 @@ const TICK_MS = 100;
 const OFFLINE_DEATH_MS = 120000;
 const OFFLINE_GRACE_SECONDS = 120;
 
-const MAX_BOTS_ON_FIELD = 50;
+const MAX_BOTS_ON_FIELD = 100;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
 
@@ -78,7 +78,7 @@ const TOTAL_TIERS          = 20;
 const XP_SAVE_DEBOUNCE_MS  = 2000;
 
 const SHIPS_CONFIG = {
-    'bot':               { hp:  110, speed: 11.0, damage:  15 },
+    'bot':               { hp:  110, speed: 11.0, damage:  10 },
     'devilahorns':       { hp:  200, speed: 11.5, damage:  20 },
     'devilsfangs':       { hp:  300, speed: 12.0, damage:  30 },
     'finish':            { hp:  400, speed: 13.0, damage:  40 },
@@ -100,27 +100,28 @@ const SHIPS_CONFIG = {
     'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
 };
 
+// ✅ SHIP_LEVELS: فتح السفن في بداية الطابق (31, 61, 91...)
 const SHIP_LEVELS = [
     { level: 1,   id: 'bot' },
-    { level: 30,  id: 'devilahorns' },
-    { level: 60,  id: 'devilsfangs' },
-    { level: 90,  id: 'finish' },
-    { level: 120, id: 'proskin' },
-    { level: 150, id: 'suphigh' },
-    { level: 180, id: 'suplis' },
-    { level: 210, id: 'suplis2' },
-    { level: 240, id: 'gemini' },
-    { level: 270, id: 'war' },
-    { level: 300, id: 'geminiprosimple' },
-    { level: 330, id: 'deepseek' },
-    { level: 360, id: 'geminipro' },
-    { level: 390, id: 'legendary' },
-    { level: 420, id: 'sovereignabyss' },
-    { level: 450, id: 'sovereignabysspro' },
-    { level: 480, id: 'sport' },
-    { level: 510, id: 'sportpro' },
-    { level: 540, id: 'dumpling' },
-    { level: 570, id: 'splittingtheseas' }
+    { level: 31,  id: 'devilahorns' },
+    { level: 61,  id: 'devilsfangs' },
+    { level: 91,  id: 'finish' },
+    { level: 121, id: 'proskin' },
+    { level: 151, id: 'suphigh' },
+    { level: 181, id: 'suplis' },
+    { level: 211, id: 'suplis2' },
+    { level: 241, id: 'gemini' },
+    { level: 271, id: 'war' },
+    { level: 301, id: 'geminiprosimple' },
+    { level: 331, id: 'deepseek' },
+    { level: 361, id: 'geminipro' },
+    { level: 391, id: 'legendary' },
+    { level: 421, id: 'sovereignabyss' },
+    { level: 451, id: 'sovereignabysspro' },
+    { level: 481, id: 'sport' },
+    { level: 511, id: 'sportpro' },
+    { level: 541, id: 'dumpling' },
+    { level: 571, id: 'splittingtheseas' }
 ];
 
 const onlineUsers = new Map();
@@ -276,8 +277,15 @@ function getTorpedoSpeed(room) {
     return Math.min(22.0 + Math.floor((room.wave || 1) / 20), TORPEDO_MAX_SPEED);
 }
 
-function botHPForRoom(room) { return getBotStatsForWave(room.botLevel || 1).hp; }
-function botDamageForRoom(room) { return getBotStatsForWave(room.botLevel || 1).damage; }
+// ✅ botHPForRoom: يعتمد على tier
+function botHPForRoom(room) {
+    return Math.max(10, 5 * (room.tier || 1));
+}
+
+// ✅ botDamageForRoom: يعتمد على tier
+function botDamageForRoom(room) {
+    return Math.max(20, 40 * (room.tier || 1));
+}
 
 function getPlayerDamageCooldownMs(room) {
     const wv = room.wave || 1;
@@ -297,8 +305,11 @@ function assignBotRole(index, total) {
     return 'blocker';
 }
 
-function botCountForWave(wave) {
-    return Math.floor(5 + (95 * Math.min((wave - 1) / 249.0, 1.0)));
+// ✅ botCountForWave: يعتمد على المستوى
+function botCountForWave(wave, botLevel) {
+    const lvl = Math.max(1, botLevel || 1);
+    if (lvl < 150) return 10;
+    return Math.min(100, Math.floor(lvl / 15));
 }
 
 function computeBombSchedule(botCount) {
@@ -355,8 +366,6 @@ function cleanSocket(socket) {
     socket.mode = null;
     socket.startLevel = null;
 }
-
-// ===== Room finding / creation =====
 
 function findRoomForTier(mode, tier, partyId) {
     for (const id in rooms) {
@@ -767,7 +776,8 @@ function spawnWave(roomId) {
     const room = rooms[roomId];
     if (!room || room.wiped) return;
     room.bots = {};
-    const totalBots = botCountForWave(room.wave);
+    // ✅ استخدام botLevel
+    const totalBots = botCountForWave(room.wave, room.botLevel);
     room.totalBotsForWave = totalBots;
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
@@ -839,7 +849,8 @@ function startPrisonPhase(roomId) {
     room.pillarX = room.worldSize / 2 + rnd(-PRISON_PILLAR_JITTER, PRISON_PILLAR_JITTER);
     room.pillarY = room.worldSize / 2 + rnd(-PRISON_PILLAR_JITTER, PRISON_PILLAR_JITTER);
 
-    const totalBots = botCountForWave(room.wave);
+    // ✅ استخدام botLevel
+    const totalBots = botCountForWave(room.wave, room.botLevel);
     room.totalBotsForWave = totalBots;
     room.botsSpawnedThisWave = 0;
     room.botsKilledThisWave = 0;
@@ -1002,11 +1013,22 @@ async function fetchUserStats(uid) {
         if (!res.ok) return fallback;
         const data = await res.json();
         if (!data) return fallback;
-        const xp = typeof data.xp === 'number' ? data.xp : ((data.level ? (data.level - 1) : 0) * XP_PER_LEVEL);
+
+        // ✅ اقرأ XP و level
+        const storedLevel = typeof data.level === 'number' ? data.level : 1;
+        const storedXp = typeof data.xp === 'number' ? data.xp : ((storedLevel - 1) * XP_PER_LEVEL);
+
+        // ✅ احسب level من XP
+        const xpComputedLevel = xpToLevel(storedXp);
+
+        // ✅ خذ الأكبر بين الاثنين
+        const finalLevel = Math.max(storedLevel, xpComputedLevel);
+        const finalXp = Math.max(storedXp, (finalLevel - 1) * XP_PER_LEVEL);
+
         return {
             kills: typeof data.total_kills === 'number' ? data.total_kills : 0,
-            xp: Math.max(0, xp),
-            level: xpToLevel(xp)
+            xp: finalXp,
+            level: finalLevel
         };
     } catch (e) { return fallback; }
 }
@@ -1025,7 +1047,7 @@ function savePlayerForce(player) {
     if (!player || !player.uid) return;
     const uid = player.uid;
     const xp = player.xp || 0;
-    const level = player.level || 1;
+    const level = Math.max(player.level || 1, xpToLevel(xp));  // ✅ الأكبر
     const sessionKills = player.kills || 0;
 
     // XP
@@ -1038,7 +1060,7 @@ function savePlayerForce(player) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
     }).catch(() => {});
 
-    // Kills = old (from DB) + sessionKillsSaved (from previous saves) + current sessionKills
+    // Kills
     if (sessionKills > 0 || (player.sessionKillsSaved || 0) > 0) {
         const baseKills = player.totalKillsAtStart || 0;
         const alreadySaved = player.sessionKillsSaved || 0;
@@ -1648,7 +1670,6 @@ io.on('connection', (socket) => {
 
         if (socket.mode !== '1VBOT' && socket.mode !== '4VBOT') { socket.emit('mode_rejected'); return; }
 
-        // اقرأ XP من Firebase
         const userStats = await fetchUserStats(uid);
         const startXp = userStats.xp;
         const startLevel = userStats.level;
@@ -1873,6 +1894,7 @@ io.on('connection', (socket) => {
         releaseBots(socket.currentRoom, socket.id, p.name, xpMult);
     });
 
+    // ✅ hit_bot: الضرر يعتمد على السفينة
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1892,9 +1914,10 @@ io.on('connection', (socket) => {
             return;
         }
 
-        const baseHp = bot.maxHp || bot.hp;
-        const hitPower = Math.max(1, Math.ceil(baseHp / 2));
-        bot.hp -= hitPower;
+        // ✅ الضرر من السفينة
+        const shipStats = getShipStats(p.hullId);
+        const playerDamage = shipStats.damage || 10;
+        bot.hp -= playerDamage;
 
         if (bot.hp <= 0.001) {
             delete room.bots[data.botId];
@@ -2186,7 +2209,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier Server Final v2'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier Server Final v3'));
 
 setInterval(() => {
     const now = Date.now();
@@ -2206,4 +2229,4 @@ setInterval(() => {
     }
 }, 30000);
 
-server.listen(PORT, () => console.log(`Server XP/Tier v2 running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server XP/Tier v3 running on port ${PORT}`));
