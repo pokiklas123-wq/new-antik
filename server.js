@@ -63,8 +63,8 @@ const PRISON_DURATION_MS   = 30000;
 const PRISON_BARRIER_RATIO = 0.55;
 const PRISON_PILLAR_RADIUS = 400;
 const PRISON_PILLAR_JITTER = 300;
-const PRISON_MIN_XP_MULT   = 1.0;
-const PRISON_MAX_XP_MULT   = 2.0;
+const PRISON_MIN_XP_MULT   = 0.1;
+const PRISON_MAX_XP_MULT   = 1.0;
 
 // ===== XP & Tier System =====
 const XP_PER_LEVEL         = 100;
