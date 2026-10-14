@@ -31,8 +31,8 @@ const MAX_CHASERS = 8;
 const BOT_LEASH_DIST = 9000;
 const BOT_FREE_ROAM_RADIUS = 7000;
 
-const TORPEDO_MIN_SPEED = 22.0;
-const TORPEDO_MAX_SPEED = 42.0;
+const TORPEDO_MIN_SPEED = 25.0;
+const TORPEDO_MAX_SPEED = 52.0;
 
 const PLAYER_SAFE_FRONT_ANGLE = 90;
 const SURPRISE_SPAWN_MIN = 4000;
@@ -43,20 +43,20 @@ const HIT_BOT_MIN_INTERVAL_MS = 40;
 const MAX_PLAYER_COORD = 1000000;
 const MAX_DAMAGE_PER_HIT = 999999;
 
-const BOMB_BASE_TIME     = 15;
+const BOMB_BASE_TIME     = 23;
 const BOMB_WAVE_BONUS    = 100;
-const BOMB_MAX_TIME      = 25;
-const BOMB_DISARM_RADIUS = 350;
+const BOMB_MAX_TIME      = 15;
+const BOMB_DISARM_RADIUS = 450;
 const BOMB_DISARM_XP     = 5;
 
-const HEALTH_DROP_EVERY_KILLS   = 6;
-const HEALTH_PACK_DURATION_MS   = 5000;
-const HEALTH_PACK_PICKUP_RADIUS = 250;
-const HEALTH_HEAL_PERCENT       = 0.25;
+const HEALTH_DROP_EVERY_KILLS   = 4;
+const HEALTH_PACK_DURATION_MS   = 6000;
+const HEALTH_PACK_PICKUP_RADIUS = 350;
+const HEALTH_HEAL_PERCENT       = 0.30;
 
-const SUPER_CHARGE_EVERY_KILLS = 15;
+const SUPER_CHARGE_EVERY_KILLS = 10;
 const SHIELD_DURATION_MS       = 7000;
-const MAX_SUPER_CHARGES        = 2;
+const MAX_SUPER_CHARGES        = 3;
 
 // ===== Prison System =====
 const PRISON_DURATION_MS   = 30000;
@@ -69,7 +69,7 @@ const PRISON_MAX_XP_MULT   = 1.0;
 // ===== XP & Tier System =====
 const XP_PER_LEVEL         = 100;
 const BASE_XP_PER_KILL     = 3;
-const NEWBIE_LEVEL_THRESHOLD = 30;
+const NEWBIE_LEVEL_THRESHOLD = 31;
 const NEWBIE_XP_MULTIPLIER   = 3.0;
 const PILLAR_XP_BASE       = 10;
 const OFFLINE_PILLAR_XP    = 3;
@@ -2321,7 +2321,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier v6 - Finisher Auto-Unlock + SportMax'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier v6.1 - Finisher Auto-Unlock + SportMax'));
 
 setInterval(() => {
     const now = Date.now();
