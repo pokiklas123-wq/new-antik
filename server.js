@@ -69,12 +69,12 @@ const PRISON_MAX_XP_MULT   = 1.0;
 // ===== XP & Tier System =====
 const XP_PER_LEVEL         = 100;
 const BASE_XP_PER_KILL     = 3;
-const NEWBIE_LEVEL_THRESHOLD = 30; 
-const NEWBIE_XP_MULTIPLIER   = 3.0;  
+const NEWBIE_LEVEL_THRESHOLD = 30;
+const NEWBIE_XP_MULTIPLIER   = 3.0;
 const PILLAR_XP_BASE       = 10;
 const OFFLINE_PILLAR_XP    = 3;
 const TIER_SIZE            = 30;
-const TOTAL_TIERS          = 20;
+const TOTAL_TIERS          = 21;
 const XP_SAVE_DEBOUNCE_MS  = 2000;
 
 const SHIPS_CONFIG = {
@@ -97,7 +97,8 @@ const SHIPS_CONFIG = {
     'sport':             { hp: 1700, speed: 20.5, damage: 170 },
     'sportpro':          { hp: 1800, speed: 21.0, damage: 180 },
     'dumpling':          { hp: 1900, speed: 21.5, damage: 190 },
-    'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 }
+    'splittingtheseas':  { hp: 2000, speed: 22.0, damage: 200 },
+    'sportmax':          { hp: 2100, speed: 22.5, damage: 210 }
 };
 
 const SHIP_LEVELS = [
@@ -120,7 +121,25 @@ const SHIP_LEVELS = [
     { level: 481, id: 'sport' },
     { level: 511, id: 'sportpro' },
     { level: 541, id: 'dumpling' },
-    { level: 571, id: 'splittingtheseas' }
+    { level: 571, id: 'splittingtheseas' },
+    { level: 601, id: 'sportmax' }
+];
+
+// ===== Finisher Unlock System =====
+const FINISHERS_CONFIG = [
+    { id: 'Cracking',              requiredLevel: 30 },
+    { id: 'CrackingPro',           requiredLevel: 60 },
+    { id: 'EclipseEmperor',        requiredLevel: 90 },
+    { id: 'EclipseEmperorPro',     requiredLevel: 120 },
+    { id: 'Erebus',                requiredLevel: 150 },
+    { id: 'ErebusPro',             requiredLevel: 180 },
+    { id: 'Sword',                 requiredLevel: 210 },
+    { id: 'SwordPro',              requiredLevel: 240 },
+    { id: 'TheSeventhDoor',        requiredLevel: 270 },
+    { id: 'TheSeventhDoorPro',     requiredLevel: 300 },
+    { id: 'TheHandOfTartarus',     requiredLevel: 330 },
+    { id: 'TheHandOfTartarusPro',  requiredLevel: 360 },
+    { id: 'TheThirdHour',          requiredLevel: 390 }
 ];
 
 const onlineUsers = new Map();
@@ -160,27 +179,20 @@ function getShipTier(hullId) {
     return idx + 1;
 }
 
-// ✅ المعادلة الخاصة بك للخبرة
-// إذا كنت تلعب في طابق مساوٍ أو أعلى: (الخبرة = 3 ، 6 ، 9)
-// إذا كنت تلعب في طابق أضعف من سفينتك: 0 خبرة (منع الاستغلال)
 function xpPerKill(hullId, roomTier, playerLevel) {
     const shipTier = getShipTier(hullId);
     const diff = (roomTier || 1) - shipTier;
     if (diff < 0) return 0;
-    
+
     let xp = BASE_XP_PER_KILL * (diff + 1);
-    
-    // ⭐ مكافأة المبتدئين (مستوى أقل من 30)
+
     if (playerLevel && playerLevel < NEWBIE_LEVEL_THRESHOLD) {
         xp = Math.round(xp * NEWBIE_XP_MULTIPLIER);
     }
-    
+
     return xp;
 }
 
-// ✅ المعادلة الخاصة بك للطلقات
-// الطابق المتساوي: 3 طلقات / الطابق الأعلى: 6, 9 طلقات...
-// طابق أقل من سفينتك: طلقة واحدة (منع الاستغلال)
 function shotsNeeded(shipTier, roomTier) {
     const diff = (roomTier || 1) - (shipTier || 1);
     if (diff < 0) return 1;
@@ -191,6 +203,26 @@ function bestShipForLevel(level) {
     let best = SHIP_LEVELS[0].id;
     for (const entry of SHIP_LEVELS) {
         if (level >= entry.level) best = entry.id;
+    }
+    return best;
+}
+
+// ===== Finisher helpers =====
+
+function getNewlyUnlockedFinishers(oldLevel, newLevel) {
+    const result = [];
+    for (const f of FINISHERS_CONFIG) {
+        if (oldLevel < f.requiredLevel && newLevel >= f.requiredLevel) {
+            result.push(f.id);
+        }
+    }
+    return result;
+}
+
+function getBestFinisherForLevel(level) {
+    let best = null;
+    for (const f of FINISHERS_CONFIG) {
+        if (level >= f.requiredLevel) best = f.id;
     }
     return best;
 }
@@ -969,7 +1001,7 @@ function releaseBots(roomId, byId, byName, xpMult) {
     io.to(roomId).emit('bots_update', botsPayload);
 }
 
-// ===== XP Awarding =====
+// ===== XP Awarding (مع نظام الفنشرز) =====
 
 function applyXpGain(player, gain) {
     if (!player || gain <= 0) return;
@@ -977,13 +1009,57 @@ function applyXpGain(player, gain) {
     player.xp = (player.xp || 0) + gain;
     player.level = xpToLevel(player.xp);
     const tierChanged = levelToTier(player.level) > levelToTier(oldLevel);
+
+    const unlockedFinishers = [];
+    let newlyEquipped = null;
+
+    if (player.level > oldLevel) {
+        const newFinishers = getNewlyUnlockedFinishers(oldLevel, player.level);
+        if (newFinishers.length > 0) {
+            for (const fId of newFinishers) {
+                unlockedFinishers.push(fId);
+                if (player.uid) {
+                    fetchWithTimeout(DB_URL + "/players/" + player.uid + "/unlockedFinishers/" + fId + ".json", {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(true)
+                    }).catch(() => {});
+                }
+            }
+
+            const best = getBestFinisherForLevel(player.level);
+            if (best) {
+                newlyEquipped = best;
+                player.finisherId = best;
+
+                if (player.uid) {
+                    fetchWithTimeout(DB_URL + "/players/" + player.uid + "/activeFinisherId.json", {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(best)
+                    }).catch(() => {});
+                }
+
+                if (player.currentRoom) {
+                    io.to(player.currentRoom).emit('player_finisher_changed', {
+                        id: player.id,
+                        uid: player.uid,
+                        finisherId: best
+                    });
+                }
+            }
+        }
+    }
+
     if (player.online && player.id && !player.isGhost) {
         io.to(player.id).emit('xp_update', {
             xp: player.xp,
             level: player.level,
             tier: levelToTier(player.level),
             gained: gain,
-            tierChanged
+            tierChanged,
+            unlockedFinishers,
+            newlyEquipped
         });
     }
     savePlayerDebounced(player);
@@ -994,7 +1070,6 @@ function awardKillXp(player, room) {
     if (gain <= 0) return;
     applyXpGain(player, gain);
 }
-
 
 function awardPillarXp(room, xpMult) {
     for (const uid in room.players) {
@@ -1007,7 +1082,6 @@ function awardPillarXp(room, xpMult) {
         } else {
             gain = Math.round(PILLAR_XP_BASE * xpMult);
         }
-        // ⭐ مكافأة المبتدئين
         if (!isOffline && pl.level && pl.level < NEWBIE_LEVEL_THRESHOLD) {
             gain = Math.round(gain * NEWBIE_XP_MULTIPLIER);
         }
@@ -1025,7 +1099,7 @@ async function fetchWithTimeout(url, options = {}, ms = 5000) {
 }
 
 async function fetchUserStats(uid) {
-    const fallback = { kills: 0, xp: 0, level: 1 };
+    const fallback = { kills: 0, xp: 0, level: 1, finisherId: null };
     if (!uid) return fallback;
     try {
         const res = await fetchWithTimeout(DB_URL + "/players/" + uid + ".json", {}, 4000);
@@ -1033,7 +1107,6 @@ async function fetchUserStats(uid) {
         const data = await res.json();
         if (!data) return fallback;
 
-        // ✅ XP is the only source of truth
         let xp = 0;
         if (typeof data.xp === 'number') xp = data.xp;
         else if (typeof data.level === 'number') xp = (data.level - 1) * XP_PER_LEVEL;
@@ -1042,7 +1115,8 @@ async function fetchUserStats(uid) {
         return {
             kills: typeof data.total_kills === 'number' ? data.total_kills : 0,
             xp: xp,
-            level: xpToLevel(xp)
+            level: xpToLevel(xp),
+            finisherId: typeof data.activeFinisherId === 'string' ? data.activeFinisherId : null
         };
     } catch (e) { return fallback; }
 }
@@ -1059,7 +1133,7 @@ function savePlayerForce(player) {
     if (!player || !player.uid) return;
     const uid = player.uid;
     const xp = player.xp || 0;
-    const level = xpToLevel(xp);  // ✅ Level from XP only
+    const level = xpToLevel(xp);
     const sessionKills = player.kills || 0;
 
     fetchWithTimeout(DB_URL + "/players/" + uid + "/xp.json", {
@@ -1069,6 +1143,12 @@ function savePlayerForce(player) {
     fetchWithTimeout(DB_URL + "/players/" + uid + "/level.json", {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
     }).catch(() => {});
+
+    if (player.finisherId) {
+        fetchWithTimeout(DB_URL + "/players/" + uid + "/activeFinisherId.json", {
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(player.finisherId)
+        }).catch(() => {});
+    }
 
     if (sessionKills > 0 || (player.sessionKillsSaved || 0) > 0) {
         const baseKills = player.totalKillsAtStart || 0;
@@ -1549,6 +1629,7 @@ io.on('connection', (socket) => {
         player.isGhost = false;
         player.id = socket.id;
         player.lastMoveTime = Date.now();
+        player.currentRoom = roomId;
 
         if (hullId && hullId !== player.hullId) {
             player.hullId = hullId;
@@ -1684,6 +1765,12 @@ io.on('connection', (socket) => {
         const startKills = userStats.kills || 0;
         socket.startLevel = startLevel;
 
+        // ⭐ الفنشر المستخدم: من العميل أو من Firebase أو الأفضل للمستوى
+        let startFinisher = finisherId || userStats.finisherId;
+        if (!startFinisher) {
+            startFinisher = getBestFinisherForLevel(startLevel) || 'none';
+        }
+
         const playerTier = levelToTier(startLevel);
 
         let roomId = null;
@@ -1749,7 +1836,7 @@ io.on('connection', (socket) => {
             online: true, isGhost: false, deathTimer: null,
             hullId: validHullId,
             skinPath: skinPath || 'bt/bot/bot.png',
-            finisherId: finisherId || 'none',
+            finisherId: startFinisher,
             slotNumber: assignedSlot,
             offlineAt: 0, offlineReason: null,
             vx: 0, vy: 0, lastX: sx, lastY: sy,
@@ -1758,7 +1845,8 @@ io.on('connection', (socket) => {
             lastSaveAt: 0,
             superCharges: 0,
             killsSinceSuperCharge: 0,
-            shieldUntil: 0
+            shieldUntil: 0,
+            currentRoom: roomId
         };
 
         socket.emit('match_found', {
@@ -1900,7 +1988,6 @@ io.on('connection', (socket) => {
         releaseBots(socket.currentRoom, socket.id, p.name, xpMult);
     });
 
-    // ✅ hit_bot uses ship-tier rule for XP and shots
     socket.on('hit_bot', (data) => {
         if (!data || data.botId === undefined || data.botId === null) return;
         const room = rooms[socket.currentRoom];
@@ -1920,7 +2007,6 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // ✅ حساب الضرر بناءً على عدد الطلقات المطلوب
         const shipTier = getShipTier(p.hullId);
         const shots = shotsNeeded(shipTier, room.tier);
         const botMaxHp = bot.maxHp || bot.hp;
@@ -1980,7 +2066,7 @@ io.on('connection', (socket) => {
             io.to(socket.currentRoom).emit('bot_killed', {
                 botId: data.botId,
                 byId: socket.id, byName: p.name,
-                finisherId: data.finisherId || 'none',
+                finisherId: p.finisherId || data.finisherId || 'none',
                 isLastBot: isWaveComplete,
                 remainingBots
             });
@@ -2032,17 +2118,17 @@ io.on('connection', (socket) => {
         }
 
         let serverDamage;
-if (isLethal) serverDamage = p.hp;
-else if (isCrash) serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
-else serverDamage = botDamageForRoom(room);
+        if (isLethal) serverDamage = p.hp;
+        else if (isCrash) serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
+        else serverDamage = botDamageForRoom(room);
 
-// ⭐ حماية المبتدئين: ثلث الضرر فقط
-const isNewbiePlayer = p.level && p.level < NEWBIE_LEVEL_THRESHOLD;
-if (isNewbiePlayer && !isLethal) {
-    serverDamage = Math.round(serverDamage / 3);
-}
+        // ⭐ حماية المبتدئين: ثلث الضرر
+        const isNewbiePlayer = p.level && p.level < NEWBIE_LEVEL_THRESHOLD;
+        if (isNewbiePlayer && !isLethal) {
+            serverDamage = Math.round(serverDamage / 3);
+        }
 
-serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
+        serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
 
         p.lastDamageTime = now;
         p.hp -= serverDamage;
@@ -2128,7 +2214,6 @@ serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
         });
     });
 
-    // ✅ Bomb disarmed gives XP to whole team
     socket.on('bomb_disarm_request', () => {
         const room = rooms[socket.currentRoom];
         if (!room || room.wiped || !room.bombActive) return;
@@ -2147,17 +2232,16 @@ serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
             byId: socket.id, byName: p.name
         });
 
-// ✅ Award XP to whole team (مع مضاعف المبتدئين)
-for (const uid in room.players) {
-    const pl = room.players[uid];
-    if (!pl) continue;
-    let gain = BOMB_DISARM_XP;
-    // ⭐ مكافأة المبتدئين
-    if (pl.level && pl.level < NEWBIE_LEVEL_THRESHOLD) {
-        gain = Math.round(gain * NEWBIE_XP_MULTIPLIER);
-    }
-    applyXpGain(pl, gain);
-}
+        // ⭐ Award XP to whole team (مع مضاعف المبتدئين)
+        for (const uid in room.players) {
+            const pl = room.players[uid];
+            if (!pl) continue;
+            let gain = BOMB_DISARM_XP;
+            if (pl.level && pl.level < NEWBIE_LEVEL_THRESHOLD) {
+                gain = Math.round(gain * NEWBIE_XP_MULTIPLIER);
+            }
+            applyXpGain(pl, gain);
+        }
 
         if (room.botsSpawnedThisWave < room.totalBotsForWave) {
             const need = room.totalBotsForWave - room.botsSpawnedThisWave;
@@ -2237,7 +2321,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier v4 - Anti-Smurf Enabled'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier v5 - Finisher Auto-Unlock + SportMax'));
 
 setInterval(() => {
     const now = Date.now();
@@ -2257,4 +2341,4 @@ setInterval(() => {
     }
 }, 30000);
 
-server.listen(PORT, () => console.log(`Server v4 running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server v5 running on port ${PORT}`));
