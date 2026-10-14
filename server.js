@@ -2032,10 +2032,17 @@ io.on('connection', (socket) => {
         }
 
         let serverDamage;
-        if (isLethal) serverDamage = p.hp;
-        else if (isCrash) serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
-        else serverDamage = botDamageForRoom(room);
-        serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
+if (isLethal) serverDamage = p.hp;
+else if (isCrash) serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
+else serverDamage = botDamageForRoom(room);
+
+// ⭐ حماية المبتدئين: ثلث الضرر فقط
+const isNewbiePlayer = p.level && p.level < NEWBIE_LEVEL_THRESHOLD;
+if (isNewbiePlayer && !isLethal) {
+    serverDamage = Math.round(serverDamage / 3);
+}
+
+serverDamage = Math.min(serverDamage, MAX_DAMAGE_PER_HIT);
 
         p.lastDamageTime = now;
         p.hp -= serverDamage;
