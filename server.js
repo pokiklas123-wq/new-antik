@@ -920,7 +920,6 @@ function releaseBots(roomId, byId, byName, xpMult) {
         room.bots[botId].lastSent = null;
     }
 
-    // 🎁 منح XP العمود للجميع (Online + Offline)
     awardPillarXp(room, xpMult);
 
     io.to(roomId).emit('prison_released', {
@@ -1027,17 +1026,28 @@ function savePlayerForce(player) {
     const uid = player.uid;
     const xp = player.xp || 0;
     const level = player.level || 1;
-    const kills = player.kills || 0;
+    const sessionKills = player.kills || 0;
+
+    // XP
     fetchWithTimeout(DB_URL + "/players/" + uid + "/xp.json", {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(xp)
     }).catch(() => {});
+
+    // Level
     fetchWithTimeout(DB_URL + "/players/" + uid + "/level.json", {
         method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(level)
     }).catch(() => {});
-    if (kills > 0) {
+
+    // Kills = old (from DB) + sessionKillsSaved (from previous saves) + current sessionKills
+    if (sessionKills > 0 || (player.sessionKillsSaved || 0) > 0) {
+        const baseKills = player.totalKillsAtStart || 0;
+        const alreadySaved = player.sessionKillsSaved || 0;
+        const newTotalKills = baseKills + alreadySaved + sessionKills;
         fetchWithTimeout(DB_URL + "/players/" + uid + "/total_kills.json", {
-            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(kills)
+            method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newTotalKills)
         }).catch(() => {});
+        player.sessionKillsSaved = alreadySaved + sessionKills;
+        player.kills = 0;
     }
 }
 
@@ -1083,7 +1093,6 @@ function flushWaveStats(roomId) {
         const pl = room.players[uid];
         if (!pl.uid) continue;
         savePlayerForce(pl);
-        pl.kills = 0;
     }
     sendLeaderboard(roomId);
 }
@@ -1437,7 +1446,6 @@ io.on('connection', (socket) => {
                 }
             }
             if (existingRoomId) { io.to(partyId).emit("party_matchmaking_started", { mode, roomId: existingRoomId }); return; }
-            // طابق القائد
             const leaderPlayer = party.members.find(m => m.uid === party.leaderUid);
             const startLevel = leaderPlayer ? leaderPlayer.level : 1;
             const startTier = levelToTier(startLevel);
@@ -1612,6 +1620,7 @@ io.on('connection', (socket) => {
                     clearTimeout(oldRoom.players[socket.uid].deathTimer);
                     oldRoom.players[socket.uid].deathTimer = null;
                 }
+                savePlayerForce(oldRoom.players[socket.uid]);
                 const oldId = oldRoom.players[socket.uid].id;
                 delete oldRoom.players[socket.uid];
                 io.to(socket.currentRoom).emit('player_left', { id: oldId });
@@ -1625,6 +1634,7 @@ io.on('connection', (socket) => {
             const r = rooms[rId];
             if (r.players[uid]) {
                 if (r.players[uid].deathTimer) { clearTimeout(r.players[uid].deathTimer); r.players[uid].deathTimer = null; }
+                savePlayerForce(r.players[uid]);
                 const oldId = r.players[uid].id;
                 delete r.players[uid];
                 io.to(rId).emit('player_left', { id: oldId });
@@ -1642,6 +1652,7 @@ io.on('connection', (socket) => {
         const userStats = await fetchUserStats(uid);
         const startXp = userStats.xp;
         const startLevel = userStats.level;
+        const startKills = userStats.kills || 0;
         socket.startLevel = startLevel;
 
         const playerTier = levelToTier(startLevel);
@@ -1654,7 +1665,6 @@ io.on('connection', (socket) => {
                 if (!r || r.wiped || r.mode !== socket.mode) { partyRoomMap.delete(partyId); roomId = null; }
             }
             if (!roomId) {
-                // طابق القائد
                 const party = activeParties.get(partyId);
                 let startTier = playerTier;
                 if (party) {
@@ -1671,7 +1681,6 @@ io.on('connection', (socket) => {
                 }
             }
         } else {
-            // Solo: طابق اللاعب بالضبط
             roomId = findRoomForTier(socket.mode, playerTier, null);
             if (!roomId) roomId = createRoom(socket.mode, playerTier);
         }
@@ -1706,6 +1715,8 @@ io.on('connection', (socket) => {
             maxHp: stats.hp, hp: stats.hp, maxSpeed: stats.speed,
             kills: 0, level: startLevel,
             xp: startXp,
+            totalKillsAtStart: startKills,
+            sessionKillsSaved: 0,
             online: true, isGhost: false, deathTimer: null,
             hullId: validHullId,
             skinPath: skinPath || 'bt/bot/bot.png',
@@ -1881,7 +1892,6 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // البوت يموت بطلقتين
         const baseHp = bot.maxHp || bot.hp;
         const hitPower = Math.max(1, Math.ceil(baseHp / 2));
         bot.hp -= hitPower;
@@ -1889,9 +1899,8 @@ io.on('connection', (socket) => {
         if (bot.hp <= 0.001) {
             delete room.bots[data.botId];
             room.botsKilledThisWave++;
-            p.kills += 1;
+            p.kills = (p.kills || 0) + 1;
 
-            // 🎁 XP القتل
             awardKillXp(p, room);
 
             room.roomKillCounter++;
@@ -2177,7 +2186,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier Server Final'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier Server Final v2'));
 
 setInterval(() => {
     const now = Date.now();
@@ -2197,4 +2206,4 @@ setInterval(() => {
     }
 }, 30000);
 
-server.listen(PORT, () => console.log(`Server XP/Tier running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server XP/Tier v2 running on port ${PORT}`));
