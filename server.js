@@ -288,10 +288,18 @@ function clearRoomTimeouts(roomId) {
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
-
+/*
 function getMapStats(level) {
     const progress = Math.min(level / 250.0, 1.0);
     return { size: 10000 + (10000 * progress), count: 20 + Math.floor(100 * progress) };
+}
+*/
+
+function getMapStats(level) {
+    const progress = Math.min(level / 250.0, 1.0);
+    const originalCount = 20 + Math.floor(100 * progress); // 20 → 120 جزيرة
+    const count = Math.floor(originalCount / 2);            // 10 → 60 جزيرة
+    return { size: 10000 + (10000 * progress), count };
 }
 
 function generateIslands(count, worldSize) {
@@ -2321,7 +2329,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier v6.1 - Finisher Auto-Unlock + SportMax'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier v6.2 - Finisher Auto-Unlock + SportMax'));
 
 setInterval(() => {
     const now = Date.now();
