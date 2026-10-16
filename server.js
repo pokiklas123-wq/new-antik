@@ -23,6 +23,8 @@ const OFFLINE_GRACE_SECONDS = 120;
 const MAX_BOTS_ON_FIELD = 100;
 const BOT_SPAWN_MIN_DIST = 3500;
 const BOT_SPAWN_MAX_DIST = 6000;
+// ⭐ جديد: الحد الأدنى لبعد البوت عن اللاعب عند الظهور من الأطراف
+const BOT_EDGE_MIN_DIST_FROM_PLAYER = 3000;
 
 const FPS_RATIO = 6.0;
 const BOT_MAX_SPEED = 25.0;
@@ -62,7 +64,8 @@ const MAX_SUPER_CHARGES        = 3;
 const PRISON_DURATION_MS   = 30000;
 const PRISON_BARRIER_RATIO = 0.55;
 const PRISON_PILLAR_RADIUS = 400;
-const PRISON_PILLAR_JITTER = 300;
+// ⭐ رفعت القيمة: العمود الآن يظهر بعيداً عن المنتصف (1500 بدل 300)
+const PRISON_PILLAR_JITTER = 1500;
 const PRISON_MIN_XP_MULT   = 0.1;
 const PRISON_MAX_XP_MULT   = 1.0;
 
@@ -125,7 +128,6 @@ const SHIP_LEVELS = [
     { level: 601, id: 'sportmax' }
 ];
 
-// ===== Finisher Unlock System =====
 const FINISHERS_CONFIG = [
     { id: 'Cracking',              requiredLevel: 30 },
     { id: 'CrackingPro',           requiredLevel: 60 },
@@ -207,8 +209,6 @@ function bestShipForLevel(level) {
     return best;
 }
 
-// ===== Finisher helpers =====
-
 function getNewlyUnlockedFinishers(oldLevel, newLevel) {
     const result = [];
     for (const f of FINISHERS_CONFIG) {
@@ -226,8 +226,6 @@ function getBestFinisherForLevel(level) {
     }
     return best;
 }
-
-// ===== Basic helpers =====
 
 function findFreeSlot(room) {
     const used = new Set();
@@ -288,38 +286,99 @@ function clearRoomTimeouts(roomId) {
 
 function rnd(a, b) { return a + Math.random() * (b - a); }
 function dist2(ax, ay, bx, by) { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; }
-/*
-function getMapStats(level) {
-    const progress = Math.min(level / 250.0, 1.0);
-    return { size: 10000 + (10000 * progress), count: 20 + Math.floor(100 * progress) };
-}
-*/
 
 function getMapStats(level) {
     const progress = Math.min(level / 250.0, 1.0);
-    const originalCount = 20 + Math.floor(100 * progress); // 20 → 120 جزيرة
-    const count = Math.floor(originalCount / 2);            // 10 → 60 جزيرة
+    const originalCount = 20 + Math.floor(100 * progress);
+    const count = Math.floor(originalCount / 2);
     return { size: 10000 + (10000 * progress), count };
 }
 
+// ⭐⭐⭐ جديد: توليد الجزر بتوزيع شبكي ذكي — يمنع التلاصق ويوزع على كل الخريطة
 function generateIslands(count, worldSize) {
     const islands = [];
-    const rng = Math.random;
-    let placed = 0, attempts = 0;
     const MIN_MARGIN = 1450;
-    while (placed < count && attempts < 8000) {
-        attempts++;
-        const ix = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
-        const iy = MIN_MARGIN + rng() * (worldSize - (MIN_MARGIN * 2));
-        if (Math.hypot(ix - (worldSize / 2), iy - (worldSize / 2)) < 50) continue;
+    const MIN_GAP = 700; // مسافة إضافية بين الجزر لمنع التلاصق
+
+    // بناء شبكة تغطي الخريطة بأكملها
+    const gridN = Math.max(3, Math.ceil(Math.sqrt(count * 1.8)));
+    const usableW = worldSize - MIN_MARGIN * 2;
+    const usableH = worldSize - MIN_MARGIN * 2;
+    const cellW = usableW / gridN;
+    const cellH = usableH / gridN;
+
+    // اجمع كل الخلايا ثم اخلطها
+    const cells = [];
+    for (let gy = 0; gy < gridN; gy++) {
+        for (let gx = 0; gx < gridN; gx++) {
+            cells.push({ gx, gy });
+        }
+    }
+    for (let i = cells.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        const tmp = cells[i]; cells[i] = cells[j]; cells[j] = tmp;
+    }
+
+    let placed = 0;
+    for (const cell of cells) {
+        if (placed >= count) break;
+
+        const r = 160 + Math.random() * 220;
+        const h = 140 + Math.random() * 180;
+
+        // موقع عشوائي داخل الخلية (مع هامش جيد)
+        const pad = r + 200;
+        const cw = Math.max(1, cellW - pad * 2);
+        const ch = Math.max(1, cellH - pad * 2);
+        const baseX = MIN_MARGIN + cell.gx * cellW + pad + Math.random() * cw;
+        const baseY = MIN_MARGIN + cell.gy * cellH + pad + Math.random() * ch;
+
+        let x = baseX, y = baseY;
+        x = Math.max(MIN_MARGIN, Math.min(worldSize - MIN_MARGIN, x));
+        y = Math.max(MIN_MARGIN, Math.min(worldSize - MIN_MARGIN, y));
+
+        // لا نضعها قريبة جداً من مركز الخريطة (منطقة القنبلة والسجن)
+        const centerDist = Math.hypot(x - worldSize / 2, y - worldSize / 2);
+        if (centerDist < 1600) continue;
+
+        // تحقق من عدم التلاصق مع الجزر الموجودة
         let clash = false;
         for (const o of islands) {
-            if (Math.hypot(ix - o.x, iy - o.y) < o.radius + 900) { clash = true; break; }
+            if (Math.hypot(x - o.x, y - o.y) < o.radius + r + MIN_GAP) { clash = true; break; }
         }
         if (clash) continue;
-        islands.push({ x: ix, y: iy, radius: 160 + rng() * 220, height: 140 + rng() * 180, seed: Math.floor(rng() * 9999) });
+
+        islands.push({
+            x, y,
+            radius: r,
+            height: h,
+            seed: Math.floor(Math.random() * 9999)
+        });
         placed++;
     }
+
+    // إذا فشل التوزيع بالشبكة، نملأ بأماكن عشوائية آمنة
+    let attempts = 0;
+    while (placed < count && attempts < 4000) {
+        attempts++;
+        const r = 160 + Math.random() * 220;
+        const h = 140 + Math.random() * 180;
+        const x = MIN_MARGIN + Math.random() * (worldSize - MIN_MARGIN * 2);
+        const y = MIN_MARGIN + Math.random() * (worldSize - MIN_MARGIN * 2);
+
+        const centerDist = Math.hypot(x - worldSize / 2, y - worldSize / 2);
+        if (centerDist < 1600) continue;
+
+        let clash = false;
+        for (const o of islands) {
+            if (Math.hypot(x - o.x, y - o.y) < o.radius + r + MIN_GAP) { clash = true; break; }
+        }
+        if (clash) continue;
+
+        islands.push({ x, y, radius: r, height: h, seed: Math.floor(Math.random() * 9999) });
+        placed++;
+    }
+
     return islands;
 }
 
@@ -389,6 +448,49 @@ function computeBombTimer(wave) {
     return Math.min(BOMB_MAX_TIME, BOMB_BASE_TIME + Math.floor(wave / BOMB_WAVE_BONUS));
 }
 
+// ⭐⭐⭐ جديد: ظهور البوتات من أطراف الخريطة (بدل حول اللاعب)
+function randomSpawnAtEdge(room, minDistFromPlayers) {
+    const ws = room.worldSize;
+    const margin = 900;
+    const players = Object.values(room.players).filter(p => p.hp > 0 && p.online && !p.isGhost);
+
+    for (let attempt = 0; attempt < 120; attempt++) {
+        // اختر حافة عشوائية
+        const edge = Math.floor(Math.random() * 4);
+        let x, y;
+        if (edge === 0)      { x = rnd(margin, ws - margin); y = margin; }
+        else if (edge === 1) { x = ws - margin; y = rnd(margin, ws - margin); }
+        else if (edge === 2) { x = rnd(margin, ws - margin); y = ws - margin; }
+        else                 { x = margin; y = rnd(margin, ws - margin); }
+
+        // تأكد أنه ليس داخل جزيرة
+        let onIsland = false;
+        for (const isl of room.islands) {
+            if (dist2(x, y, isl.x, isl.y) < (isl.radius + 250) * (isl.radius + 250)) {
+                onIsland = true;
+                break;
+            }
+        }
+        if (onIsland) continue;
+
+        // تأكد أنه بعيد بما فيه الكفاية عن اللاعبين
+        let tooClose = false;
+        for (const p of players) {
+            if (dist2(x, y, p.x, p.y) < minDistFromPlayers * minDistFromPlayers) {
+                tooClose = true;
+                break;
+            }
+        }
+        if (tooClose) continue;
+
+        return { x, y };
+    }
+
+    // احتياط: أي نقطة على الحافة العلوية
+    return { x: rnd(margin, ws - margin), y: margin };
+}
+
+// (احتفظت بها لأنها تُستخدم لظهور البوتات المفاجئة عند إلغاء القنبلة)
 function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize, playerHeading) {
     const playerHeadingRad = (playerHeading || 0) * Math.PI / 180;
     for (let attempt = 0; attempt < 60; attempt++) {
@@ -419,6 +521,68 @@ function randomSpawnNearSafe(cx, cy, minD, maxD, islands, worldSize, playerHeadi
     fx = Math.max(700, Math.min(worldSize - 700, fx));
     fy = Math.max(700, Math.min(worldSize - 700, fy));
     return { x: fx, y: fy };
+}
+
+// ⭐⭐⭐ جديد: موقع عشوائي للقنبلة (بعيد عن الجزر واللاعبين، لكن داخل المنطقة الوسطى)
+function findBombSpawnPos(room) {
+    const ws = room.worldSize;
+    const cx = ws / 2;
+    const cy = ws / 2;
+    const MIN_DIST_FROM_PLAYERS = 1800;
+
+    for (let attempt = 0; attempt < 100; attempt++) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 1500 + Math.random() * (ws * 0.30);
+        let x = cx + Math.cos(angle) * dist;
+        let y = cy + Math.sin(angle) * dist;
+        x = Math.max(900, Math.min(ws - 900, x));
+        y = Math.max(900, Math.min(ws - 900, y));
+
+        let onIsland = false;
+        for (const isl of room.islands) {
+            if (dist2(x, y, isl.x, isl.y) < (isl.radius + 300) * (isl.radius + 300)) { onIsland = true; break; }
+        }
+        if (onIsland) continue;
+
+        let tooClose = false;
+        for (const uid in room.players) {
+            const p = room.players[uid];
+            if (!p || p.hp <= 0) continue;
+            if (dist2(x, y, p.x, p.y) < MIN_DIST_FROM_PLAYERS * MIN_DIST_FROM_PLAYERS) { tooClose = true; break; }
+        }
+        if (tooClose) continue;
+
+        return { x, y };
+    }
+
+    return { x: cx + rnd(-2000, 2000), y: cy + rnd(-2000, 2000) };
+}
+
+// ⭐⭐⭐ جديد: موقع عمود السجن (داخل الحاجز، بعيد عن الجزر)
+function findPillarPosition(room) {
+    const ws = room.worldSize;
+    const cx = ws / 2;
+    const cy = ws / 2;
+    const maxR = Math.max(500, room.prisonBarrierRadius * 0.65);
+
+    for (let attempt = 0; attempt < 80; attempt++) {
+        const angle = Math.random() * Math.PI * 2;
+        const dist = 400 + Math.random() * (maxR - 400);
+        let x = cx + Math.cos(angle) * dist;
+        let y = cy + Math.sin(angle) * dist;
+        x = Math.max(800, Math.min(ws - 800, x));
+        y = Math.max(800, Math.min(ws - 800, y));
+
+        let onIsland = false;
+        for (const isl of room.islands) {
+            if (dist2(x, y, isl.x, isl.y) < (isl.radius + 250) * (isl.radius + 250)) { onIsland = true; break; }
+        }
+        if (onIsland) continue;
+
+        return { x, y };
+    }
+
+    return { x: cx, y: cy };
 }
 
 function cleanSocket(socket) {
@@ -452,6 +616,12 @@ function createRoom(mode, tier, partyId = null) {
     const islands = generateIslands(mapStats.count, mapStats.size);
     const islData = islands.map(i => ({ x: i.x, y: i.y, r100sq: (i.radius + 150) * (i.radius + 150) }));
 
+    // ⭐ موقع ابتدائي عشوائي للقنبلة (سيُعاد اختياره عند كل تفعيل)
+    const initialBombPos = {
+        x: mapStats.size / 2 + rnd(-2500, 2500),
+        y: mapStats.size / 2 + rnd(-2500, 2500)
+    };
+
     rooms[id] = {
         id, mode, tier: t, botLevel,
         worldSize: mapStats.size,
@@ -471,8 +641,8 @@ function createRoom(mode, tier, partyId = null) {
         bombKillsCount: 0,
         bombBombsTriggered: 0,
         bombActive: false,
-        bombX: mapStats.size / 2,
-        bombY: mapStats.size / 2,
+        bombX: initialBombPos.x,
+        bombY: initialBombPos.y,
         bombExpireAt: 0,
         bombTimerHandle: null,
         healthPacks: {},
@@ -796,8 +966,14 @@ function startBotTick(roomId) {
     }, TICK_MS);
 }
 
+// ⭐⭐⭐ معدّلة: البوتات العادية تظهر من الأطراف، المفاجئة حول اللاعب
 function spawnSingleBot(room, cx, cy, minD, maxD, hpVal, isSurprise = false, playerHeading = 0) {
-    const sp = randomSpawnNearSafe(cx, cy, minD, maxD, room.islands, room.worldSize, playerHeading);
+    let sp;
+    if (isSurprise) {
+        sp = randomSpawnNearSafe(cx, cy, minD, maxD, room.islands, room.worldSize, playerHeading);
+    } else {
+        sp = randomSpawnAtEdge(room, BOT_EDGE_MIN_DIST_FROM_PLAYER);
+    }
     const id = room.botIdCounter++;
     const spawnIndex = room.botsSpawnedThisWave;
     room.botsSpawnedThisWave++;
@@ -851,7 +1027,10 @@ function spawnWave(roomId) {
     for (const uid in room.players) { cx += room.players[uid].x; cy += room.players[uid].y; n++; }
     if (n > 0) { cx /= n; cy /= n; } else { cx = room.worldSize / 2; cy = room.worldSize / 2; }
 
-    for (let i = 0; i < initialSpawnCount; i++) spawnSingleBot(room, cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, hpVal, false, 0);
+    // ⭐ الآن البوتات ستظهر من الأطراف تلقائياً (isSurprise = false)
+    for (let i = 0; i < initialSpawnCount; i++) {
+        spawnSingleBot(room, cx, cy, BOT_SPAWN_MIN_DIST, BOT_SPAWN_MAX_DIST, hpVal, false, 0);
+    }
 
     io.to(roomId).emit('wave_start', { wave: room.wave, totalBots });
 
@@ -902,8 +1081,10 @@ function startPrisonPhase(roomId) {
     room.prisonBarrierRadius = room.worldSize * PRISON_BARRIER_RATIO;
     room.xpMultiplier = PRISON_MIN_XP_MULT;
 
-    room.pillarX = room.worldSize / 2 + rnd(-PRISON_PILLAR_JITTER, PRISON_PILLAR_JITTER);
-    room.pillarY = room.worldSize / 2 + rnd(-PRISON_PILLAR_JITTER, PRISON_PILLAR_JITTER);
+    // ⭐ موقع عمود السجن الآن عشوائي بعيد عن الجزر وعن المركز
+    const pillarPos = findPillarPosition(room);
+    room.pillarX = pillarPos.x;
+    room.pillarY = pillarPos.y;
 
     const totalBots = botCountForWave(room.wave, room.botLevel);
     room.totalBotsForWave = totalBots;
@@ -1009,7 +1190,7 @@ function releaseBots(roomId, byId, byName, xpMult) {
     io.to(roomId).emit('bots_update', botsPayload);
 }
 
-// ===== XP Awarding (مع نظام الفنشرز) =====
+// ===== XP Awarding =====
 
 function applyXpGain(player, gain) {
     if (!player || gain <= 0) return;
@@ -1278,11 +1459,17 @@ function triggerBomb(room, roomId) {
     if (!room || room.wiped) return;
     if (room.bombActive) return;
     room.bombActive = true;
+
+    // ⭐ اختر موقعاً جديداً عشوائياً للقنبلة في كل مرة
+    const pos = findBombSpawnPos(room);
+    room.bombX = pos.x;
+    room.bombY = pos.y;
+
     const dur = computeBombTimer(room.wave);
     room.bombExpireAt = Date.now() + dur * 1000;
 
     io.to(roomId).emit('bomb_spawned', {
-        x: room.bombX, y: room.bombY,
+        x: Math.round(room.bombX), y: Math.round(room.bombY),
         duration: dur, expireAt: room.bombExpireAt
     });
 
@@ -1290,7 +1477,7 @@ function triggerBomb(room, roomId) {
         const r = rooms[roomId];
         if (!r || r.wiped) return;
         r.bombActive = false;
-        io.to(roomId).emit('bomb_exploded', { x: r.bombX, y: r.bombY });
+        io.to(roomId).emit('bomb_exploded', { x: Math.round(r.bombX), y: Math.round(r.bombY) });
         for (const uid in r.players) {
             const pl = r.players[uid];
             if (pl.hp <= 0) continue;
@@ -1675,7 +1862,7 @@ io.on('connection', (socket) => {
 
         if (room.bombActive) {
             socket.emit('bomb_spawned', {
-                x: room.bombX, y: room.bombY,
+                x: Math.round(room.bombX), y: Math.round(room.bombY),
                 duration: (room.bombExpireAt - Date.now()) / 1000,
                 expireAt: room.bombExpireAt
             });
@@ -1773,7 +1960,6 @@ io.on('connection', (socket) => {
         const startKills = userStats.kills || 0;
         socket.startLevel = startLevel;
 
-        // ⭐ الفنشر المستخدم: من العميل أو من Firebase أو الأفضل للمستوى
         let startFinisher = finisherId || userStats.finisherId;
         if (!startFinisher) {
             startFinisher = getBestFinisherForLevel(startLevel) || 'none';
@@ -1878,7 +2064,7 @@ io.on('connection', (socket) => {
 
         if (room.bombActive) {
             socket.emit('bomb_spawned', {
-                x: room.bombX, y: room.bombY,
+                x: Math.round(room.bombX), y: Math.round(room.bombY),
                 duration: (room.bombExpireAt - Date.now()) / 1000,
                 expireAt: room.bombExpireAt
             });
@@ -2130,7 +2316,6 @@ io.on('connection', (socket) => {
         else if (isCrash) serverDamage = Math.max(botDamageForRoom(room), p.maxHp * 0.5);
         else serverDamage = botDamageForRoom(room);
 
-        // ⭐ حماية المبتدئين: ثلث الضرر
         const isNewbiePlayer = p.level && p.level < NEWBIE_LEVEL_THRESHOLD;
         if (isNewbiePlayer && !isLethal) {
             serverDamage = Math.round(serverDamage / 3);
@@ -2236,11 +2421,10 @@ io.on('connection', (socket) => {
         if (room.bombTimerHandle) { clearTimeout(room.bombTimerHandle); room.bombTimerHandle = null; }
 
         io.to(socket.currentRoom).emit('bomb_disarmed', {
-            x: room.bombX, y: room.bombY,
+            x: Math.round(room.bombX), y: Math.round(room.bombY),
             byId: socket.id, byName: p.name
         });
 
-        // ⭐ Award XP to whole team (مع مضاعف المبتدئين)
         for (const uid in room.players) {
             const pl = room.players[uid];
             if (!pl) continue;
@@ -2255,8 +2439,8 @@ io.on('connection', (socket) => {
             const need = room.totalBotsForWave - room.botsSpawnedThisWave;
             const canSpawn = Math.min(need, MAX_BOTS_ON_FIELD - Object.keys(room.bots).length);
             for (let i = 0; i < canSpawn; i++) {
-                spawnSingleBot(room, room.worldSize / 2, room.worldSize / 2,
-                    SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
+                // ⭐ هؤلاء يظهرون حول اللاعب (surprise) لأنهم هجوم مضاد فوري
+                spawnSingleBot(room, p.x, p.y, SURPRISE_SPAWN_MIN, SURPRISE_SPAWN_MAX,
                     botHPForRoom(room), true, p.heading);
             }
         }
@@ -2329,7 +2513,7 @@ function leaveRoom(socket, immediate) {
     }
 }
 
-app.get('/', (req, res) => res.send('Grand3D XP/Tier v6.2 - Finisher Auto-Unlock + SportMax'));
+app.get('/', (req, res) => res.send('Grand3D XP/Tier v6.4 - Edge Spawn + Smart Islands + Random Bomb/Pillar'));
 
 setInterval(() => {
     const now = Date.now();
@@ -2349,4 +2533,4 @@ setInterval(() => {
     }
 }, 30000);
 
-server.listen(PORT, () => console.log(`Server v5 running on port ${PORT}`));
+server.listen(PORT, () => console.log(`Server v6.3 running on port ${PORT}`));
