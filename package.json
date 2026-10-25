@@ -1,16 +1,13 @@
 {
-  "name": "grand3d-tdm-server",
+  "name": "antik-bot-server",
   "version": "1.0.0",
-  "description": "Real-time 2.5D Multiplayer TDM Server for Grand3D",
+  "description": "Bot position server for Antik game",
   "main": "server.js",
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
   "scripts": {
     "start": "node server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.7.2"
-  },
-  "engines": {
-    "node": ">=14.0.0"
   }
 }
