@@ -11,7 +11,6 @@ const io = new Server(server, {
 const BOT_COUNT = 2000;
 const bots = [];
 
-// توليد البوتات
 for (let i = 0; i < BOT_COUNT; i++) {
     bots.push({
         id: i,
@@ -29,10 +28,9 @@ io.on('connection', (socket) => {
     socket.playerX = 0;
     socket.playerZ = 0;
 
-    // 🟢 1. إرسال البيانات الأولية فور الاتصال
+    // 🟢 إرسال البوتات لأول مرة
     socket.emit('initBots', bots);
 
-    // 🟢 2. استقبال موقع اللاعب لتحديد البوتات القريبة
     socket.on('updatePosition', (data) => {
         socket.playerX = data.x;
         socket.playerZ = data.z;
@@ -43,7 +41,6 @@ io.on('connection', (socket) => {
     });
 });
 
-// تحديث حركة البوتات وإرسال القريب فقط
 setInterval(() => {
     for (let i = 0; i < BOT_COUNT; i++) {
         const bot = bots[i];
@@ -61,7 +58,7 @@ setInterval(() => {
         const nearbyBots = bots.filter(bot => {
             const dx = bot.x - socket.playerX;
             const dz = bot.z - socket.playerZ;
-            return (dx * dx + dz * dz) < (300 * 300); // 300 متر
+            return (dx * dx + dz * dz) < (300 * 300);
         });
         socket.emit('botUpdates', nearbyBots);
     });
