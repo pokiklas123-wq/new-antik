@@ -4,18 +4,17 @@ const { Server } = require('socket.io');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*" }
-});
+const io = new Server(server, { cors: { origin: "*" } });
 
 const BOT_COUNT = 2000;
 const bots = [];
 
 for (let i = 0; i < BOT_COUNT; i++) {
     bots.push({
-        id: i,
+        id: i, // 🟢 الـ ID مهم جداً
         x: (Math.random() - 0.5) * 2000,
         z: (Math.random() - 0.5) * 2000,
+        y: 0, 
         yaw: Math.random() * 360,
         speed: 2.0,
         timer: Math.random() * 3
@@ -24,11 +23,9 @@ for (let i = 0; i < BOT_COUNT; i++) {
 
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
-    
     socket.playerX = 0;
     socket.playerZ = 0;
 
-    // 🟢 إرسال البوتات لأول مرة
     socket.emit('initBots', bots);
 
     socket.on('updatePosition', (data) => {
@@ -36,9 +33,7 @@ io.on('connection', (socket) => {
         socket.playerZ = data.z;
     });
 
-    socket.on('disconnect', () => {
-        console.log('Player disconnected:', socket.id);
-    });
+    socket.on('disconnect', () => {});
 });
 
 setInterval(() => {
@@ -58,14 +53,11 @@ setInterval(() => {
         const nearbyBots = bots.filter(bot => {
             const dx = bot.x - socket.playerX;
             const dz = bot.z - socket.playerZ;
-            return (dx * dx + dz * dz) < (300 * 300);
+            return (dx * dx + dz * dz) < (300 * 300); // 300 متر
         });
         socket.emit('botUpdates', nearbyBots);
     });
-    
 }, 100);
 
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
