@@ -6,7 +6,7 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: "*" } });
 
-const BOT_COUNT = 2000;
+const BOT_COUNT = 100;
 const bots = [];
 
 for (let i = 0; i < BOT_COUNT; i++) {
