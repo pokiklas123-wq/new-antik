@@ -26,11 +26,13 @@ for (let i = 0; i < BOT_COUNT; i++) {
 io.on('connection', (socket) => {
     console.log('Player connected:', socket.id);
     
-    // تخزين موقع اللاعب
     socket.playerX = 0;
     socket.playerZ = 0;
 
-    // استقبال موقع اللاعب من الهاتف
+    // 🟢 1. إرسال البيانات الأولية فور الاتصال
+    socket.emit('initBots', bots);
+
+    // 🟢 2. استقبال موقع اللاعب لتحديد البوتات القريبة
     socket.on('updatePosition', (data) => {
         socket.playerX = data.x;
         socket.playerZ = data.z;
@@ -43,7 +45,6 @@ io.on('connection', (socket) => {
 
 // تحديث حركة البوتات وإرسال القريب فقط
 setInterval(() => {
-    // تحريك البوتات في السيرفر
     for (let i = 0; i < BOT_COUNT; i++) {
         const bot = bots[i];
         bot.timer -= 0.1;
@@ -56,12 +57,11 @@ setInterval(() => {
         bot.z += Math.cos(rads) * bot.speed * 0.1;
     }
     
-    // 🟢 إرسال البوتات القريبة فقط لكل لاعب (أقل من 300 متر)
     io.sockets.sockets.forEach((socket) => {
         const nearbyBots = bots.filter(bot => {
             const dx = bot.x - socket.playerX;
             const dz = bot.z - socket.playerZ;
-            return (dx * dx + dz * dz) < (300 * 300);
+            return (dx * dx + dz * dz) < (300 * 300); // 300 متر
         });
         socket.emit('botUpdates', nearbyBots);
     });
