@@ -1,13 +1,24 @@
 {
-  "name": "antik-bot-server",
-  "version": "1.0.0",
-  "description": "Bot position server for Antik game",
+  "name": "cave-combat-server",
+  "version": "2.0.0",
+  "description": "Room-scoped authoritative cave combat",
   "main": "server.js",
-  "dependencies": {
-    "express": "^4.19.2",
-    "socket.io": "^4.7.5"
-  },
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test combat.test.js integration.test.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.22.3",
+    "socket.io": "^4.8.4"
+  },
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "socket.io-client": "^4.8.4"
   }
 }

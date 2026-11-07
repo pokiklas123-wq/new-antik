@@ -1,63 +1,28 @@
-const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
-
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
-
-const BOT_COUNT = 100;
-const bots = [];
-
-for (let i = 0; i < BOT_COUNT; i++) {
-    bots.push({
-        id: i, // 🟢 الـ ID مهم جداً
-        x: (Math.random() - 0.5) * 2000,
-        z: (Math.random() - 0.5) * 2000,
-        y: 0, 
-        yaw: Math.random() * 360,
-        speed: 2.0,
-        timer: Math.random() * 3
-    });
+'use strict';
+const express=require('express'),http=require('node:http'),path=require('node:path');
+const {Server}=require('socket.io');const {Navigation}=require('./navigation');const {CombatWorld}=require('./combat');
+function createServer(){
+ const app=express(),server=http.createServer(app),io=new Server(server,{cors:{origin:process.env.CORS_ORIGIN||'*'},maxHttpBufferSize:16384});
+ const nav=new Navigation(path.join(__dirname,'world-nav.json')),world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
+ app.get('/health',(_,res)=>res.json({ok:true,rooms:world.rooms.size,players:world.players.size,protocol:2}));
+ io.on('connection',socket=>{
+  let window=Date.now(),requests=0,lastJoin=0,lastLight=0;
+  socket.use((packet,next)=>{let t=Date.now();if(t-window>1000){window=t;requests=0;}if(++requests>100)return next(Error('Rate limit'));next();});
+  const join=data=>{let now=Date.now();if(now-lastJoin<1000)return;lastJoin=now;let old=world.players.get(socket.id);if(old)socket.leave(old.roomId);let room=world.join(socket.id,data&&typeof data.roomId==='string'?data.roomId:undefined,!!(data&&data.fresh));socket.join(room.id);};
+  socket.on('joinRoom',join);socket.on('retry',()=>join({fresh:true}));
+  socket.on('playerMove',data=>world.move(socket.id,data));
+  // Older clients can still announce positions, but never spawn random character bots.
+  socket.on('updatePosition',data=>world.move(socket.id,{...data,y:Number.isFinite(data?.y)?data.y:12}));
+  socket.on('shoot',data=>world.shoot(socket.id,data));
+  socket.on('flashlightState',data=>{let p=world.players.get(socket.id),now=Date.now();if(!p||!p.alive||!data||now-lastLight<80)return;lastLight=now;
+   // Keep existing flashlight packet shape, replacing forged identity server-side.
+   let clean={...data,id:socket.id};delete clean.__proto__;socket.to(p.roomId).emit('flashlightState',clean);});
+  socket.on('disconnect',()=>world.leave(socket.id));
+ });
+ let last=performance.now(),acc=0,broadcast=0;
+ const timer=setInterval(()=>{let now=performance.now();acc+=Math.min(.25,(now-last)/1000);last=now;let steps=0;while(acc>=.05&&steps++<5){world.tick(.05);acc-=.05;broadcast++;if(broadcast%2===0)for(const p of world.players.values())world.sendSnapshot(p);}},10);
+ const close=()=>new Promise(resolve=>{clearInterval(timer);io.close(()=>resolve());});
+ return {app,server,io,world,nav,close};
 }
-
-io.on('connection', (socket) => {
-    console.log('Player connected:', socket.id);
-    socket.playerX = 0;
-    socket.playerZ = 0;
-
-    socket.emit('initBots', bots);
-
-    socket.on('updatePosition', (data) => {
-        socket.playerX = data.x;
-        socket.playerZ = data.z;
-    });
-
-    socket.on('disconnect', () => {});
-});
-
-setInterval(() => {
-    for (let i = 0; i < BOT_COUNT; i++) {
-        const bot = bots[i];
-        bot.timer -= 0.1;
-        if (bot.timer <= 0) {
-            bot.yaw = Math.random() * 360;
-            bot.timer = 2 + Math.random() * 3;
-        }
-        const rads = bot.yaw * (Math.PI / 180);
-        bot.x += Math.sin(rads) * bot.speed * 0.1;
-        bot.z += Math.cos(rads) * bot.speed * 0.1;
-    }
-    
-    io.sockets.sockets.forEach((socket) => {
-        const nearbyBots = bots.filter(bot => {
-            const dx = bot.x - socket.playerX;
-            const dz = bot.z - socket.playerZ;
-            return (dx * dx + dz * dz) < (300 * 300); // 300 متر
-        });
-        socket.emit('botUpdates', nearbyBots);
-    });
-}, 100);
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+if(require.main===module){let game=createServer();const port=process.env.PORT||3000;game.server.listen(port,()=>console.log('Cave combat protocol v2 on port '+port));for(let signal of ['SIGTERM','SIGINT'])process.on(signal,async()=>{await game.close();process.exit(0);});}
+module.exports={createServer};
