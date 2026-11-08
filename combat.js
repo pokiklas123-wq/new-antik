@@ -1,6 +1,6 @@
 'use strict';
 const {randomUUID}=require('node:crypto');
-const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn}=require('./world-layout');
+const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT}=require('./world-layout');
 const WEAPONS=[{interval:.16,damage:12,range:160},{interval:.25,damage:20,range:130},{interval:.35,damage:30,range:145},{interval:.10,damage:8,range:140},{interval:.90,damage:85,range:180}];
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const finite=(v)=>typeof v==='number'&&Number.isFinite(v);
@@ -11,9 +11,25 @@ class CombatWorld{
   add(0,true,CAVE_X,0);room.monsters[0].y=36;
   for(let i=0;i<5;i++){add(i+1,false,CAVE_X-12+i*6,-238);add(i+6,false,CAVE_X-12+i*6,238);}
   for(let i=0;i<10;i++){let a=i*Math.PI*2/10;add(i+11,false,CAVE_X+Math.cos(a)*24,Math.sin(a)*23);}
+  // Preserve the original 21 actors, then populate distinct, collision-cleared cave cells.
+  const candidates=[];
+  for(let z=-190;z<=190;z+=4)for(let x=CAVE_X-65;x<=CAVE_X+65;x+=4){
+   if(!this.nav.walkable(x,z,false))continue;
+   let y=this.nav.height(x,z);if(Math.abs(y-12)>.2)continue;
+   // A walkable cell may be an isolated cave pocket. Every extra spawn must share
+   // the chamber's connected component, not merely have a free local footprint.
+   if(!this.nav.next(x,z,CAVE_X,0,false,this.time))continue;
+   candidates.push({x,y,z});
+  }
+  for(let i=21;i<MONSTER_COUNT;i++){
+   let best=null,bestScore=-1;
+   for(const p of candidates){let near=Infinity;for(const m of room.monsters)near=Math.min(near,(p.x-m.x)**2+(p.z-m.z)**2);if(near>bestScore){bestScore=near;best=p;}}
+   if(!best||bestScore<2.2*2.2)throw Error('Navigation lacks capacity for '+MONSTER_COUNT+' separated monster spawns');
+   add(i,false,best.x,best.z);
+  }
   this.rooms.set(room.id,room);return room;
  }
- join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS});this.sendSnapshot(p);return room;}
+ join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
  leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}
  move(id,data){let p=this.players.get(id);if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
@@ -31,14 +47,19 @@ class CombatWorld{
   for(let m of r.monsters){if(m.hp<=0||m.state==='suspended'||m.state==='dropping'||m.state==='roar')continue;let radius=m.boss?2.3:.95,centerY=m.y+(m.boss?1.5:.6),ox=origin.x-m.x,oy=origin.y-centerY,oz=origin.z-m.z,b=ox*dir.x+oy*dir.y+oz*dir.z,c=ox*ox+oy*oy+oz*oz-radius*radius,disc=b*b-c;if(disc<0)continue;let t=Math.max(0,-b-Math.sqrt(disc));if(t<nearest){nearest=t;hit=m;}}
   if(hit){hit.hp=Math.max(0,hit.hp-w.damage);if(hit.hp===0)this.state(hit,'dead');else hit.target=p.id;this.emit(p.id,'hitConfirm',{id:hit.id,damage:w.damage,hp:hit.hp});}return true;
  }
- tick(dt){this.time+=dt;for(let r of [...this.rooms.values()]){let players=this.alive(r),boss=r.monsters[0];
+ tick(dt){this.time+=dt;for(let r of this.rooms.values()){let players=this.alive(r),boss=r.monsters[0];
+   for(const p of players)p.groundEligible=Math.abs(p.y-this.nav.height(p.x,p.z))<4;
    if(!r.awake&&players.some(p=>Math.hypot(p.x-CAVE_X,p.z*.91)<34&&p.y>=10&&p.y<33)){r.awake=true;this.state(boss,'dropping');}
-   for(let m of r.monsters){let old={x:m.x,y:m.y,z:m.z};this.updateMonster(r,m,players,dt);m.vx=(m.x-old.x)/dt;m.vy=(m.y-old.y)/dt;m.vz=(m.z-old.z)/dt;}
+   for(let m of r.monsters){let x=m.x,y=m.y,z=m.z;this.updateMonster(r,m,players,dt);m.vx=(m.x-x)/dt;m.vy=(m.y-y)/dt;m.vz=(m.z-z)/dt;}
   }}
  updateMonster(r,m,players,dt){if(m.hp<=0||m.state==='suspended')return;
   if(m.state==='dropping'){let t=Math.min(1,(this.time-m.since)/1.5);m.y=36+(12-36)*(t*t*(3-2*t));if(t===1){m.y=12;this.state(m,'roar');}return;}
   if(m.state==='roar'){if(this.time-m.since>=2.2)this.state(m,'idle');return;}
-  let target=players.filter(p=>{let d=distance(m,p);return Math.abs(p.y-this.nav.height(p.x,p.z))<4&&(!m.boss?Math.hypot(p.x-CAVE_X,p.z)<285:true)&&(r.awake||d<32);}).sort((a,b)=>distance(m,a)-distance(m,b))[0];
+  let target=null,best=Infinity;
+  for(const p of players){
+   if(!p.groundEligible||(!m.boss&&Math.hypot(p.x-CAVE_X,p.z)>=285))continue;
+   let d=(m.x-p.x)**2+(m.z-p.z)**2;if((r.awake||d<32*32)&&d<best){target=p;best=d;}
+  }
   if(m.state==='attack'){
    if(!m.hitDone&&this.time-m.since>=(m.boss?.58:.56)){m.hitDone=true;let p=this.players.get(m.target);if(p&&p.alive&&distance(m,p)<=(m.boss?5:2.1)&&Math.abs(p.y-m.y)<3&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:p.x,y:p.y+1,z:p.z}))this.damage(p,m.boss?30:12);}
    if(this.time-m.since>=(m.boss?1.35:1.45))this.state(m,'idle');return;
