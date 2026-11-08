@@ -1,10 +1,10 @@
 'use strict';
 const express=require('express'),http=require('node:http'),path=require('node:path');
-const {VERSION}=require('./world-layout');
+const {VERSION,HALF_SIZE}=require('./world-layout');
 const {Server}=require('socket.io');const {Navigation}=require('./navigation');const {CombatWorld}=require('./combat');
 function createServer(){
  const app=express(),server=http.createServer(app),io=new Server(server,{cors:{origin:process.env.CORS_ORIGIN||'*'},maxHttpBufferSize:16384});
- const nav=new Navigation(path.join(__dirname,'world-nav.json'));if(nav.data.layout!==VERSION||nav.data.format!==2||!nav.data.terrainSignature||nav.data.seed!==48391||nav.data.halfSize!==850)throw Error('world-nav.json mismatch: deploy the navigation generated with this client');const world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
+ const nav=new Navigation(path.join(__dirname,'world-nav.json'));if(nav.data.layout!==VERSION||nav.data.format!==2||!nav.data.terrainSignature||nav.data.seed!==48391||nav.data.halfSize!==HALF_SIZE)throw Error('world-nav.json mismatch: deploy the navigation generated with this client');const world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
  app.get('/health',(_,res)=>res.json({ok:true,rooms:world.rooms.size,players:world.players.size,protocol:2,layout:VERSION,maxPlayers:20,monstersPerRoom:100,terrainSignature:nav.data.terrainSignature}));
  io.on('connection',socket=>{
   let window=Date.now(),requests=0,lastJoin=0,lastLight=0;
@@ -15,9 +15,11 @@ function createServer(){
   // Older clients can still announce positions, but never spawn random character bots.
   socket.on('updatePosition',data=>world.move(socket.id,{...data,y:Number.isFinite(data?.y)?data.y:12}));
   socket.on('shoot',data=>world.shoot(socket.id,data));
-  socket.on('flashlightState',data=>{let p=world.players.get(socket.id),now=Date.now();if(!p||!p.alive||!data||now-lastLight<80)return;lastLight=now;
-   // Keep existing flashlight packet shape, replacing forged identity server-side.
-   let clean={...data,id:socket.id};delete clean.__proto__;socket.to(p.roomId).emit('flashlightState',clean);});
+  socket.on('flashlightState',data=>{const p=world.players.get(socket.id),now=Date.now();if(!p||!p.alive||!data)return;
+   // Off transitions must never be dropped by rate limiting.
+   if(data.on!==false&&now-lastLight<80)return;lastLight=now;
+   const clean=world.light(socket.id,data);if(clean)socket.to(p.roomId).emit('flashlightState',clean);
+  });
   socket.on('disconnect',()=>world.leave(socket.id));
  });
  let last=performance.now(),acc=0,broadcast=0;

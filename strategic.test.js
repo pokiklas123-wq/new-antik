@@ -3,9 +3,9 @@ const test=require('node:test'),assert=require('node:assert/strict'),path=requir
 const {CombatWorld}=require('./combat'),{Navigation}=require('./navigation');
 const {spawn,VERSION,CAVE_X}=require('./world-layout');
 const nav=new Navigation(path.join(__dirname,'world-nav.json'));
-test('layout identity, bounds, 20 slots, >=260m Euclidean separation',()=>{
+test('layout identity, bounds, 20 slots, >=180m Euclidean separation',()=>{
  assert.equal(nav.data.layout,VERSION);let slots=Array.from({length:20},(_,i)=>spawn(i));
- for(let i=0;i<20;i++){let p=slots[i];assert(Math.max(Math.abs(p.x),Math.abs(p.z))===826);for(let k=0;k<i;k++)assert(Math.hypot(p.x-slots[k].x,p.z-slots[k].z)>=260);}
+ for(let i=0;i<20;i++){let p=slots[i];assert(Math.max(Math.abs(p.x),Math.abs(p.z))===476);for(let k=0;k<i;k++)assert(Math.hypot(p.x-slots[k].x,p.z-slots[k].z)>=180);}
 });
 test('20 occupants share a room, 21st creates another; no duplicate spawn slots',()=>{
  const w=new CombatWorld(nav);let r=w.join('p0');for(let i=1;i<20;i++)assert.equal(w.join('p'+i).id,r.id);
@@ -13,7 +13,7 @@ test('20 occupants share a room, 21st creates another; no duplicate spawn slots'
  assert.notEqual(w.join('p20').id,r.id);w.leave('p7');assert.equal(w.join('new').id,r.id);assert.equal(w.players.get('new').spawnSlot,7);
 });
 test('initial position packet cannot bypass the assigned spawn',()=>{
- const w=new CombatWorld(nav);w.join('p');assert(!w.move('p',{x:560,y:12,z:0}));let p=w.players.get('p');assert(w.move('p',{x:p.x,y:p.y,z:p.z}));
+ const w=new CombatWorld(nav);w.join('p');assert(!w.move('p',{x:265,y:12,z:0}));let p=w.players.get('p');assert(w.move('p',{x:p.x,y:p.y,z:p.z}));
 });
 test('navigation neighbours do not wrap across grid rows',()=>{
  let fake=Object.create(Navigation.prototype);fake.data={minX:0,minZ:0,n:3,step:2,heights:Array(9).fill(12),small:'001100000',boss:'001100000'};fake.fields=new Map();
