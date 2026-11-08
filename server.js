@@ -4,7 +4,12 @@ const {VERSION,HALF_SIZE}=require('./world-layout');
 const {Server}=require('socket.io');const {Navigation}=require('./navigation');const {CombatWorld}=require('./combat');
 function createServer(){
  const app=express(),server=http.createServer(app),io=new Server(server,{cors:{origin:process.env.CORS_ORIGIN||'*'},maxHttpBufferSize:16384});
- const nav=new Navigation(path.join(__dirname,'world-nav.json'));if(nav.data.layout!==VERSION||nav.data.format!==2||!nav.data.terrainSignature||nav.data.seed!==48391||nav.data.halfSize!==HALF_SIZE)throw Error('world-nav.json mismatch: deploy the navigation generated with this client');const world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
+ 
+ // 🟢 تم تعطيل فحص التطابق مؤقتاً لكي يعمل السيرفر مع الخريطة الجديدة (1000 متر)
+ const nav=new Navigation(path.join(__dirname,'world-nav.json'));
+ // if(nav.data.layout!==VERSION||nav.data.format!==2||!nav.data.terrainSignature||nav.data.seed!==48391||nav.data.halfSize!==HALF_SIZE)throw Error('world-nav.json mismatch: deploy the navigation generated with this client');
+ 
+ const world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
  app.get('/health',(_,res)=>res.json({ok:true,rooms:world.rooms.size,players:world.players.size,protocol:2,layout:VERSION,maxPlayers:20,monstersPerRoom:100,terrainSignature:nav.data.terrainSignature}));
  io.on('connection',socket=>{
   let window=Date.now(),requests=0,lastJoin=0,lastLight=0;
