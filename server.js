@@ -1,10 +1,11 @@
 'use strict';
 const express=require('express'),http=require('node:http'),path=require('node:path');
+const {VERSION}=require('./world-layout');
 const {Server}=require('socket.io');const {Navigation}=require('./navigation');const {CombatWorld}=require('./combat');
 function createServer(){
  const app=express(),server=http.createServer(app),io=new Server(server,{cors:{origin:process.env.CORS_ORIGIN||'*'},maxHttpBufferSize:16384});
- const nav=new Navigation(path.join(__dirname,'world-nav.json')),world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
- app.get('/health',(_,res)=>res.json({ok:true,rooms:world.rooms.size,players:world.players.size,protocol:2}));
+ const nav=new Navigation(path.join(__dirname,'world-nav.json'));if(nav.data.layout!==VERSION)throw Error('world-nav.json layout mismatch: deploy the supplied strategic nav');const world=new CombatWorld(nav,(id,event,data)=>io.to(id).emit(event,data));
+ app.get('/health',(_,res)=>res.json({ok:true,rooms:world.rooms.size,players:world.players.size,protocol:2,layout:VERSION,maxPlayers:20}));
  io.on('connection',socket=>{
   let window=Date.now(),requests=0,lastJoin=0,lastLight=0;
   socket.use((packet,next)=>{let t=Date.now();if(t-window>1000){window=t;requests=0;}if(++requests>100)return next(Error('Rate limit'));next();});

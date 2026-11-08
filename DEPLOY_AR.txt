@@ -1,9 +1,10 @@
-السيرفر ليس منشورًا تلقائيًا.
-ارفع محتويات هذه الحزمة إلى مستودع خدمة Node.js عندك، ثم استخدم:
+سيرفر الخريطة strategic-1700-v3 — لم يُنشر تلقائيًا.
+ارفع جميع الملفات بما فيها world-nav.json وworld-layout.js.
+إن رفعت المشروع الكامل: Root Directory=server.
 Build: npm ci --omit=dev
 Start: npm start
-Node: 20 أو أحدث
-Health check: /health
-إذا رفعت المشروع الكامل فاختر Root Directory=server.
-بعد النشر ضع رابط HTTPS في شاشة تطبيق APK الأولى.
-لتشغيل الفحوص: npm ci ثم npm test.
+Node20 أو أحدث، Health: /health
+أدخل رابط HTTPS في شاشة التطبيق الجديد. لا تستخدم الملاحة أو السيرفر القديم.
+فحص التوافق يعرض layout=strategic-1700-v3 وmaxPlayers=20.
+للفحوص: npm ci ثم npm test.
+السعة20 ونقاط الدخول منفذة؛ نظام التقاط اللوت المشترك وعرض اللاعبين الآخرين ليسا إضافة ضمن هذه المهمة.

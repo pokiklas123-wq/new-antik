@@ -15,8 +15,8 @@ class Navigation{
  next(x,z,tx,tz,boss,now){let start=this.nearest(x,z,boss),goal=this.nearest(tx,tz,boss);if(start<0||goal<0)return null;if(start===goal)return this.point(goal);let key=goal+':'+boss,entry=this.fields.get(key),d=this.data;
   if(!entry||now-entry.time>1){let dist=new Int32Array(d.n*d.n);dist.fill(-1);let q=new Int32Array(dist.length),a=0,b=1;q[0]=goal;dist[goal]=0;let mask=this.mask(boss);
    while(a<b){let i=q[a++],xx=i%d.n;for(const j of [xx>0?i-1:-1,xx<d.n-1?i+1:-1,i-d.n,i+d.n])if(j>=0&&j<dist.length&&dist[j]<0&&mask[j]==='1'){dist[j]=dist[i]+1;q[b++]=j;}}
-   entry={time:now,dist};this.fields.set(key,entry);if(this.fields.size>20){for(const [k,e] of this.fields)if(now-e.time>1)this.fields.delete(k);}}
-  let best=start;for(const j of [start-1,start+1,start-d.n,start+d.n])if(j>=0&&j<entry.dist.length&&entry.dist[j]>=0&&(entry.dist[best]<0||entry.dist[j]<entry.dist[best]))best=j;
+   entry={time:now,dist};this.fields.set(key,entry);if(this.fields.size>20){for(const [k,e] of this.fields)if(now-e.time>1)this.fields.delete(k);while(this.fields.size>20)this.fields.delete(this.fields.keys().next().value);}}
+  let best=start;for(const j of [start%d.n>0?start-1:-1,start%d.n<d.n-1?start+1:-1,start-d.n,start+d.n])if(j>=0&&j<entry.dist.length&&entry.dist[j]>=0&&(entry.dist[best]<0||entry.dist[j]<entry.dist[best]))best=j;
   return entry.dist[best]<0?null:this.point(best);
  }
  ray(origin,dir,range){let end=range,seen=new Set();let steps=Math.ceil(range/8);for(let k=0;k<=steps;k++){let t=Math.min(range,k*8),x=origin.x+dir.x*t,z=origin.z+dir.z*t;for(let dz=-1;dz<=1;dz++)for(let dx=-1;dx<=1;dx++){let list=this.cells.get((Math.floor(x/16)+dx)+','+(Math.floor(z/16)+dz));if(!list)continue;for(const tri of list)if(!seen.has(tri)){seen.add(tri);let h=rayTriangle(origin,dir,tri);if(h!==null&&h>=.03)end=Math.min(end,h);}}if(t>end+16)break;}return end;}
