@@ -12,18 +12,16 @@ function createServer(){
   const join=data=>{let now=Date.now();if(now-lastJoin<1000)return;lastJoin=now;let old=world.players.get(socket.id);if(old)socket.leave(old.roomId);let room=world.join(socket.id,data&&typeof data.roomId==='string'?data.roomId:undefined,!!(data&&data.fresh));socket.join(room.id);};
   socket.on('joinRoom',join);socket.on('retry',()=>join({fresh:true}));
   socket.on('playerMove',data=>world.move(socket.id,data));
-  // Older clients can still announce positions, but never spawn random character bots.
   socket.on('updatePosition',data=>world.move(socket.id,{...data,y:Number.isFinite(data?.y)?data.y:12}));
   socket.on('shoot',data=>world.shoot(socket.id,data));
   socket.on('flashlightState',data=>{const p=world.players.get(socket.id),now=Date.now();if(!p||!p.alive||!data)return;
-   // Off transitions must never be dropped by rate limiting.
    if(data.on!==false&&now-lastLight<80)return;lastLight=now;
    const clean=world.light(socket.id,data);if(clean)socket.to(p.roomId).emit('flashlightState',clean);
   });
   socket.on('disconnect',()=>world.leave(socket.id));
  });
  let last=performance.now(),acc=0,broadcast=0;
- const timer=setInterval(()=>{let now=performance.now();acc+=Math.min(.25,(now-last)/1000);last=now;let steps=0;while(acc>=.05&&steps++<5){world.tick(.05);acc-=.05;broadcast++;if(broadcast%2===0)for(const p of world.players.values())world.sendSnapshot(p);}},10);
+ const timer=setInterval(()=>{let now=performance.now();acc+=Math.min(.25,(now-last)/1000);last=now;let steps=0;while(acc>=.05&&steps++<5){world.tick(.05);acc-=.05;broadcast++;for(const p of world.players.values()){if(broadcast%2===0)world.sendSnapshot(p);else world.sendPlayerSnapshot(p);}}},10);
  const close=()=>new Promise(resolve=>{clearInterval(timer);io.close(()=>resolve());});
  return {app,server,io,world,nav,close};
 }

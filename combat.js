@@ -9,7 +9,6 @@ class CombatWorld{
  createRoom(){let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false};
   if(this.spawnTemplate){room.monsters=this.spawnTemplate.map(m=>({...m,home:{...m.home},since:this.time}));}
   else for(const zone of ZONES){
-   // Select free, separated cells from one connected navigable component per zone.
    const candidates=[],d=this.nav.data;
    if(d){for(let i=0;i<d.n*d.n;i++)if(d.small[i]==='1'){
     const p=this.nav.point(i);if(Math.hypot(p.x-zone.x,p.z-zone.z)>zone.radius-8)continue;
@@ -21,7 +20,6 @@ class CombatWorld{
    let selected=[];
    for(const seed of candidates){if(d&&d.boss[seed.i]!=='1')continue;
     selected=[seed];
-    // Build one reverse field for the shared goal; do not flood-fill for each candidate.
     for(const p of candidates){if(selected.length===20)break;if(selected.some(q=>Math.hypot(q.x-p.x,q.z-p.z)<3))continue;
      if(!this.nav.next(p.x,p.z,seed.x,seed.z,false,this.time))continue;selected.push(p);}
     if(selected.length===20)break;
@@ -38,24 +36,32 @@ class CombatWorld{
  leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}
  move(id,data){let p=this.players.get(id);if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
-  let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false; // vehicles retained, walking is client-collided
+  let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false;
+  const nextWeapon=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;
+  const nextCrouch=data.crouched===true,nextProne=data.prone===true,nextSwim=data.swimming===true,nextGround=data.grounded!==false;
+  const nextInHands=data.inHands===true,nextAim=data.aiming===true,nextFire=data.firing===true;
+  const stateChanged=(p.crouched!==nextCrouch)||(p.prone!==nextProne)||(p.swimming!==nextSwim)||(p.grounded!==nextGround)||(p.equipped!==nextWeapon)||(p.inHands!==nextInHands)||(p.aiming!==nextAim)||(p.firing!==nextFire);
   p.x=data.x;p.y=data.y;p.z=data.z;p.yaw=finite(data.yaw)?data.yaw%360:p.yaw;
   p.pitch=finite(data.pitch)?Math.max(-85,Math.min(85,data.pitch)):p.pitch;
-  p.crouched=data.crouched===true;p.prone=data.prone===true;p.swimming=data.swimming===true;
-  p.grounded=data.grounded!==false;
-  p.inHands=data.inHands===true;p.aiming=data.aiming===true;p.firing=data.firing===true;
+  p.crouched=nextCrouch;p.prone=nextProne;p.swimming=nextSwim;p.grounded=nextGround;
+  p.inHands=nextInHands;p.aiming=nextAim;p.firing=nextFire;
   p.proneTransition=Number.isInteger(data.proneTransition)?Math.max(-1,Math.min(1,data.proneTransition)):0;
   p.speed=finite(data.speed)?Math.max(0,Math.min(90,data.speed)):0;
   p.localForward=finite(data.localForward)?Math.max(-1,Math.min(1,data.localForward)):0;
   p.vy=finite(data.vy)?Math.max(-50,Math.min(50,data.vy)):0;
-  p.positioned=true;p.lastMove=this.time;p.equipped=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;return true;}
+  p.positioned=true;p.lastMove=this.time;p.equipped=nextWeapon;
+  // Immediately push playerSnapshot to nearby peers on stance/jump/weapon change for 0ms server broadcast delay
+  if(stateChanged){
+   const r=this.rooms.get(p.roomId);
+   if(r)for(const q of r.players.values())if(q.id!==p.id&&q.alive&&distance(q,p)<100)this.sendPlayerSnapshot(q);
+  }
+  return true;}
  state(m,state){if(m.state!==state){m.state=state;m.since=this.time;m.revision++;}}
  alive(r){return [...r.players.values()].filter(p=>p.alive&&p.positioned);}
  damage(p,amount){if(!p.alive)return;p.hp=Math.max(0,p.hp-amount);if(p.hp===0)p.alive=false;this.emit(p.id,'playerState',{hp:p.hp,alive:p.alive});let r=this.rooms.get(p.roomId);if(r)this.checkClose(r);}
  shoot(id,data){let p=this.players.get(id),r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
   p.sequence=data.sequence;if(this.time-p.lastShot<w.interval-.015)return false;
   let origin={x:data.x,y:data.y,z:data.z},dir={x:data.dx,y:data.dy,z:data.dz},l=Math.hypot(dir.x,dir.y,dir.z);if(l<.98||l>1.02||Math.hypot(origin.x-p.x,origin.y-(p.y+1),origin.z-p.z)>8)return false;
-  // A camera/muzzle may not originate through a wall.
   if(!this.nav.clear({x:p.x,y:p.y+1,z:p.z},origin))return false;
   p.lastShot=this.time;p.firing=true;let range=Math.max(0,Math.min(w.range,data.range)),wall=this.nav.ray(origin,dir,range),nearest=wall,hit=null;
   for(let m of r.monsters){if(m.hp<=0||m.state==='suspended'||m.state==='dropping'||m.state==='roar')continue;let radius=m.boss?2.3:.95,centerY=m.y+(m.boss?1.5:.6),ox=origin.x-m.x,oy=origin.y-centerY,oz=origin.z-m.z,b=ox*dir.x+oy*dir.y+oz*dir.z,c=ox*ox+oy*oy+oz*oz-radius*radius,disc=b*b-c;if(disc<0)continue;let t=Math.max(0,-b-Math.sqrt(disc));if(t<nearest){nearest=t;hit=m;}}
@@ -63,14 +69,12 @@ class CombatWorld{
   for(const q of r.players.values()){
    if(q.id===p.id||!q.alive||!q.positioned)continue;
    const h=q.prone?.55:q.crouched?1.12:1.78,radius=.48;
-   // Vertical capsule: closest intersection of cylinder and two hemispherical ends.
    const y0=q.y+Math.min(radius,h*.5),y1=q.y+h-Math.min(radius,h*.5),rad=Math.min(radius,h*.5);
    let t=Infinity;const ox=origin.x-q.x,oz=origin.z-q.z,A=dir.x**2+dir.z**2,B=ox*dir.x+oz*dir.z,C=ox**2+oz**2-rad**2;
    if(A>1e-9){const D=B*B-A*C;if(D>=0){const v=(-B-Math.sqrt(D))/A,yy=origin.y+v*dir.y;if(v>=0&&yy>=y0&&yy<=y1)t=v;}}
    for(const cy of [y0,y1]){const oy=origin.y-cy,bb=ox*dir.x+oy*dir.y+oz*dir.z,cc=ox*ox+oy*oy+oz*oz-rad*rad,disc=bb*bb-cc;if(disc>=0){const v=-bb-Math.sqrt(disc);if(v>=0)t=Math.min(t,v);}}
    if(t<nearest){nearest=t;victim=q;hit=null;}
   }
-  // Broadcast shot event to nearby players in the same room so they see firing animations and muzzle VFX
   for(const q of r.players.values()){
    if(q.id!==p.id&&q.alive&&distance(q,p)<110){
     this.emit(q.id,'playerShot',{id:p.id,weapon:data.weapon,x:origin.x,y:origin.y,z:origin.z,dx:dir.x/l,dy:dir.y/l,dz:dir.z/l,range:nearest});
@@ -126,8 +130,13 @@ class CombatWorld{
   else if(distance(m,target)<1.5)this.state(m,'idle');
  }
 
- snapshot(p){let r=this.rooms.get(p.roomId);if(!r)return {serverTime:this.time,roomId:p.roomId,monsters:[]};return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz}))};}
- sendSnapshot(p){this.emit(p.id,'monsterSnapshot',this.snapshot(p));const r=this.rooms.get(p.roomId);if(!r)return;
+ snapshot(p){
+  let r=this.rooms.get(p.roomId);if(!r)return {serverTime:this.time,roomId:p.roomId,monsters:[]};
+  // Omit dead non-boss spiders once their 1.5s death animation completes; retain dead bosses as strategic landmarks
+  return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100&&(m.boss||m.hp>0||(this.time-m.since)<1.6)).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz}))};
+ }
+ sendPlayerSnapshot(p){
+  const r=this.rooms.get(p.roomId);if(!r)return;
   const players=[...r.players.values()].filter(q=>q.id!==p.id&&q.alive&&q.positioned&&distance(q,p)<100).map(q=>({
    id:q.id,x:q.x,y:q.y,z:q.z,yaw:q.yaw,pitch:q.pitch,
    crouched:q.crouched,prone:q.prone,swimming:q.swimming,grounded:q.grounded,
@@ -137,6 +146,10 @@ class CombatWorld{
    light:q.flashlight
   }));
   this.emit(p.id,'playerSnapshot',{serverTime:this.time,roomId:r.id,players});
+ }
+ sendSnapshot(p){
+  this.emit(p.id,'monsterSnapshot',this.snapshot(p));
+  this.sendPlayerSnapshot(p);
  }
 }
 module.exports={CombatWorld,WEAPONS};
