@@ -1,11 +1,11 @@
 {
   "name": "cave-combat-server",
-  "version": "3.1.0",
+  "version": "3.0.0",
   "description": "1000m dark survival, 20 players, five regional monster groups",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js grass.test.js"
+    "test": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js"
   },
   "keywords": [],
   "author": "",

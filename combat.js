@@ -1,16 +1,14 @@
 'use strict';
 const {randomUUID}=require('node:crypto');
-const {GrassWorld,VERSION:VEGETATION_VERSION}=require('./grass');
 const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT,ZONES}=require('./world-layout');
 const WEAPONS=[{interval:.16,damage:12,range:160},{interval:.25,damage:20,range:130},{interval:.35,damage:30,range:145},{interval:.10,damage:8,range:140},{interval:.90,damage:85,range:180}];
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const finite=(v)=>typeof v==='number'&&Number.isFinite(v);
 class CombatWorld{
  constructor(nav,emit=()=>{}){this.nav=nav;this.emit=emit;this.rooms=new Map();this.players=new Map();this.time=0;}
- createRoom(){let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false,grass:new GrassWorld(this.nav)};
+ createRoom(){let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false};
   if(this.spawnTemplate){room.monsters=this.spawnTemplate.map(m=>({...m,home:{...m.home},since:this.time}));}
   else for(const zone of ZONES){
-   // Select free, separated cells from one connected navigable component per zone.
    const candidates=[],d=this.nav.data;
    if(d){for(let i=0;i<d.n*d.n;i++)if(d.small[i]==='1'){
     const p=this.nav.point(i);if(Math.hypot(p.x-zone.x,p.z-zone.z)>zone.radius-8)continue;
@@ -22,7 +20,6 @@ class CombatWorld{
    let selected=[];
    for(const seed of candidates){if(d&&d.boss[seed.i]!=='1')continue;
     selected=[seed];
-    // Build one reverse field for the shared goal; do not flood-fill for each candidate.
     for(const p of candidates){if(selected.length===20)break;if(selected.some(q=>Math.hypot(q.x-p.x,q.z-p.z)<3))continue;
      if(!this.nav.next(p.x,p.z,seed.x,seed.z,false,this.time))continue;selected.push(p);}
     if(selected.length===20)break;
@@ -35,32 +32,53 @@ class CombatWorld{
   if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
   this.rooms.set(room.id,room);return room;
  }
- join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,vegetation:VEGETATION_VERSION,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
- leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);r.grass.removeActor("p:"+id);this.checkClose(r);}
+ join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
+ leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}
  move(id,data){let p=this.players.get(id);if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
-  let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false; // vehicles retained, walking is client-collided
-  p.x=data.x;p.y=data.y;p.z=data.z;p.yaw=finite(data.yaw)?data.yaw%360:p.yaw;p.crouched=data.crouched===true;p.prone=data.prone===true;p.swimming=data.swimming===true;p.positioned=true;p.lastMove=this.time;p.equipped=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;const room=this.rooms.get(p.roomId);if(room){if(!p.swimming)room.grass.actor("p:"+id,p,.48,this.time);else room.grass.removeActor("p:"+id);}return true;}
+  let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false;
+  const nextWeapon=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;
+  const nextCrouch=data.crouched===true,nextProne=data.prone===true,nextSwim=data.swimming===true,nextGround=data.grounded!==false;
+  const nextInHands=data.inHands===true,nextAim=data.aiming===true,nextFire=data.firing===true;
+  const stateChanged=(p.crouched!==nextCrouch)||(p.prone!==nextProne)||(p.swimming!==nextSwim)||(p.grounded!==nextGround)||(p.equipped!==nextWeapon)||(p.inHands!==nextInHands)||(p.aiming!==nextAim)||(p.firing!==nextFire);
+  p.x=data.x;p.y=data.y;p.z=data.z;p.yaw=finite(data.yaw)?data.yaw%360:p.yaw;
+  p.pitch=finite(data.pitch)?Math.max(-85,Math.min(85,data.pitch)):p.pitch;
+  p.crouched=nextCrouch;p.prone=nextProne;p.swimming=nextSwim;p.grounded=nextGround;
+  p.inHands=nextInHands;p.aiming=nextAim;p.firing=nextFire;
+  p.proneTransition=Number.isInteger(data.proneTransition)?Math.max(-1,Math.min(1,data.proneTransition)):0;
+  p.speed=finite(data.speed)?Math.max(0,Math.min(90,data.speed)):0;
+  p.localForward=finite(data.localForward)?Math.max(-1,Math.min(1,data.localForward)):0;
+  p.vy=finite(data.vy)?Math.max(-50,Math.min(50,data.vy)):0;
+  p.positioned=true;p.lastMove=this.time;p.equipped=nextWeapon;
+  // Immediately push playerSnapshot to nearby peers on stance/jump/weapon change for 0ms server broadcast delay
+  if(stateChanged){
+   const r=this.rooms.get(p.roomId);
+   if(r)for(const q of r.players.values())if(q.id!==p.id&&q.alive&&distance(q,p)<100)this.sendPlayerSnapshot(q);
+  }
+  return true;}
  state(m,state){if(m.state!==state){m.state=state;m.since=this.time;m.revision++;}}
  alive(r){return [...r.players.values()].filter(p=>p.alive&&p.positioned);}
  damage(p,amount){if(!p.alive)return;p.hp=Math.max(0,p.hp-amount);if(p.hp===0)p.alive=false;this.emit(p.id,'playerState',{hp:p.hp,alive:p.alive});let r=this.rooms.get(p.roomId);if(r)this.checkClose(r);}
  shoot(id,data){let p=this.players.get(id),r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
   p.sequence=data.sequence;if(this.time-p.lastShot<w.interval-.015)return false;
   let origin={x:data.x,y:data.y,z:data.z},dir={x:data.dx,y:data.dy,z:data.dz},l=Math.hypot(dir.x,dir.y,dir.z);if(l<.98||l>1.02||Math.hypot(origin.x-p.x,origin.y-(p.y+1),origin.z-p.z)>8)return false;
-  // A camera/muzzle may not originate through a wall.
   if(!this.nav.clear({x:p.x,y:p.y+1,z:p.z},origin))return false;
-  p.lastShot=this.time;let range=Math.max(0,Math.min(w.range,data.range)),wall=this.nav.ray(origin,dir,range),nearest=wall,hit=null;
+  p.lastShot=this.time;p.firing=true;let range=Math.max(0,Math.min(w.range,data.range)),wall=this.nav.ray(origin,dir,range),nearest=wall,hit=null;
   for(let m of r.monsters){if(m.hp<=0||m.state==='suspended'||m.state==='dropping'||m.state==='roar')continue;let radius=m.boss?2.3:.95,centerY=m.y+(m.boss?1.5:.6),ox=origin.x-m.x,oy=origin.y-centerY,oz=origin.z-m.z,b=ox*dir.x+oy*dir.y+oz*dir.z,c=ox*ox+oy*oy+oz*oz-radius*radius,disc=b*b-c;if(disc<0)continue;let t=Math.max(0,-b-Math.sqrt(disc));if(t<nearest){nearest=t;hit=m;}}
   let victim=null;
   for(const q of r.players.values()){
    if(q.id===p.id||!q.alive||!q.positioned)continue;
    const h=q.prone?.55:q.crouched?1.12:1.78,radius=.48;
-   // Vertical capsule: closest intersection of cylinder and two hemispherical ends.
    const y0=q.y+Math.min(radius,h*.5),y1=q.y+h-Math.min(radius,h*.5),rad=Math.min(radius,h*.5);
    let t=Infinity;const ox=origin.x-q.x,oz=origin.z-q.z,A=dir.x**2+dir.z**2,B=ox*dir.x+oz*dir.z,C=ox**2+oz**2-rad**2;
    if(A>1e-9){const D=B*B-A*C;if(D>=0){const v=(-B-Math.sqrt(D))/A,yy=origin.y+v*dir.y;if(v>=0&&yy>=y0&&yy<=y1)t=v;}}
    for(const cy of [y0,y1]){const oy=origin.y-cy,bb=ox*dir.x+oy*dir.y+oz*dir.z,cc=ox*ox+oy*oy+oz*oz-rad*rad,disc=bb*bb-cc;if(disc>=0){const v=-bb-Math.sqrt(disc);if(v>=0)t=Math.min(t,v);}}
    if(t<nearest){nearest=t;victim=q;hit=null;}
+  }
+  for(const q of r.players.values()){
+   if(q.id!==p.id&&q.alive&&distance(q,p)<110){
+    this.emit(q.id,'playerShot',{id:p.id,weapon:data.weapon,x:origin.x,y:origin.y,z:origin.z,dx:dir.x/l,dy:dir.y/l,dz:dir.z/l,range:nearest});
+   }
   }
   if(victim){this.damage(victim,w.damage);this.emit(p.id,'hitConfirm',{playerId:victim.id,damage:w.damage,hp:victim.hp});}
   else if(hit){hit.hp=Math.max(0,hit.hp-w.damage);if(hit.hp===0)this.state(hit,'dead');else hit.target=p.id;this.emit(p.id,'hitConfirm',{id:hit.id,damage:w.damage,hp:hit.hp});}return true;
@@ -77,8 +95,7 @@ class CombatWorld{
  tick(dt){this.time+=dt;for(let r of this.rooms.values()){let players=this.alive(r),boss=r.monsters.find(m=>m.boss&&m.zone==='cave');
    for(const p of players)p.groundEligible=Math.abs(p.y-this.nav.height(p.x,p.z))<4;
    if(boss&&!r.awake&&players.some(p=>Math.hypot(p.x-CAVE_X,p.z*.91)<34&&p.y>=10&&p.y<33)){r.awake=true;this.state(boss,'dropping');}
-   for(let m of r.monsters){let x=m.x,y=m.y,z=m.z;this.updateMonster(r,m,players,dt);m.vx=(m.x-x)/dt;m.vy=(m.y-y)/dt;m.vz=(m.z-z)/dt;if(m.hp>0&&m.state!=='suspended'&&m.state!=='dropping')r.grass.actor("m:"+m.id,m,m.boss?2.3:.95,this.time);else r.grass.removeActor("m:"+m.id);}
-   r.grass.prune(this.time);
+   for(let m of r.monsters){let x=m.x,y=m.y,z=m.z;this.updateMonster(r,m,players,dt);m.vx=(m.x-x)/dt;m.vy=(m.y-y)/dt;m.vz=(m.z-z)/dt;}
   }}
  updateMonster(r,m,players,dt){if(m.hp<=0||m.state==='suspended')return;
   if(m.state==='dropping'){let t=Math.min(1,(this.time-m.since)/1.5);m.y=36+(m.home.y-36)*(t*t*(3-2*t));if(t===1){m.y=m.home.y;this.state(m,'roar');}return;}
@@ -113,11 +130,26 @@ class CombatWorld{
   else if(distance(m,target)<1.5)this.state(m,'idle');
  }
 
- snapshot(p){let r=this.rooms.get(p.roomId);if(!r)return {serverTime:this.time,roomId:p.roomId,monsters:[]};return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz}))};}
- sendSnapshot(p){this.emit(p.id,'monsterSnapshot',this.snapshot(p));const r=this.rooms.get(p.roomId);if(!r)return;
-  const players=[...r.players.values()].filter(q=>q.id!==p.id&&q.alive&&q.positioned&&distance(q,p)<100).map(q=>({id:q.id,x:q.x,y:q.y,z:q.z,yaw:q.yaw,crouched:q.crouched,prone:q.prone,swimming:q.swimming,light:q.flashlight}));
+ snapshot(p){
+  let r=this.rooms.get(p.roomId);if(!r)return {serverTime:this.time,roomId:p.roomId,monsters:[]};
+  // Omit dead non-boss spiders once their 1.5s death animation completes; retain dead bosses as strategic landmarks
+  return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100&&(m.boss||m.hp>0||(this.time-m.since)<1.6)).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz}))};
+ }
+ sendPlayerSnapshot(p){
+  const r=this.rooms.get(p.roomId);if(!r)return;
+  const players=[...r.players.values()].filter(q=>q.id!==p.id&&q.alive&&q.positioned&&distance(q,p)<100).map(q=>({
+   id:q.id,x:q.x,y:q.y,z:q.z,yaw:q.yaw,pitch:q.pitch,
+   crouched:q.crouched,prone:q.prone,swimming:q.swimming,grounded:q.grounded,
+   weapon:q.equipped,inHands:q.inHands,aiming:q.aiming,
+   firing:q.firing||(this.time-q.lastShot<.38),
+   proneTransition:q.proneTransition,speed:q.speed,localForward:q.localForward,vy:q.vy,
+   light:q.flashlight
+  }));
   this.emit(p.id,'playerSnapshot',{serverTime:this.time,roomId:r.id,players});
-  this.emit(p.id,'grassSnapshot',{serverTime:this.time,roomId:r.id,vegetation:VEGETATION_VERSION,grass:r.grass.snapshot(p,this.time)});
+ }
+ sendSnapshot(p){
+  this.emit(p.id,'monsterSnapshot',this.snapshot(p));
+  this.sendPlayerSnapshot(p);
  }
 }
 module.exports={CombatWorld,WEAPONS};
