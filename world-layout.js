@@ -1,5 +1,5 @@
 'use strict';
-const HALF_SIZE=500,CAVE_X=265,CAVE_Z=0,MAX_PLAYERS=20,VERSION='dark-survival-1000-v1',MONSTER_COUNT=100;
+const HALF_SIZE=500,CAVE_X=265,CAVE_Z=0,MAX_PLAYERS=20,VERSION='dark-survival-grass-140-v2',MONSTER_COUNT=100;
 const ZONES=Object.freeze([
  Object.freeze({id:'cave',x:CAVE_X,z:0,radius:255}),
  Object.freeze({id:'graveyard',x:-255,z:0,radius:180}),
