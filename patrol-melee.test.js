@@ -21,7 +21,7 @@ test('farthest-point spawns cover all regions instead of the central cluster',()
  }
 });
 
-test('99 active monsters patrol without a player nearby; sleeping cave boss remains suspended',()=>{
+test('98 active monsters patrol; cave and graveyard bosses wait for their distinct wake triggers',()=>{
  const {w,r}=make(),initial=r.monsters.map(m=>({x:m.x,z:m.z})),travel=new Float64Array(100);
  for(let step=0;step<1200;step++){
   const prev=r.monsters.map(m=>({x:m.x,z:m.z}));w.tick(.05);
@@ -33,9 +33,10 @@ test('99 active monsters patrol without a player nearby; sleeping cave boss rema
    if(m.zone==='cave'&&!m.boss){assert(Math.abs(m.y-12)<.01);assert(caveClearance(m.x,m.z)>1.5);}
   }
  }
- for(const m of r.monsters)if(m.id!==0)assert(travel[m.id]>100,'actor '+m.id+' must roam, not wait at home');
+ for(const m of r.monsters)if(m.id!==0&&m.id!==20)assert(travel[m.id]>100,'actor '+m.id+' must roam, not wait at home');
+ assert.equal(r.monsters[20].state,'dormant');assert.equal(travel[20],0);
  assert.equal(r.monsters[0].state,'suspended');assert.equal(distance(r.monsters[0],initial[0]),0);
- console.log(JSON.stringify({idlePatrolActors:99,simulatedSeconds:60,minTravelMetres:Math.min(...travel.slice(1)),maxTravelMetres:Math.max(...travel)}));
+ console.log(JSON.stringify({idlePatrolActors:98,simulatedSeconds:60,minTravelMetres:Math.min(...travel.slice(1)),maxTravelMetres:Math.max(...travel)}));
 });
 
 test('patrol paths and pursuit fields never route beyond the regional leash',()=>{
@@ -83,7 +84,8 @@ test('spider translates during attack windup and recovery while the player runs'
 });
 
 test('one damage application per melee swing, not damage every simulation tick',()=>{
- const {w,p,m}=melee();w.tick(.05);tick(w,12);assert.equal(p.hp,82);assert.equal(m.hitDone,true);
+ const {w,p,m}=melee();w.tick(.05);tick(w,12);assert.equal(p.hp,94); // Existing production minion damage is 6, not the stale 18.
+assert.equal(m.hitDone,true);
 });
 
 test('a player who leaves the region during windup cannot be damaged',()=>{

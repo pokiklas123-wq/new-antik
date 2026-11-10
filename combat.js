@@ -1,5 +1,6 @@
 'use strict';
 const {randomUUID}=require('node:crypto');
+const cemetery=require('./cemetery');
 const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT,ZONES,caveClearance}=require('./world-layout');
 const WEAPONS=[{interval:.16,damage:12,range:160},{interval:.25,damage:20,range:130},{interval:.35,damage:30,range:145},{interval:.10,damage:8,range:140},{interval:.90,damage:85,range:180}];
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
@@ -35,6 +36,7 @@ class CombatWorld{
     room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:100,maxHp:boss?300:100,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
    }
   }
+  for(const m of room.monsters)cemetery.init(m);
   if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
   this.rooms.set(room.id,room);return room;
  }
@@ -48,6 +50,7 @@ class CombatWorld{
   const nextInHands=data.inHands===true,nextAim=data.aiming===true,nextFire=data.firing===true;
   const stateChanged=(p.crouched!==nextCrouch)||(p.prone!==nextProne)||(p.swimming!==nextSwim)||(p.grounded!==nextGround)||(p.equipped!==nextWeapon)||(p.inHands!==nextInHands)||(p.aiming!==nextAim)||(p.firing!==nextFire);
   p.x=data.x;p.y=data.y;p.z=data.z;p.yaw=finite(data.yaw)?data.yaw%360:p.yaw;
+  p.viewYaw=finite(data.viewYaw)?data.viewYaw%360:p.yaw;
   p.pitch=finite(data.pitch)?Math.max(-85,Math.min(85,data.pitch)):p.pitch;
   p.crouched=nextCrouch;p.prone=nextProne;p.swimming=nextSwim;p.grounded=nextGround;
   p.inHands=nextInHands;p.aiming=nextAim;p.firing=nextFire;
@@ -69,8 +72,9 @@ class CombatWorld{
   p.sequence=data.sequence;if(this.time-p.lastShot<w.interval-.015)return false;
   let origin={x:data.x,y:data.y,z:data.z},dir={x:data.dx,y:data.dy,z:data.dz},l=Math.hypot(dir.x,dir.y,dir.z);if(l<.98||l>1.02||Math.hypot(origin.x-p.x,origin.y-(p.y+1),origin.z-p.z)>8)return false;
   if(!this.nav.clear({x:p.x,y:p.y+1,z:p.z},origin))return false;
+  if(finite(data.viewYaw))p.viewYaw=data.viewYaw%360;
   p.lastShot=this.time;p.firing=true;let range=Math.max(0,Math.min(w.range,data.range)),wall=this.nav.ray(origin,dir,range),nearest=wall,hit=null;
-  for(let m of r.monsters){if(m.hp<=0||m.state==='suspended'||m.state==='dropping'||m.state==='roar')continue;let radius=m.boss?2.3:.95,centerY=m.y+(m.boss?1.5:.6),ox=origin.x-m.x,oy=origin.y-centerY,oz=origin.z-m.z,b=ox*dir.x+oy*dir.y+oz*dir.z,c=ox*ox+oy*oy+oz*oz-radius*radius,disc=b*b-c;if(disc<0)continue;let t=Math.max(0,-b-Math.sqrt(disc));if(t<nearest){nearest=t;hit=m;}}
+  for(let m of r.monsters){if(m.hp<=0||m.state==='suspended'||m.state==='dropping'||m.state==='roar'||(m.zone==='graveyard'&&['dormant','rise','scream'].includes(m.state)))continue;if(m.zone==='graveyard'){const t=cemetery.rayHit(m,origin,dir);if(t<nearest){nearest=t;hit=m;}continue;}let radius=m.boss?2.3:.95,centerY=m.y+(m.boss?1.5:.6),ox=origin.x-m.x,oy=origin.y-centerY,oz=origin.z-m.z,b=ox*dir.x+oy*dir.y+oz*dir.z,c=ox*ox+oy*oy+oz*oz-radius*radius,disc=b*b-c;if(disc<0)continue;let t=Math.max(0,-b-Math.sqrt(disc));if(t<nearest){nearest=t;hit=m;}}
   let victim=null;
   for(const q of r.players.values()){
    if(q.id===p.id||!q.alive||!q.positioned)continue;
@@ -87,7 +91,7 @@ class CombatWorld{
    }
   }
   if(victim){this.damage(victim,w.damage);this.emit(p.id,'hitConfirm',{playerId:victim.id,damage:w.damage,hp:victim.hp});}
-  else if(hit){hit.hp=Math.max(0,hit.hp-w.damage);if(hit.hp===0)this.state(hit,'dead');else hit.target=p.id;this.emit(p.id,'hitConfirm',{id:hit.id,damage:w.damage,hp:hit.hp});}return true;
+  else if(hit){hit.hp=Math.max(0,hit.hp-w.damage);if(hit.hp===0){this.state(hit,'dead');cemetery.killed(this,r,hit,p);}else hit.target=p.id;this.emit(p.id,'hitConfirm',{id:hit.id,damage:w.damage,hp:hit.hp});}return true;
  }
  light(id,data){
   const p=this.players.get(id);if(!p||!p.alive||!data)return null;
@@ -101,9 +105,10 @@ class CombatWorld{
  tick(dt){this.time+=dt;for(let r of this.rooms.values()){let players=this.alive(r),boss=r.monsters.find(m=>m.boss&&m.zone==='cave');
    for(const p of players)p.groundEligible=Math.abs(p.y-this.nav.height(p.x,p.z))<4;
    if(boss&&!r.awake&&players.some(p=>Math.hypot(p.x-CAVE_X,p.z*.91)<34&&p.y>=10&&p.y<33)){r.awake=true;this.state(boss,'dropping');}
-   for(let m of r.monsters){let x=m.x,y=m.y,z=m.z;this.updateMonster(r,m,players,dt);m.vx=(m.x-x)/dt;m.vy=(m.y-y)/dt;m.vz=(m.z-z)/dt;}
+   for(let m of r.monsters){let x=m.x,y=m.y,z=m.z,teleports=m.teleports||0;this.updateMonster(r,m,players,dt);let jumped=(m.teleports||0)!==teleports;m.vx=jumped?0:(m.x-x)/dt;m.vy=jumped?0:(m.y-y)/dt;m.vz=jumped?0:(m.z-z)/dt;}
+   cemetery.tickProjectiles(this,r,dt);
   }}
- updateMonster(r,m,players,dt){if(m.hp<=0||m.state==='suspended')return;
+ updateMonster(r,m,players,dt){if(m.zone==='graveyard'){cemetery.update(this,r,m,players,dt);return;}if(m.hp<=0||m.state==='suspended')return;
   if(m.state==='dropping'){let t=Math.min(1,(this.time-m.since)/1.5);m.y=36+(m.home.y-36)*(t*t*(3-2*t));if(t===1){m.y=m.home.y;this.state(m,'roar');}return;}
   if(m.state==='roar'){if(this.time-m.since>=2.2)this.state(m,'idle');return;}
   const zone=ZONES.find(z=>z.id===(m.zone||'cave'));
@@ -199,7 +204,7 @@ class CombatWorld{
  snapshot(p){
   let r=this.rooms.get(p.roomId);if(!r)return {serverTime:this.time,roomId:p.roomId,monsters:[]};
   // Omit dead non-boss spiders once their 1.5s death animation completes; retain dead bosses as strategic landmarks
-  return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100&&(m.boss||m.hp>0||(this.time-m.since)<1.6)).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz}))};
+  return {serverTime:this.time,roomId:r.id,monsters:r.monsters.filter(m=>distance(m,p)<100&&(m.boss||m.hp>0||(this.time-m.since)<(m.zone==='graveyard'?1.8:1.6))).map(m=>({id:m.id,zone:m.zone,boss:m.boss,x:m.x,y:m.y,z:m.z,yaw:m.yaw,hp:m.hp,maxHp:m.maxHp,state:m.state,age:this.time-m.since,revision:m.revision,vx:m.vx,vy:m.vy,vz:m.vz,teleports:m.teleports||0,attackKind:m.attackKind||'',enraged:m.zone==='graveyard'&&m.boss&&m.hp<100})),projectiles:cemetery.snapshot(r,p)};
  }
  sendPlayerSnapshot(p){
   const r=this.rooms.get(p.roomId);if(!r)return;

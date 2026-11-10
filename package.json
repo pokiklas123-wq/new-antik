@@ -1,11 +1,11 @@
 {
   "name": "cave-combat-server",
-  "version": "3.0.0",
-  "description": "1000m dark survival, 20 players, five regional monster groups",
+  "version": "3.1.0",
+  "description": "Original five regions with isolated cemetery skeleton and wraith encounter",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js patrol-melee.test.js"
+    "test": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js patrol-melee.test.js cemetery.test.js"
   },
   "keywords": [],
   "author": "",
