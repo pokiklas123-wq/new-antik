@@ -1,5 +1,6 @@
 'use strict';
 const fs=require('node:fs');
+const {caveClearance}=require('./world-layout');
 class Navigation{
  constructor(file){
   if(!fs.existsSync(file))throw Error('Missing world-nav.json. Use the matching file included with this server, or run the supplied Java exporter.');
@@ -26,18 +27,18 @@ class Navigation{
  walkable(x,z,boss){let i=this.index(x,z);return i>=0&&this.mask(boss)[i]==='1';}
  // Navigation is immutable: a reverse field is valid until its goal changes, not for just 1s.
  // LRU is bounded. Neighbour iteration creates no per-cell arrays; queue is reused.
- next(x,z,tx,tz,boss,now){
-  let start=this.nearest(x,z,boss),goal=this.nearest(tx,tz,boss);if(start<0||goal<0)return null;if(start===goal)return this.point(goal);
-  let key=goal+':'+boss,entry=this.fields.get(key),d=this.data;
+ next(x,z,tx,tz,boss,now,zone){
+  let start=zone?this.regionNearest(x,z,zone,boss):this.nearest(x,z,boss),goal=zone?this.regionNearest(tx,tz,zone,boss):this.nearest(tx,tz,boss);if(start<0||goal<0)return null;if(start===goal)return this.point(goal);
+  let key=goal+':'+boss+(zone?':'+zone.id:''),entry=this.fields.get(key),d=this.data;
   if(entry){this.fields.delete(key);this.fields.set(key,entry);}
   else{
    if(this.fields.size>=20)this.fields.delete(this.fields.keys().next().value);
    let dist=new Int32Array(d.n*d.n);dist.fill(-1);let q=this.queue;if(!q||q.length!==dist.length)q=this.queue=new Int32Array(dist.length);
-   let a=0,b=1;q[0]=goal;dist[goal]=0;let mask=this.mask(boss);
+   let a=0,b=1;q[0]=goal;dist[goal]=0;let mask=this.mask(boss),allowed=zone?this.region(zone,boss).allowed:null;
    while(a<b){let i=q[a++],xx=i%d.n;
     for(let edge=0;edge<4;edge++){
      let j=edge===0?(xx>0?i-1:-1):edge===1?(xx<d.n-1?i+1:-1):edge===2?i-d.n:i+d.n;
-     if(j>=0&&j<dist.length&&dist[j]<0&&mask[j]==='1'){dist[j]=dist[i]+1;q[b++]=j;}
+     if(j>=0&&j<dist.length&&dist[j]<0&&mask[j]==='1'&&(!allowed||allowed[j])){dist[j]=dist[i]+1;q[b++]=j;}
     }
    }
    entry={time:now,dist};this.fields.set(key,entry);
@@ -47,6 +48,57 @@ class Navigation{
    if(j>=0&&j<entry.dist.length&&entry.dist[j]>=0&&(entry.dist[best]<0||entry.dist[j]<entry.dist[best]))best=j;
   }
   return entry.dist[best]<0?null:this.point(best);
+ }
+ // Region-bounded graphs prevent a route from leaving its leash to bypass a wall.
+ region(zone,boss=false){
+  if(!this.regions)this.regions=new Map();
+  const key=zone.id+':'+boss;if(this.regions.has(key))return this.regions.get(key);
+  const d=this.data,mask=this.mask(boss),allowed=new Uint8Array(d.n*d.n),labels=new Int32Array(d.n*d.n);
+  const components=[];let serial=0;
+  for(let i=0;i<allowed.length;i++)if(mask[i]==='1'){
+   const x=d.minX+(i%d.n)*d.step,z=d.minZ+Math.floor(i/d.n)*d.step;
+   if(Math.hypot(x-zone.x,z-zone.z)>zone.radius-1)continue;
+   if(zone.id==='cave'&&(Math.abs(d.heights[i]-12)>.25||caveClearance(x,z)<4))continue;
+   allowed[i]=1;
+  }
+  const queue=new Int32Array(allowed.length);
+  for(let seed=0;seed<allowed.length;seed++)if(allowed[seed]&&!labels[seed]){
+   const cells=[];let a=0,b=1;queue[0]=seed;labels[seed]=++serial;
+   while(a<b){const i=queue[a++],x=i%d.n;cells.push(i);
+    for(let edge=0;edge<4;edge++){
+     const j=edge===0?(x?i-1:-1):edge===1?(x<d.n-1?i+1:-1):edge===2?i-d.n:i+d.n;
+     if(j>=0&&j<allowed.length&&allowed[j]&&!labels[j]){labels[j]=serial;queue[b++]=j;}
+    }
+   }
+   components.push(cells);
+  }
+  const graph={allowed,labels,components};this.regions.set(key,graph);return graph;
+ }
+ regionNearest(x,z,zone,boss){
+  const d=this.data,g=this.region(zone,boss);let ix=Math.round((x-d.minX)/d.step),iz=Math.round((z-d.minZ)/d.step);
+  for(let r=0;r<32;r++)for(let dz=-r;dz<=r;dz++)for(let dx=-r;dx<=r;dx++){
+   if(r&&Math.abs(dx)!==r&&Math.abs(dz)!==r)continue;
+   const xx=ix+dx,zz=iz+dz,j=zz*d.n+xx;
+   if(xx>=0&&zz>=0&&xx<d.n&&zz<d.n&&g.allowed[j])return j;
+  }
+  return -1;
+ }
+ // Build a route only when a patrol goal changes, not a full BFS per actor per tick.
+ route(x,z,tx,tz,boss,zone){
+  const start=this.regionNearest(x,z,zone,boss),goal=this.regionNearest(tx,tz,zone,boss);
+  if(start<0||goal<0)return null;
+  const g=this.region(zone,boss),d=this.data;if(g.labels[start]!==g.labels[goal])return null;
+  const parent=new Int32Array(d.n*d.n);parent.fill(-1);
+  const queue=this.queue;let a=0,b=1;queue[0]=goal;parent[goal]=goal;
+  while(a<b&&parent[start]<0){let i=queue[a++],x=i%d.n;
+   for(let edge=0;edge<4;edge++){
+    let j=edge===0?(x?i-1:-1):edge===1?(x<d.n-1?i+1:-1):edge===2?i-d.n:i+d.n;
+    if(j>=0&&j<parent.length&&g.allowed[j]&&parent[j]<0){parent[j]=i;queue[b++]=j;}
+   }
+  }
+  if(parent[start]<0)return null;
+  const path=[];for(let i=start;i!==goal;i=parent[i])path.push(this.point(parent[i]));
+  return path;
  }
  terrainRay(o,dir,range){
   const d=this.data,h=d.heights,s=d.step;let ix=Math.floor((o.x-d.minX)/s),iz=Math.floor((o.z-d.minZ)/s),best=range;

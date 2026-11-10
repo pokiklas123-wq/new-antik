@@ -1,6 +1,6 @@
 'use strict';
 const {randomUUID}=require('node:crypto');
-const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT,ZONES}=require('./world-layout');
+const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT,ZONES,caveClearance}=require('./world-layout');
 const WEAPONS=[{interval:.16,damage:12,range:160},{interval:.25,damage:20,range:130},{interval:.35,damage:30,range:145},{interval:.10,damage:8,range:140},{interval:.90,damage:85,range:180}];
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const finite=(v)=>typeof v==='number'&&Number.isFinite(v);
@@ -9,24 +9,30 @@ class CombatWorld{
  createRoom(){let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false};
   if(this.spawnTemplate){room.monsters=this.spawnTemplate.map(m=>({...m,home:{...m.home},since:this.time}));}
   else for(const zone of ZONES){
-   const candidates=[],d=this.nav.data;
-   if(d){for(let i=0;i<d.n*d.n;i++)if(d.small[i]==='1'){
-    const p=this.nav.point(i);if(Math.hypot(p.x-zone.x,p.z-zone.z)>zone.radius-8)continue;
-    if(zone.id==='cave'&&(Math.abs(p.y-12)>.25||Math.hypot(p.x-CAVE_X,p.z)>245))continue;
-    if(ZONES.some(other=>other.id!==zone.id&&Math.hypot(p.x-other.x,p.z-other.z)<Math.hypot(p.x-zone.x,p.z-zone.z)))continue;
-    candidates.push({i,...p});
-   }}else {for(let i=0;i<100;i++)candidates.push({i,...this.nav.point(this.nav.nearest(zone.x+(i%10)*3,zone.z+Math.floor(i/10)*3,false))});}
-   candidates.sort((a,b)=>Math.hypot(a.x-zone.x,a.z-zone.z)-Math.hypot(b.x-zone.x,b.z-zone.z));
-   let selected=[];
-   for(const seed of candidates){if(d&&d.boss[seed.i]!=='1')continue;
-    selected=[seed];
-    for(const p of candidates){if(selected.length===20)break;if(selected.some(q=>Math.hypot(q.x-p.x,q.z-p.z)<3))continue;
-     if(!this.nav.next(p.x,p.z,seed.x,seed.z,false,this.time))continue;selected.push(p);}
-    if(selected.length===20)break;
+   const d=this.nav.data,graph=this.nav.region(zone,false);
+   // Keep the largest connected area; farthest-point placement covers its full extent.
+   const component=graph.components.reduce((a,b)=>a.length>b.length?a:b,[]);
+   const candidates=component.map(i=>({i,...this.nav.point(i)}));
+   const bossGraph=this.nav.region(zone,true);
+   let bossLabel=0,bossArea=0;
+   for(const p of candidates){const label=bossGraph.labels[p.i],area=label?bossGraph.components[label-1].length:0;if(area>bossArea){bossArea=area;bossLabel=label;}}
+   // Bosses need their own connected clearance graph, not a tiny central island.
+   const legalBoss=candidates.filter(p=>d.boss[p.i]==='1'&&bossGraph.allowed[p.i]&&bossGraph.labels[p.i]===bossLabel);
+   legalBoss.sort((a,b)=>Math.hypot(a.x-zone.x,a.z-zone.z)-Math.hypot(b.x-zone.x,b.z-zone.z));
+   if(!legalBoss.length||candidates.length<20)throw Error('Zone '+zone.id+' lacks reachable monster spawns');
+   const selected=[legalBoss[0]],separation=new Float64Array(candidates.length);separation.fill(Infinity);
+   for(let n=1;n<20;n++){
+    const last=selected[selected.length-1];let best=-1,score=-1;
+    for(let i=0;i<candidates.length;i++){
+     const p=candidates[i],dist=(p.x-last.x)**2+(p.z-last.z)**2;
+     separation[i]=Math.min(separation[i],dist);
+     if(separation[i]>score){score=separation[i];best=i;}
+    }
+    if(score<9)throw Error('Zone '+zone.id+' lacks separated monster spawns');
+    selected.push(candidates[best]);
    }
-   if(selected.length!==20)throw Error('Zone '+zone.id+' lacks 20 reachable monster spawns');
    for(let n=0;n<20;n++){const p=selected[n],boss=n===0,caveBoss=boss&&zone.id==='cave';
-    room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:100,maxHp:boss?300:100,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,revision:0,vx:0,vy:0,vz:0});
+    room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:100,maxHp:boss?300:100,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
    }
   }
   if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
@@ -100,34 +106,94 @@ class CombatWorld{
  updateMonster(r,m,players,dt){if(m.hp<=0||m.state==='suspended')return;
   if(m.state==='dropping'){let t=Math.min(1,(this.time-m.since)/1.5);m.y=36+(m.home.y-36)*(t*t*(3-2*t));if(t===1){m.y=m.home.y;this.state(m,'roar');}return;}
   if(m.state==='roar'){if(this.time-m.since>=2.2)this.state(m,'idle');return;}
+  const zone=ZONES.find(z=>z.id===(m.zone||'cave'));
   let target=null,best=Infinity;
   for(const p of players){
-   const zone=ZONES.find(z=>z.id===(m.zone||'cave'));if(!p.groundEligible||Math.hypot(p.x-zone.x,p.z-zone.z)>zone.radius)continue;
-   let d=(m.x-p.x)**2+(m.z-p.z)**2;if(((m.zone==='cave'&&r.awake)||d<32*32)&&d<best){target=p;best=d;}
+   if(!p.groundEligible||Math.hypot(p.x-zone.x,p.z-zone.z)>zone.radius)continue;
+   if(m.zone==='cave'&&(Math.abs(p.y-12)>=4||caveClearance(p.x,p.z)<2))continue;
+   const d=(m.x-p.x)**2+(m.z-p.z)**2;
+   // Cave-floor intruders trigger the entire connected cave, not just a 32m circle.
+   const caveIntruder=m.zone==='cave'&&Math.abs(p.y-12)<4;
+   if((caveIntruder||d<90*90||m.target===p.id)&&d<best){
+    const a=this.nav.regionNearest(m.x,m.z,zone,m.boss),b=this.nav.regionNearest(p.x,p.z,zone,m.boss),g=this.nav.region(zone,m.boss);
+    if(a>=0&&b>=0&&g.labels[a]===g.labels[b]){target=p;best=d;}
+   }
   }
   if(m.state==='attack'){
-   if(!m.hitDone&&this.time-m.since>=(m.boss?.58:.56)){m.hitDone=true;let p=this.players.get(m.target);if(p&&p.alive&&distance(m,p)<=(m.boss?5:2.1)&&Math.abs(p.y-m.y)<3&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:p.x,y:p.y+1,z:p.z}))this.damage(p,m.boss?30:12);}
-   if(this.time-m.since>=(m.boss?1.35:1.45))this.state(m,'idle');return;
+   const p=this.players.get(m.target);
+   const valid=p&&p.alive&&p.positioned&&p.groundEligible&&Math.abs(p.y-m.y)<6&&Math.hypot(p.x-zone.x,p.z-zone.z)<=zone.radius&&(m.zone!=='cave'||(Math.abs(p.y-12)<4&&caveClearance(p.x,p.z)>=2));
+   // Translate throughout windup/recovery. An attack must never root the monster.
+   if(valid)this.moveMonster(m,p,m.boss?(m.hp<100?16:13):12,dt,true,(m.boss?5:2.1)*.6);
+   if(!m.hitDone&&this.time-m.since>=(m.boss?.58:.32)){
+    m.hitDone=true;
+    if(valid&&distance(m,p)<=(m.boss?5:2.1)&&Math.abs(p.y-m.y)<3&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:p.x,y:p.y+1,z:p.z}))this.damage(p,m.boss?30:18);
+   }
+   if(this.time-m.since>=(m.boss?1.0:.7))this.state(m,valid?'run':'idle');
+   return;
   }
-  if(target){m.target=target.id;let range=m.boss?5:2.1;
-   if(distance(m,target)<=range&&this.time>=m.attackAt&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:target.x,y:target.y+1,z:target.z})){m.attackAt=this.time+(m.boss?1.55:1.8);m.hitDone=false;m.yaw=Math.atan2(target.x-m.x,target.z-m.z)*180/Math.PI;this.state(m,'attack');return;}
-   this.moveMonster(m,target,m.boss?(m.hp<100?16:13):10,dt);
-  }else if(distance(m,m.home)>1.5){this.moveMonster(m,m.home,m.boss?13:10,dt);}else this.state(m,'idle');
+  if(target){
+   if(m.target!==target.id){m.waypoint=null;m.pathAt=0;}
+   m.target=target.id;m.patrol=null;
+   const range=m.boss?5:2.1;
+   if(distance(m,target)<=range&&this.time>=m.attackAt&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:target.x,y:target.y+1,z:target.z})){
+    m.attackAt=this.time+(m.boss?1.55:1.15);m.hitDone=false;
+    m.yaw=Math.atan2(target.x-m.x,target.z-m.z)*180/Math.PI;this.state(m,'attack');
+    this.moveMonster(m,target,m.boss?(m.hp<100?16:13):12,dt,true,range*.6);return;
+   }
+   this.moveMonster(m,target,m.boss?(m.hp<100?16:13):12,dt,false,range*.6);
+  }else{
+   if(m.target!==null){m.target=null;m.waypoint=null;m.pathAt=0;}
+   this.patrolMonster(m,zone,dt);
+  }
  }
- moveMonster(m,target,speed,dt){
-  let budget=speed*dt,moved=false,heading=m.yaw;
+ patrolMonster(m,zone,dt){
+  if(!m.patrol||m.patrolStep>=m.patrol.length){
+   if(this.time<(m.patrolRetry||0)){this.state(m,'idle');return;}
+   const g=this.nav.region(zone,m.boss),start=this.nav.regionNearest(m.x,m.z,zone,m.boss);
+   if(start<0){m.patrolRetry=this.time+2;return;}
+   const cells=g.components[g.labels[start]-1];
+   // Deterministic per-monster goals: no shared centre or synchronized marching.
+   let seed=((m.id+1)*2654435761+(++m.patrolSerial)*2246822519)>>>0,goal=null;
+   for(let attempt=0;attempt<24;attempt++){
+    seed=(Math.imul(seed,1664525)+1013904223)>>>0;
+    const p=this.nav.point(cells[seed%cells.length]);goal=p;
+    if(distance(m,p)>Math.min(45,zone.radius*.35))break;
+   }
+   m.patrol=this.nav.route(m.x,m.z,goal.x,goal.z,m.boss,zone);m.patrolStep=0;
+   m.waypoint=null;m.pathAt=0;
+   if(!m.patrol||!m.patrol.length){m.patrolRetry=this.time+1;this.state(m,'idle');return;}
+  }
+  const speed=m.boss?7:6,budget=speed*dt;let remaining=budget,moved=false;
+  for(let attempt=0;attempt<8&&remaining>.001&&m.patrolStep<m.patrol.length;attempt++){
+   const p=m.patrol[m.patrolStep],dx=p.x-m.x,dz=p.z-m.z,l=Math.hypot(dx,dz);
+   if(l<.015){m.patrolStep++;continue;}
+   const step=Math.min(l,remaining),x=m.x+dx/l*step,z=m.z+dz/l*step;
+   if(Math.hypot(x-zone.x,z-zone.z)>zone.radius||!this.nav.walkable(x,z,m.boss)){m.patrol=null;break;}
+   m.x=x;m.z=z;m.y=this.nav.height(x,z);m.yaw=Math.atan2(dx,dz)*180/Math.PI;
+   remaining-=step;moved=true;if(step>=l-.001)m.patrolStep++;
+  }
+  if(moved)this.state(m,'run');else this.state(m,'idle');
+ }
+ moveMonster(m,target,speed,dt,preserveState=false,stopDistance=0){
+  let budget=Math.min(speed*dt,Math.max(0,distance(m,target)-stopDistance)),moved=false,heading=m.yaw;
+  const zone=ZONES.find(z=>z.id===(m.zone||'cave'));
   for(let attempt=0;attempt<8&&budget>.001;attempt++){
-   if(this.time>=m.pathAt||!m.waypoint||distance(m,m.waypoint)<.015){m.pathAt=this.time+.25;m.waypoint=this.nav.next(m.x,m.z,target.x,target.z,m.boss,this.time);}
+   if(this.time>=m.pathAt||!m.waypoint||distance(m,m.waypoint)<.015){m.pathAt=this.time+.25;m.waypoint=this.nav.next(m.x,m.z,target.x,target.z,m.boss,this.time,zone);}
    let p=m.waypoint;if(!p)break;
-   let dx=p.x-m.x,dz=p.z-m.z,l=Math.hypot(dx,dz);if(l<.015){m.waypoint=null;break;}
+   let dx=p.x-m.x,dz=p.z-m.z,l=Math.hypot(dx,dz);
+   // Inside the goal cell, finish approaching the actual player rather than stop at its centre.
+   if(l<.015&&distance(m,target)>stopDistance&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:target.x,y:target.y+1,z:target.z})){
+    p=target;dx=p.x-m.x;dz=p.z-m.z;l=Math.hypot(dx,dz);
+   }
+   if(l<.015){m.waypoint=null;break;}
    let step=Math.min(l,budget),x=m.x+dx/l*step,z=m.z+dz/l*step;
-   const zone=ZONES.find(z=>z.id===(m.zone||'cave'));if(Math.hypot(x-zone.x,z-zone.z)>zone.radius)break;
+   if(Math.hypot(x-zone.x,z-zone.z)>zone.radius)break;
    if(!this.nav.walkable(x,z,m.boss)){m.waypoint=null;m.pathAt=0;break;}
    m.x=x;m.z=z;m.y=this.nav.height(x,z);heading=Math.atan2(dx,dz)*180/Math.PI;budget-=step;moved=true;
    if(step>=l-.001){m.waypoint=null;m.pathAt=0;}
   }
-  if(moved){m.yaw=heading;this.state(m,m.boss&&m.hp<100?'roll':'run');}
-  else if(distance(m,target)<1.5)this.state(m,'idle');
+  if(moved){m.yaw=heading;if(!preserveState)this.state(m,m.boss&&m.hp<100?'roll':'run');}
+  else if(!preserveState&&distance(m,target)<1.5)this.state(m,'idle');
  }
 
  snapshot(p){
