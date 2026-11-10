@@ -126,7 +126,7 @@ class CombatWorld{
    if(valid)this.moveMonster(m,p,m.boss?(m.hp<100?16:13):12,dt,true,(m.boss?5:2.1)*.6);
    if(!m.hitDone&&this.time-m.since>=(m.boss?.58:.32)){
     m.hitDone=true;
-    if(valid&&distance(m,p)<=(m.boss?5:2.1)&&Math.abs(p.y-m.y)<3&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:p.x,y:p.y+1,z:p.z}))this.damage(p,m.boss?30:18);
+    if(valid&&distance(m,p)<=(m.boss?5:2.1)&&Math.abs(p.y-m.y)<3&&this.nav.clear({x:m.x,y:m.y+1,z:m.z},{x:p.x,y:p.y+1,z:p.z}))this.damage(p,m.boss?12:6);
    }
    if(this.time-m.since>=(m.boss?1.0:.7))this.state(m,valid?'run':'idle');
    return;
