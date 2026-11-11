@@ -34,7 +34,7 @@ test('98 active monsters patrol; cave and graveyard bosses wait for their distin
   }
  }
  for(const m of r.monsters)if(m.id!==0&&m.id!==20)assert(travel[m.id]>100,'actor '+m.id+' must roam, not wait at home');
- assert.equal(r.monsters[20].state,'dormant');assert.equal(travel[20],0);
+ assert.equal(r.monsters[20].state,'idle');assert.equal(r.monsters[20].awakened,false);assert.equal(travel[20],0);
  assert.equal(r.monsters[0].state,'suspended');assert.equal(distance(r.monsters[0],initial[0]),0);
  console.log(JSON.stringify({idlePatrolActors:98,simulatedSeconds:60,minTravelMetres:Math.min(...travel.slice(1)),maxTravelMetres:Math.max(...travel)}));
 });

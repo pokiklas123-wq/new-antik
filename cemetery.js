@@ -14,54 +14,14 @@ function init(m){
  // 🟢 التعديل: الزعيم 300 دم، والتابعين 60 دم
  m.hp=m.maxHp=m.boss?300:60; 
  m.teleports=0;m.awakened=false;m.retreating=false;m.attackSerial=0;m.attackKind='claw';
- if(m.boss)m.state='dormant';
+ if(m.boss){m.state='idle';m.yaw=180;}
 }
 
-function killed(w,r,m,p){
- if(m.zone!==ZONE.id||m.boss||!eligible(w,p))return;
- const b=r.monsters.find(n=>n.zone===ZONE.id&&n.boss);
- if(!b||b.hp<=0||b.awakened)return;
-
- // 🟢 التعديل: حساب كم تابعاً قد مات في المقبرة
- let deadMinions = 0;
- for(let i = 0; i < r.monsters.length; i++) {
-  if(r.monsters[i].zone === ZONE.id && !r.monsters[i].boss && r.monsters[i].hp <= 0) {
-   deadMinions++;
-  }
- }
-
- // 🟢 التعديل: الزعيم لا يستيقظ إلا إذا مات 14 تابعاً
- if (deadMinions < 14) return;
-
- // خروج الزعيم
- b.awakened=true;b.target=p.id;b.wakeTarget=p.id;b.waypoint=null;b.patrol=null;b.pathAt=0;
- w.state(b,'rise');
-}
-
-function frontPoint(w,b,p){
- const a=yaw(p),fx=Math.sin(a),fz=Math.cos(a);
- const start=w.nav.regionNearest(p.x,p.z,ZONE,true),g=w.nav.region(ZONE,true);
- const home=w.nav.regionNearest(b.home?b.home.x:b.x,b.home?b.home.z:b.z,ZONE,true);
- if(start<0||home<0||g.labels[start]!==g.labels[home])return null;
- // Never move to the side/behind or silently snap to a distant grid cell.
- // 1.35m centre separation is very close, but avoids placing the camera inside the mesh.
- for(const d of [1.35,1.6,1.9,2.2]){
-  const q={x:p.x+fx*d,z:p.z+fz*d};q.y=w.nav.height(q.x,q.z);
-  const i=w.nav.index(q.x,q.z);
-  if(!inside(q)||i<0||!g.allowed[i]||g.labels[i]!==g.labels[start]||!w.nav.walkable(q.x,q.z,true)||Math.abs(q.y-p.y)>1.5)continue;
-  if(w.nav.clear(eye(p),eye(q)))return q;
- }
- return null;
-}
-function teleport(w,b,p){
- const q=frontPoint(w,b,p);if(!q)return false;
- b.x=q.x;b.y=q.y;b.z=q.z;b.yaw=Math.atan2(p.x-b.x,p.z-b.z)*180/Math.PI;
- b.teleports=1;b.waypoint=null;b.pathAt=0;b.patrol=null;
- w.state(b,'scream');return true;
-}
+// Kills no longer trigger a reveal or any instantaneous relocation.
+function killed(){}
 function choose(w,m,players){
  let best=null,score=Infinity;
- for(const p of players){if(!eligible(w,p))continue;const d=dist(m,p);if(d>90&&m.target!==p.id&&!m.boss)continue;
+ for(const p of players){if(!eligible(w,p))continue;const d=dist(m,p);if(m.boss&&!m.awakened&&d>90)continue;if(d>90&&m.target!==p.id&&!m.boss)continue;
   const a=w.nav.regionNearest(m.x,m.z,ZONE,m.boss),b=w.nav.regionNearest(p.x,p.z,ZONE,m.boss),g=w.nav.region(ZONE,m.boss);
   if(a<0||b<0||g.labels[a]!==g.labels[b])continue;
   // Low-health boss favours an exposed/weak opponent, without changing base damage.
@@ -89,27 +49,31 @@ function projectile(w,r,m,p){
 function retreat(w,m,dt){
  if(!m.retreating){m.retreating=true;m.waypoint=null;m.pathAt=0;m.patrol=null;}
  m.target=null;m.hitDone=true;
- // Run home at the existing pursuit speed, not the slow idle patrol speed.
- if(dist(m,m.home)>.4){w.moveMonster(m,m.home,m.boss?13:12,dt,true,.25);w.state(m,'return');}
- else{m.retreating=false;m.waypoint=null;m.pathAt=0;w.patrolMonster(m,ZONE,dt);}
+ if(dist(m,m.home)>.25){w.moveMonster(m,m.home,m.boss?18:12,dt,true,.1);w.state(m,'return');}
+ else{
+  m.retreating=false;m.waypoint=null;m.pathAt=0;
+  if(m.boss){
+   // A failed encounter resets only after walking all the way home. Cannot chip
+   // HP safely from outside the cemetery or snipe an invulnerable returning boss.
+   m.hp=m.maxHp;m.awakened=false;m.yaw=180;w.state(m,'idle');
+  }else w.patrolMonster(m,ZONE,dt);
+ }
 }
 function update(w,r,m,players,dt){
  if(m.hp<=0)return;
- if(m.boss&&!m.awakened)return;
- if(m.state==='rise'){
-  if(w.time-m.since>=CLIPS.rise){
-   const p=w.players.get(m.wakeTarget);
-   if(eligible(w,p))teleport(w,m,p);
-   else {const other=choose(w,m,players);if(other){m.wakeTarget=other.id;teleport(w,m,other);}}
+ if(m.boss){
+  if(m.retreating){retreat(w,m,dt);return;}
+  if(!m.awakened){
+   const intruder=choose(w,m,players);
+   if(!intruder||dist(m,intruder)>90){w.state(m,'idle');return;}
+   m.awakened=true;m.target=intruder.id;m.waypoint=null;m.pathAt=0;m.patrol=null;
+  }else if(!eligible(w,w.players.get(m.target))){
+   retreat(w,m,dt);return;
   }
-  return;
  }
- if(m.state==='scream'){if(w.time-m.since>=CLIPS.scream)w.state(m,'idle');return;}
- // If blocked by a wall during the first reveal, retry only directly in front.
- // No additional teleports after the first successful reveal, including re-entry.
- if(m.boss&&!m.teleports){const p=choose(w,m,players);if(p){m.target=p.id;teleport(w,m,p);}return;}
+
  const p=choose(w,m,players);
- if(!p){if(m.target!==null||m.retreating)retreat(w,m,dt);else w.patrolMonster(m,ZONE,dt);return;}
+ if(!p){if(m.boss||m.target!==null||m.retreating)retreat(w,m,dt);else w.patrolMonster(m,ZONE,dt);return;}
  if(m.retreating||m.target!==p.id){m.waypoint=null;m.pathAt=0;m.patrol=null;}
  m.retreating=false;
  if(m.state==='attack'){
@@ -176,4 +140,4 @@ function rayHit(m,o,d){
  return nearest;
 }
 function snapshot(r,p){return (r.cemeteryProjectiles||[]).filter(b=>dist(b,p)<80).map(b=>({id:b.id,boss:b.boss,x:b.x,y:b.y,z:b.z,dx:b.dx,dy:b.dy,dz:b.dz,speed:b.speed}));}
-module.exports={init,killed,update,tickProjectiles,snapshot,frontPoint,eligible,rayHit,CLIPS};
+module.exports={init,killed,update,tickProjectiles,snapshot,eligible,rayHit,CLIPS};
