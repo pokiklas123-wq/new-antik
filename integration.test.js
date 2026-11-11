@@ -8,6 +8,9 @@ test('real Socket.IO: health, matchmaking, isolated flashlights, survivor room, 
  try{
   assert.equal((await(await fetch(url+'/health')).json()).protocol,2);
   let [a,ar]=await connect(false),[b,br]=await connect(false),[c,cr]=await connect(true);assert.equal(ar.roomId,br.roomId);assert.notEqual(ar.roomId,cr.roomId);
+  // Spawns are now >=180m apart, outside the intentional 110m light AOI.
+  // Put the receiving test actor nearby rather than weakening production culling.
+  Object.assign(game.world.players.get(b.id),{x:ar.spawn.x+5,y:ar.spawn.y,z:ar.spawn.z});
   let leaked=false;c.on('flashlightState',()=>leaked=true);let light=wait(b,'flashlightState');a.emit('flashlightState',{on:true,x:ar.spawn.x,y:ar.spawn.y+1,z:ar.spawn.z,dx:0,dy:0,dz:1,range:20,id:'forged'});assert.equal((await light).id,a.id);await delay(80);assert(!leaked);
   let state=wait(a,'playerState');game.world.damage(game.world.players.get(a.id),100);assert.equal((await state).hp,0);assert(game.world.rooms.has(ar.roomId));
   await delay(1050);let again=wait(a,'roomJoined');a.emit('retry',{});let retry=await again;assert.notEqual(retry.roomId,ar.roomId);assert.equal(retry.hp,100);assert(game.world.rooms.has(ar.roomId));

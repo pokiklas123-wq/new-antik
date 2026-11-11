@@ -2,6 +2,7 @@
 const {randomUUID}=require('node:crypto');
 const cemetery=require('./cemetery');
 const forest=require('./forest');
+const objectives=require('./objectives');
 const {HALF_SIZE,CAVE_X,MAX_PLAYERS,VERSION,spawn,MONSTER_COUNT,ZONES,caveClearance}=require('./world-layout');
 const WEAPONS=[{interval:.16,damage:12,range:160},{interval:.25,damage:20,range:130},{interval:.35,damage:30,range:145},{interval:.10,damage:8,range:140},{interval:.90,damage:85,range:180}];
 const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
@@ -40,12 +41,13 @@ createRoom(){
  }
  for(const m of room.monsters)cemetery.init(m);
  if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
- this.rooms.set(room.id,room);return room;
+ objectives.init(this,room);this.rooms.set(room.id,room);return room;
 }
- join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
- leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);this.checkClose(r);}
+ join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,initialSpawn:Object.freeze({...start}),life:0,gateArmed:false,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,life:p.life,objectiveProtocol:1,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
+ leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;objectives.drop(this,r,p);r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}
  move(id,data){let p=this.players.get(id);if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
+  if((data.life===undefined?0:data.life)!==p.life)return false;
   let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false;
   const nextWeapon=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;
   const nextCrouch=data.crouched===true,nextProne=data.prone===true,nextSwim=data.swimming===true,nextGround=data.grounded!==false;
@@ -69,8 +71,24 @@ createRoom(){
   return true;}
  state(m,state){if(m.state!==state){m.state=state;m.since=this.time;m.revision++;}}
  alive(r){return [...r.players.values()].filter(p=>p.alive&&p.positioned);}
- damage(p,amount){if(!p.alive)return;p.hp=Math.max(0,p.hp-amount);if(p.hp===0)p.alive=false;this.emit(p.id,'playerState',{hp:p.hp,alive:p.alive});let r=this.rooms.get(p.roomId);if(r)this.checkClose(r);}
- shoot(id,data){let p=this.players.get(id),r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
+ damage(p,amount){
+  if(!p.alive||this.time<(p.invulnerableUntil||0))return;
+  const r=this.rooms.get(p.roomId);p.hp=Math.max(0,p.hp-amount);
+  if(p.hp===0&&r&&objectives.held(r,p).length>0){
+   objectives.drop(this,r,p);p.life++;p.hp=100;p.alive=true;p.escaped=false;
+   Object.assign(p,p.initialSpawn);
+   p.positioned=false;p.lastMove=this.time;p.equipped=-1;p.inHands=p.aiming=p.firing=false;
+   p.crouched=p.prone=false;p.grounded=false;p.swimming=true;p.proneTransition=0;
+   p.vy=p.speed=p.localForward=0;p.flashlight=null;p.gateArmed=false;
+   p.invulnerableUntil=this.time+.35;
+   this.emit(p.id,'playerState',{hp:100,alive:true,respawn:true,spawn:{...p.initialSpawn},life:p.life,clearWeapons:true});
+   this.emit(p.id,'objectiveSnapshot',objectives.snapshot(this,r,p));return;
+  }
+  if(p.hp===0){p.alive=false;p.equipped=-1;p.inHands=p.aiming=p.firing=false;p.flashlight=null;}
+  this.emit(p.id,'playerState',{hp:p.hp,alive:p.alive,life:p.life});
+  if(r)this.checkClose(r);
+ }
+ shoot(id,data){let p=this.players.get(id),r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;if((data.life===undefined?0:data.life)!==p.life)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
   p.sequence=data.sequence;if(this.time-p.lastShot<w.interval-.015)return false;
   let origin={x:data.x,y:data.y,z:data.z},dir={x:data.dx,y:data.dy,z:data.dz},l=Math.hypot(dir.x,dir.y,dir.z);if(l<.98||l>1.02||Math.hypot(origin.x-p.x,origin.y-(p.y+1),origin.z-p.z)>8)return false;
   if(!this.nav.clear({x:p.x,y:p.y+1,z:p.z},origin))return false;
@@ -109,6 +127,7 @@ createRoom(){
    if(boss&&!r.awake&&players.some(p=>Math.hypot(p.x-CAVE_X,p.z*.91)<34&&p.y>=10&&p.y<33)){r.awake=true;this.state(boss,'dropping');}
    for(let m of r.monsters){let x=m.x,y=m.y,z=m.z,teleports=m.teleports||0;this.updateMonster(r,m,players,dt);let jumped=(m.teleports||0)!==teleports;m.vx=jumped?0:(m.x-x)/dt;m.vy=jumped?0:(m.y-y)/dt;m.vz=jumped?0:(m.z-z)/dt;}
    cemetery.tickProjectiles(this,r,dt);
+   objectives.tick(this,r);
   }}
  updateMonster(r,m,players,dt){if(m.zone==='forest'){forest.update(this,r,m,players,dt);return;}if(m.zone==='graveyard'){cemetery.update(this,r,m,players,dt);return;}if(m.hp<=0||m.state==='suspended')return;
   if(m.state==='dropping'){let t=Math.min(1,(this.time-m.since)/1.5);m.y=36+(m.home.y-36)*(t*t*(3-2*t));if(t===1){m.y=m.home.y;this.state(m,'roar');}return;}
@@ -223,6 +242,7 @@ createRoom(){
  sendSnapshot(p){
   this.emit(p.id,'monsterSnapshot',this.snapshot(p));
   this.sendPlayerSnapshot(p);
+  const r=this.rooms.get(p.roomId);if(r)this.emit(p.id,'objectiveSnapshot',objectives.snapshot(this,r,p));
  }
 }
 module.exports={CombatWorld,WEAPONS};

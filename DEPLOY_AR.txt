@@ -1,9 +1,12 @@
+تحديث جديد: المفاتيح وبوابة الهروب. اقرأ GAMEPLAY_UPDATE_AR.txt في جذر الحزمة أولًا.
+انشر objectives.js مع جميع ملفات السيرفر. objectiveProtocol=1. اختبارات npm test: 99/99.
+
 تحديث الغابة إلى الأناكوندا (النسخة المصححة للسرعة والحجم وحركة الزحف) — لم يُنشر تلقائيًا.
 انشر جميع ملفات هذا المجلد، ومنها forest.js وcemetery.js وcombat.js وworld-nav.json.
 Build: npm ci --omit=dev
 Start: npm start
 Node: 20 فأحدث
-Health: /health — maxPlayers=20 وmonstersPerRoom=100
+Health: /health — maxPlayers=20 وmonstersPerRoom=60
 الاختبارات: npm ci ثم npm test
 استعمل السيرفر والعميل وملف الملاحة من الحزمة نفسها؛ ترفض اللعبة بصمة الخريطة المختلفة.
 الملاحة مصدّرة من كود العميل الحالي. لا تستعمل نسخة ملاحة قديمة.
