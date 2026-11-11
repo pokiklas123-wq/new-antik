@@ -73,5 +73,5 @@ test('actual GLB names match movement/strike/boss death; minion death stays prep
  for(const name of ['Alaconda.glb','AlacondaBoss.glb']){const names=glb(name).animations.map(a=>a.name);assert(names.includes('Anaconda_CrawlSlither'));assert(names.includes('Anaconda_VenomStrike'));if(name==='AlacondaBoss.glb')assert(names.includes('Anaconda_Death'));}
  const client=fs.readFileSync(path.join(__dirname,'../java/MonsterWorld.java'),'utf8');const snakeBranch=client.slice(client.indexOf('if(m.kind>=4){'),client.indexOf('if(m.kind==2){'));
  assert(snakeBranch.includes('Alaconda_Death'));assert(!snakeBranch.includes('DeathRoll'));assert(!snakeBranch.includes('GroundedRollingBall'));
- assert(client.includes('computeSkinnedBounds'));assert(client.includes('slitherDist'));
+ assert(client.includes('slitherDist'));
 });

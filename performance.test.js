@@ -12,7 +12,7 @@ test('immutable BFS field is reused beyond one second, not needlessly rebuilt',(
  nav.next(265,0,265,26,true,0);const key=nav.nearest(265,26,true)+':true',entry=nav.fields.get(key);
  assert(entry);nav.next(265,0,265,26,true,100);assert.equal(nav.fields.get(key),entry);
 });
-for(const count of [2,20])test(`${count} players and 100 server-owned monsters: bounded motion and stable load`,()=>{
+for(const count of [2,20])test(`${count} players and 60 server-owned monsters: bounded motion and stable load`,()=>{
  const world=new CombatWorld(nav);const room=world.join('p0');for(let i=1;i<count;i++)world.join('p'+i,room.id);
  for(let i=0;i<count;i++){let p=world.players.get('p'+i),cell=nav.nearest(235+(i%5)*12,-22+Math.floor(i/5)*12,false),pt=nav.point(cell);Object.assign(p,pt,{positioned:true,hp:1e9,equipped:4});}
  room.awake=true;room.monsters[0].state='idle';room.monsters[0].y=12;
@@ -23,6 +23,6 @@ for(const count of [2,20])test(`${count} players and 100 server-owned monsters: 
  }
  timings.sort((a,b)=>a-b);const q=f=>Number(timings[Math.ceil(timings.length*f)-1].toFixed(3));
  console.log(JSON.stringify({players:count,monsters:room.monsters.length,ticks:400,tickMsP50:q(.5),tickMsP95:q(.95),tickMsP99:q(.99),movedActors:moved.size,bfsCache:nav.fields.size,rssMiB:Math.round(process.memoryUsage().rss/1048576)}));
- assert.equal(room.monsters.length,100);assert(moved.size>5);assert(nav.fields.size<=20);
- for(const p of room.players.values())assert(world.snapshot(p).monsters.length<=100);
+ assert.equal(room.monsters.length,60);assert(moved.size>5);assert(nav.fields.size<=20);
+ for(const p of room.players.values())assert(world.snapshot(p).monsters.length<=60);
 });

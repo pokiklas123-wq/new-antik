@@ -21,8 +21,8 @@ test('farthest-point spawns cover all regions instead of the central cluster',()
  }
 });
 
-test('98 active monsters patrol; cave and graveyard bosses wait for their distinct wake triggers',()=>{
- const {w,r}=make(),initial=r.monsters.map(m=>({x:m.x,z:m.z})),travel=new Float64Array(100);
+test('58 active monsters patrol; cave and graveyard bosses wait for their distinct wake triggers',()=>{
+ const {w,r}=make(),initial=r.monsters.map(m=>({x:m.x,z:m.z})),travel=new Float64Array(60);
  for(let step=0;step<1200;step++){
   const prev=r.monsters.map(m=>({x:m.x,z:m.z}));w.tick(.05);
   for(const m of r.monsters){
@@ -36,7 +36,7 @@ test('98 active monsters patrol; cave and graveyard bosses wait for their distin
  for(const m of r.monsters)if(m.id!==0&&m.id!==20)assert(travel[m.id]>100,'actor '+m.id+' must roam, not wait at home');
  assert.equal(r.monsters[20].state,'idle');assert.equal(r.monsters[20].awakened,false);assert.equal(travel[20],0);
  assert.equal(r.monsters[0].state,'suspended');assert.equal(distance(r.monsters[0],initial[0]),0);
- console.log(JSON.stringify({idlePatrolActors:98,simulatedSeconds:60,minTravelMetres:Math.min(...travel.slice(1)),maxTravelMetres:Math.max(...travel)}));
+ console.log(JSON.stringify({idlePatrolActors:58,simulatedSeconds:60,minTravelMetres:Math.min(...travel.slice(1)),maxTravelMetres:Math.max(...travel)}));
 });
 
 test('patrol paths and pursuit fields never route beyond the regional leash',()=>{
