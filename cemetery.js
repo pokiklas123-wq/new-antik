@@ -11,8 +11,8 @@ const yaw=p=>(Number.isFinite(p.viewYaw)?p.viewYaw:p.yaw||0)*Math.PI/180;
 
 function init(m){
  if(m.zone!==ZONE.id)return;
- // 🟢 التعديل: الزعيم 300 دم، والتابعين 100 دم
- m.hp=m.maxHp=m.boss?350:100; 
+ // 🟢 التعديل: الزعيم 300 دم، والتابعين 60 دم
+ m.hp=m.maxHp=m.boss?300:60; 
  m.teleports=0;m.awakened=false;m.retreating=false;m.attackSerial=0;m.attackKind='claw';
  if(m.boss)m.state='dormant';
 }

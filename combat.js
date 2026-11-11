@@ -7,39 +7,40 @@ const distance=(a,b)=>Math.hypot(a.x-b.x,a.z-b.z);
 const finite=(v)=>typeof v==='number'&&Number.isFinite(v);
 class CombatWorld{
  constructor(nav,emit=()=>{}){this.nav=nav;this.emit=emit;this.rooms=new Map();this.players=new Map();this.time=0;}
- createRoom(){let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false};
-  if(this.spawnTemplate){room.monsters=this.spawnTemplate.map(m=>({...m,home:{...m.home},since:this.time}));}
-  else for(const zone of ZONES){
-   const d=this.nav.data,graph=this.nav.region(zone,false);
-   // Keep the largest connected area; farthest-point placement covers its full extent.
-   const component=graph.components.reduce((a,b)=>a.length>b.length?a:b,[]);
-   const candidates=component.map(i=>({i,...this.nav.point(i)}));
-   const bossGraph=this.nav.region(zone,true);
-   let bossLabel=0,bossArea=0;
-   for(const p of candidates){const label=bossGraph.labels[p.i],area=label?bossGraph.components[label-1].length:0;if(area>bossArea){bossArea=area;bossLabel=label;}}
-   // Bosses need their own connected clearance graph, not a tiny central island.
-   const legalBoss=candidates.filter(p=>d.boss[p.i]==='1'&&bossGraph.allowed[p.i]&&bossGraph.labels[p.i]===bossLabel);
-   legalBoss.sort((a,b)=>Math.hypot(a.x-zone.x,a.z-zone.z)-Math.hypot(b.x-zone.x,b.z-zone.z));
-   if(!legalBoss.length||candidates.length<20)throw Error('Zone '+zone.id+' lacks reachable monster spawns');
-   const selected=[legalBoss[0]],separation=new Float64Array(candidates.length);separation.fill(Infinity);
-   for(let n=1;n<20;n++){
-    const last=selected[selected.length-1];let best=-1,score=-1;
-    for(let i=0;i<candidates.length;i++){
-     const p=candidates[i],dist=(p.x-last.x)**2+(p.z-last.z)**2;
-     separation[i]=Math.min(separation[i],dist);
-     if(separation[i]>score){score=separation[i];best=i;}
-    }
-    if(score<9)throw Error('Zone '+zone.id+' lacks separated monster spawns');
-    selected.push(candidates[best]);
+createRoom(){
+ let room={id:randomUUID(),players:new Map(),monsters:[],closed:false,awake:false};
+ if(this.spawnTemplate){room.monsters=this.spawnTemplate.map(m=>({...m,home:{...m.home},since:this.time}));}
+ else for(const zone of ZONES){
+  const d=this.nav.data,graph=this.nav.region(zone,false);
+  const component=graph.components.reduce((a,b)=>a.length>b.length?a:b,[]);
+  const candidates=component.map(i=>({i,...this.nav.point(i)}));
+  const bossGraph=this.nav.region(zone,true);
+  let bossLabel=0,bossArea=0;
+  for(const p of candidates){const label=bossGraph.labels[p.i],area=label?bossGraph.components[label-1].length:0;if(area>bossArea){bossArea=area;bossLabel=label;}}
+  const legalBoss=candidates.filter(p=>d.boss[p.i]==='1'&&bossGraph.allowed[p.i]&&bossGraph.labels[p.i]===bossLabel);
+  legalBoss.sort((a,b)=>Math.hypot(a.x-zone.x,a.z-zone.z)-Math.hypot(b.x-zone.x,b.z-zone.z));
+  if(!legalBoss.length||candidates.length<20)throw Error('Zone '+zone.id+' lacks reachable monster spawns');
+  const selected=[legalBoss[0]],separation=new Float64Array(candidates.length);separation.fill(Infinity);
+  for(let n=1;n<20;n++){
+   const last=selected[selected.length-1];let best=-1,score=-1;
+   for(let i=0;i<candidates.length;i++){
+    const p=candidates[i],dist=(p.x-last.x)**2+(p.z-last.z)**2;
+    separation[i]=Math.min(separation[i],dist);
+    if(separation[i]>score){score=separation[i];best=i;}
    }
-   for(let n=0;n<20;n++){const p=selected[n],boss=n===0,caveBoss=boss&&zone.id==='cave';
-    room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:100,maxHp:boss?300:100,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
-   }
+   if(score<9)throw Error('Zone '+zone.id+' lacks separated monster spawns');
+   selected.push(candidates[best]);
   }
-  for(const m of room.monsters)cemetery.init(m);
-  if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
-  this.rooms.set(room.id,room);return room;
+  for(let n=0;n<20;n++){
+   const p=selected[n],boss=n===0,caveBoss=boss&&zone.id==='cave';
+   // 👇 هنا تم التعديل إلى 60 للتابع و 300 للزعيم 👇
+   room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:60,maxHp:boss?300:60,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
+  }
  }
+ for(const m of room.monsters)cemetery.init(m);
+ if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
+ this.rooms.set(room.id,room);return room;
+}
  join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{roomId:room.id,hp:100,serverTime:this.time,spawn:start,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
  leave(id){let p=this.players.get(id);if(!p)return;this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}

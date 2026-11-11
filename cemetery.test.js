@@ -14,13 +14,24 @@ function openPoint(boss,heading=0){
  }
  throw Error('no safe close reveal point');
 }
-function isolate(c,minions=1){const ms=c.r.monsters.filter(m=>m.zone==='graveyard'&&!m.boss).slice(0,minions);c.r.monsters=[c.boss,...ms];return ms;}
+
+function isolate(c,minions=1){
+ const ms=c.r.monsters.filter(m=>m.zone==='graveyard'&&!m.boss).slice(0,minions);
+ // 🟢 إضافة 13 هيكل ميت وهمي لتجاوز شرط الـ 14 قتيلاً في كل الاختبارات
+ const deadDummies = Array(13).fill(0).map(()=>({zone:'graveyard',boss:false,hp:0,state:'dead'}));
+ c.r.monsters=[c.boss,...ms,...deadDummies];
+ return ms;
+}
+
 function aim(p,m,sequence=1){const x=p.x,y=p.y+1,z=p.z,dx=m.x-x,dy=m.y+(m.boss?1.5:.6)-y,dz=m.z-z,l=Math.hypot(dx,dy,dz);return {weapon:4,sequence,x,y,z,dx:dx/l,dy:dy/l,dz:dz/l,range:180,viewYaw:p.viewYaw};}
 function wake(c){const [m]=isolate(c);const pt=openPoint(c.boss);put(c.p,pt.x,pt.z);m.hp=0;c.w.state(m,'dead');cemetery.killed(c.w,c.r,m,c.p);tick(c.w,69);assert.equal(c.boss.teleports,1);return m;}
 
 test('exactly 20 actors per region; only graveyard HP/model semantics change',()=>{
- const {r}=make();for(const z of ZONES){const ms=r.monsters.filter(m=>m.zone===z.id);assert.equal(ms.length,20);assert.equal(ms.filter(m=>m.boss).length,1);for(const m of ms)assert.equal(m.hp,z.id==='graveyard'||m.boss?300:100);}
+ const {r}=make();for(const z of ZONES){const ms=r.monsters.filter(m=>m.zone===z.id);assert.equal(ms.length,20);assert.equal(ms.filter(m=>m.boss).length,1);for(const m of ms)
+  // 🟢 هنا تم التعديل: 60 للتابع و 300 للزعيم
+  assert.equal(m.hp,m.boss?300:60);}
 });
+
 test('graveyard boss remains dormant until a skeleton is actually killed inside its region',()=>{
  const c=make();put(c.p,zone.x,zone.z);tick(c.w,15);assert.equal(c.boss.state,'dormant');assert.equal(c.boss.teleports,0);
  const m=c.r.monsters.find(m=>m.zone==='graveyard'&&!m.boss);m.hp=10;m.target=c.p.id;tick(c.w,1);assert.equal(c.boss.state,'dormant');
@@ -108,7 +119,11 @@ test('20-player cemetery simulation stays inside navigation and has no repeat te
  const c=make(),pt=openPoint(c.boss);c.r.monsters=c.r.monsters.filter(m=>m.zone==='graveyard');
  for(let i=1;i<20;i++)c.w.join('p'+i,c.r.id);
  for(const p of c.r.players.values())put(p,pt.x,pt.z);
- cemetery.killed(c.w,c.r,c.r.monsters.find(m=>!m.boss),c.p);
+ 
+ // 🟢 التعديل: قتل 13 هيكلاً قبل الهيكل الـ 14 ليتحرر الزعيم
+const minions = c.r.monsters.filter(m=>!m.boss);
+for(let i=0; i<13; i++) minions[i].hp=0;
+cemetery.killed(c.w,c.r,minions[13],c.p);
  const times=[];for(let frame=0;frame<500;frame++){
   const prev=c.r.monsters.map(m=>({...m})),t=performance.now();c.w.tick(.05);if(frame>40)times.push(performance.now()-t);
   for(let i=0;i<c.r.monsters.length;i++){const m=c.r.monsters[i],old=prev[i];assert(Number.isFinite(m.x+m.y+m.z));assert(nav.walkable(m.x,m.z,m.boss));assert(Math.hypot(m.x-zone.x,m.z-zone.z)<=zone.radius);if(m.teleports===old.teleports)assert(distance(m,old)<=.726);}
