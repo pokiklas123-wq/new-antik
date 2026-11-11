@@ -8,14 +8,36 @@ const inside=p=>Math.hypot(p.x-ZONE.x,p.z-ZONE.z)<=ZONE.radius;
 const eligible=(w,p)=>p&&p.alive&&p.positioned&&inside(p)&&Math.abs(p.y-w.nav.height(p.x,p.z))<4;
 const eye=p=>({x:p.x,y:p.y+1.25,z:p.z});
 const yaw=p=>(Number.isFinite(p.viewYaw)?p.viewYaw:p.yaw||0)*Math.PI/180;
-function init(m){if(m.zone!==ZONE.id)return;m.hp=m.maxHp=300;m.teleports=0;m.awakened=false;m.retreating=false;m.attackSerial=0;m.attackKind='claw';if(m.boss)m.state='dormant';}
+
+function init(m){
+ if(m.zone!==ZONE.id)return;
+ // 🟢 التعديل: الزعيم 300 دم، والتابعين 100 دم
+ m.hp=m.maxHp=m.boss?350:100; 
+ m.teleports=0;m.awakened=false;m.retreating=false;m.attackSerial=0;m.attackKind='claw';
+ if(m.boss)m.state='dormant';
+}
+
 function killed(w,r,m,p){
  if(m.zone!==ZONE.id||m.boss||!eligible(w,p))return;
  const b=r.monsters.find(n=>n.zone===ZONE.id&&n.boss);
  if(!b||b.hp<=0||b.awakened)return;
+
+ // 🟢 التعديل: حساب كم تابعاً قد مات في المقبرة
+ let deadMinions = 0;
+ for(let i = 0; i < r.monsters.length; i++) {
+  if(r.monsters[i].zone === ZONE.id && !r.monsters[i].boss && r.monsters[i].hp <= 0) {
+   deadMinions++;
+  }
+ }
+
+ // 🟢 التعديل: الزعيم لا يستيقظ إلا إذا مات 14 تابعاً
+ if (deadMinions < 14) return;
+
+ // خروج الزعيم
  b.awakened=true;b.target=p.id;b.wakeTarget=p.id;b.waypoint=null;b.patrol=null;b.pathAt=0;
  w.state(b,'rise');
 }
+
 function frontPoint(w,b,p){
  const a=yaw(p),fx=Math.sin(a),fz=Math.cos(a);
  const start=w.nav.regionNearest(p.x,p.z,ZONE,true),g=w.nav.region(ZONE,true);
