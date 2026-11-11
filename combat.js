@@ -36,7 +36,7 @@ createRoom(){
   for(let n=0;n<20;n++){
    const p=selected[n],boss=n===0,caveBoss=boss&&zone.id==='cave';
    // 👇 هنا تم التعديل إلى 60 للتابع و 300 للزعيم 👇
-   room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?300:60,maxHp:boss?300:60,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
+   room.monsters.push({id:room.monsters.length,zone:zone.id,boss,x:p.x,y:caveBoss?36:p.y,z:p.z,home:{x:p.x,y:p.y,z:p.z},hp:boss?0:0,maxHp:boss?0:0,yaw:0,state:caveBoss?'suspended':'idle',since:this.time,attackAt:0,hitDone:false,target:null,pathAt:0,waypoint:null,patrol:null,patrolStep:0,patrolSerial:0,patrolRetry:0,revision:0,vx:0,vy:0,vz:0});
   }
  }
  for(const m of room.monsters)cemetery.init(m);
