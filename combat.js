@@ -170,7 +170,7 @@ createRoom(){
    m.waypoint=null;m.pathAt=0;
    if(!m.patrol||!m.patrol.length){m.patrolRetry=this.time+1;this.state(m,'idle');return;}
   }
-  const speed=m.boss?7:6,budget=speed*dt;let remaining=budget,moved=false;
+  const speed=m.zone==='forest'?(m.boss?4.2:3.6):(m.boss?7:6),budget=speed*dt;let remaining=budget,moved=false;
   for(let attempt=0;attempt<8&&remaining>.001&&m.patrolStep<m.patrol.length;attempt++){
    const p=m.patrol[m.patrolStep],dx=p.x-m.x,dz=p.z-m.z,l=Math.hypot(dx,dz);
    if(l<.015){m.patrolStep++;continue;}

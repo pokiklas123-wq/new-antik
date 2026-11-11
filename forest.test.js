@@ -18,13 +18,19 @@ test('forest has one 300 HP boss and nineteen 60 HP minions distributed across i
  assert(Math.max(...c.group.map(m=>m.x))-Math.min(...c.group.map(m=>m.x))>190);
  assert(Math.max(...c.group.map(m=>m.z))-Math.min(...c.group.map(m=>m.z))>190);
 });
-test('every minion independently patrols, bounded to the forest, without roll or teleports',()=>{
+test('every minion independently patrols at slowed realistic slither speed, bounded to the forest, without roll or teleports',()=>{
  const c=make(),travel=new Map(c.group.map(m=>[m.id,0]));
  for(let i=0;i<600;i++){const before=c.group.map(m=>({...m}));c.w.tick(.05);for(let j=0;j<c.group.length;j++){
-  const m=c.group[j],step=dist(m,before[j]);assert(step<=.351);assert(nav.walkable(m.x,m.z,m.boss));assert(dist(m,zone)<=zone.radius);assert.notEqual(m.state,'roll');travel.set(m.id,travel.get(m.id)+step);
+  const m=c.group[j],step=dist(m,before[j]);assert(step<=.215);assert(nav.walkable(m.x,m.z,m.boss));assert(dist(m,zone)<=zone.radius);assert.notEqual(m.state,'roll');travel.set(m.id,travel.get(m.id)+step);
  }}
  for(const m of c.group)assert(travel.get(m.id)>60,'independent patrol '+m.id);
  const goals=c.group.filter(m=>!m.boss&&m.patrol?.length).map(m=>{const p=m.patrol.at(-1);return p.x+','+p.z;});assert(new Set(goals).size>=12);
+});
+test('forest anaconda pursuit speeds are slowed down (4.8 minion, 6.0 boss, 7.2 enraged boss)',()=>{
+ assert.equal(forest.speed({boss:false,hp:60}),4.8);
+ assert.equal(forest.speed({boss:true,hp:300}),6.0);
+ assert.equal(forest.speed({boss:true,hp:100}),6.0);
+ assert.equal(forest.speed({boss:true,hp:99}),7.2);
 });
 test('venom strike hits once for exactly 7 / 10 / 12, with rage strictly below 100 HP',()=>{
  for(const [boss,hp,damage] of [[false,60,7],[true,300,10],[true,100,10],[true,99,12]]){
@@ -50,7 +56,7 @@ test('movement keeps working while the two-second strike is playing',()=>{
  assert(moving>12);
 });
 test('long-body hitscan is finite on the tail and misses above the snake',()=>{
- const m={x:0,y:0,z:0,yaw:0,boss:true};assert(Number.isFinite(forest.rayHit(m,{x:-5,y:1,z:-3.2},{x:1,y:0,z:0})));
+ const m={x:0,y:0,z:0,yaw:0,boss:true};assert(Number.isFinite(forest.rayHit(m,{x:-5,y:1,z:-5.2},{x:1,y:0,z:0})));
  assert.equal(forest.rayHit(m,{x:-5,y:10,z:0},{x:1,y:0,z:0}),Infinity);
 });
 test('death snapshot is kept for the prepared 3-second Alaconda_Death clip',()=>{
@@ -59,7 +65,7 @@ test('death snapshot is kept for the prepared 3-second Alaconda_Death clip',()=>
 test('20-player forest simulation stays bounded with independent targets and no roll',()=>{
  const c=make(),pt=open();for(let i=1;i<20;i++)c.w.join('p'+i,c.r.id);
  for(const [i,p] of [...c.r.players.values()].entries())put(p,pt.x+(i%5)*2,pt.z+Math.floor(i/5)*2);
- for(let f=0;f<250;f++){const before=c.group.map(m=>({...m}));c.w.tick(.05);for(let i=0;i<c.group.length;i++){const m=c.group[i];assert(Number.isFinite(m.x+m.y+m.z));assert(dist(m,before[i])<=.751);assert(nav.walkable(m.x,m.z,m.boss));assert(dist(m,zone)<=zone.radius);assert.notEqual(m.state,'roll');}}
+ for(let f=0;f<250;f++){const before=c.group.map(m=>({...m}));c.w.tick(.05);for(let i=0;i<c.group.length;i++){const m=c.group[i];assert(Number.isFinite(m.x+m.y+m.z));assert(dist(m,before[i])<=.365);assert(nav.walkable(m.x,m.z,m.boss));assert(dist(m,zone)<=zone.radius);assert.notEqual(m.state,'roll');}}
  assert(nav.fields.size<=20);
 });
 function glb(name){const b=fs.readFileSync(path.join(__dirname,'../assets',name));return JSON.parse(b.subarray(20,20+b.readUInt32LE(12)).toString());}
@@ -67,4 +73,5 @@ test('actual GLB names match movement/strike/boss death; minion death stays prep
  for(const name of ['Alaconda.glb','AlacondaBoss.glb']){const names=glb(name).animations.map(a=>a.name);assert(names.includes('Anaconda_CrawlSlither'));assert(names.includes('Anaconda_VenomStrike'));if(name==='AlacondaBoss.glb')assert(names.includes('Anaconda_Death'));}
  const client=fs.readFileSync(path.join(__dirname,'../java/MonsterWorld.java'),'utf8');const snakeBranch=client.slice(client.indexOf('if(m.kind>=4){'),client.indexOf('if(m.kind==2){'));
  assert(snakeBranch.includes('Alaconda_Death'));assert(!snakeBranch.includes('DeathRoll'));assert(!snakeBranch.includes('GroundedRollingBall'));
+ assert(client.includes('computeSkinnedBounds'));assert(client.includes('slitherDist'));
 });

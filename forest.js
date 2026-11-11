@@ -8,7 +8,8 @@ const inside=p=>Math.hypot(p.x-ZONE.x,p.z-ZONE.z)<=ZONE.radius;
 const eligible=(w,p)=>p&&p.alive&&p.positioned&&inside(p)&&Math.abs(p.y-w.nav.height(p.x,p.z))<4;
 const eye=p=>({x:p.x,y:p.y+.7,z:p.z});
 const damage=m=>m.boss?(m.hp<100?12:10):7;
-const speed=m=>m.boss?(m.hp<100?15:13):11;
+// Slower, heavy realistic slither speeds so anacondas never look dragged or overly fast.
+const speed=m=>m.boss?(m.hp<100?7.2:6.0):4.8;
 function choose(w,m,players){
  let best=null,score=Infinity;
  const g=w.nav.region(ZONE,m.boss),a=w.nav.regionNearest(m.x,m.z,ZONE,m.boss);
@@ -25,7 +26,7 @@ function choose(w,m,players){
 function approach(w,r,m,p){
  // Stable encirclement slots and a short movement lead; never all chase one point.
  const d=dist(m,p);if(d>26)return p;
- const a=(m.id%8)*Math.PI/4,rad=m.boss?3.8:2.5;
+ const a=(m.id%8)*Math.PI/4,rad=m.boss?4.5:2.8;
  const lead=Math.min(.3,d/60),heading=(p.yaw||0)*Math.PI/180;
  let x=p.x+Math.sin(a)*rad+Math.sin(heading)*(p.speed||0)*lead;
  let z=p.z+Math.cos(a)*rad+Math.cos(heading)*(p.speed||0)*lead;
@@ -33,20 +34,20 @@ function approach(w,r,m,p){
  for(const other of r.monsters){
   if(other===m||other.zone!==ZONE.id||other.hp<=0)continue;
   const dx=m.x-other.x,dz=m.z-other.z,l=Math.hypot(dx,dz);
-  if(l>0&&l<3){sx+=dx/l*(3-l);sz+=dz/l*(3-l);}
+  if(l>0&&l<3.5){sx+=dx/l*(3.5-l);sz+=dz/l*(3.5-l);}
  }
- const l=Math.hypot(sx,sz);if(l>0){x+=sx/l*Math.min(1.4,l);z+=sz/l*Math.min(1.4,l);}
+ const l=Math.hypot(sx,sz);if(l>0){x+=sx/l*Math.min(1.6,l);z+=sz/l*Math.min(1.6,l);}
  const i=w.nav.index(x,z),g=w.nav.region(ZONE,m.boss),start=w.nav.regionNearest(m.x,m.z,ZONE,m.boss);
  if(!inside({x,z})||i<0||!g.allowed[i]||start<0||g.labels[i]!==g.labels[start])return p;
  return {x,z,y:w.nav.height(x,z)};
 }
 function update(w,r,m,players,dt){
  if(m.hp<=0)return;
- const p=choose(w,m,players),range=m.boss?5:2.6;
+ const p=choose(w,m,players),range=m.boss?5.5:3.0;
  if(m.state==='attack'){
-  const victim=w.players.get(m.target),valid=eligible(w,victim)&&Math.abs(victim.y-m.y)<3;
+  const victim=w.players.get(m.target),valid=eligible(w,victim)&&Math.abs(victim.y-m.y)<3.5;
   if(!valid){m.target=null;m.waypoint=null;m.pathAt=0;w.state(m,'run');return;}
-  w.moveMonster(m,victim,speed(m),dt,true,range*.65);
+  w.moveMonster(m,victim,speed(m)*.85,dt,true,range*.65);
   m.yaw=Math.atan2(victim.x-m.x,victim.z-m.z)*180/Math.PI;
   if(!m.hitDone&&w.time-m.since>=CLIPS.hit){
    m.hitDone=true;
@@ -72,9 +73,9 @@ function update(w,r,m,players,dt){
  if(dist(m,before)<.001&&dist(m,p)>range){m.waypoint=null;m.pathAt=0;w.moveMonster(m,p,speed(m),dt,true,range*.65);}
  w.state(m,dist(m,before)>.001?'run':'idle');
 }
-// Five overlapping volumes follow the long body, instead of a spider-sized hit sphere.
+// Five overlapping volumes follow the scaled-up long body, instead of a spider-sized hit sphere.
 function rayHit(m,o,d){
- const a=(m.yaw||0)*Math.PI/180,half=m.boss?3.2:1.5,radius=m.boss?1:.5;
+ const a=(m.yaw||0)*Math.PI/180,half=m.boss?5.4:2.8,radius=m.boss?1.65:.85;
  let nearest=Infinity;
  for(let i=0;i<5;i++){
   const along=-half+2*half*i/4,cx=m.x+Math.sin(a)*along,cz=m.z+Math.cos(a)*along;
@@ -84,4 +85,4 @@ function rayHit(m,o,d){
  }
  return nearest;
 }
-module.exports={update,eligible,approach,damage,rayHit,CLIPS};
+module.exports={update,eligible,approach,damage,speed,rayHit,CLIPS};
