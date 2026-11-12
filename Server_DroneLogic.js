@@ -1,6 +1,7 @@
 'use strict';
 const {performance}=require('node:perf_hooks');
 const {HALF_SIZE}=require('./world-layout');
+const {rayTriangle}=require('./navigation');
 const finite=n=>typeof n==='number'&&Number.isFinite(n);
 const smooth=t=>{t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);};
 
@@ -21,12 +22,10 @@ const CONFIG=Object.freeze({
 });
 
 const HEIGHT_OFFSETS=Object.freeze([.18,.95,1.8,2.5]);
-const RADIAL_OFFSETS=Object.freeze([[.48,0],[-.48,0],[0,.48],[0,-.48]]);
-const SLIDE_ANGLES=Object.freeze([
-    [Math.cos(Math.PI/4),Math.sin(Math.PI/4),Math.cos(Math.PI/4)],
-    [Math.cos(-Math.PI/4),Math.sin(-Math.PI/4),Math.cos(Math.PI/4)],
-    [Math.cos(Math.PI*7/18),Math.sin(Math.PI*7/18),Math.cos(Math.PI*7/18)],
-    [Math.cos(-Math.PI*7/18),Math.sin(-Math.PI*7/18),Math.cos(Math.PI*7/18)]
+const SAMPLE_OFFSETS=Object.freeze([[0,0],[.48,0],[-.48,0],[0,.48],[0,-.48]]);
+const SLIDE_DIRS=Object.freeze([
+    [Math.SQRT1_2,Math.SQRT1_2,.7071],
+    [Math.SQRT1_2,-Math.SQRT1_2,.7071]
 ]);
 
 class DroneLogic {
@@ -35,6 +34,11 @@ class DroneLogic {
         this.now=now;
         this.cooldowns=new Map();
         this.serial=0;
+        const triCount=world.nav&&world.nav.triangles?Math.ceil(world.nav.triangles.length/9):1;
+        this.localTris=new Int32Array(2048);
+        this.localCount=0;
+        this.seenStamp=new Int32Array(triCount);
+        this.stamp=0;
     }
 
     packet(p){
@@ -129,39 +133,82 @@ class DroneLogic {
         this.emit(p,'EndDrone');
     }
 
-    rayBlocked(ax,ay,az,bx,by,bz){
+    /** Broad-phase triangle gather once per tick around player's motion volume (zero allocations). */
+    prepareLocalTriangles(x0,y0,z0,x1,y1,z1){
         const nav=this.world.nav;
-        const vx=bx-ax, vy=by-ay, vz=bz-az, length=Math.hypot(vx,vy,vz);
-        if(length<=.00001)return false;
-        if(nav.ray){
-            const dx=vx/length, dy=vy/length, dz=vz/length;
-            // Shift ray origin back by 0.03m to eliminate the [0, 0.03) rayTriangle blind spot
-            // while ignoring any surface already behind the starting point (h_a < 0 => h_origin < 0.03).
-            const origin={x:ax-dx*.03, y:ay-dy*.03, z:az-dz*.03};
-            return nav.ray(origin,{x:dx,y:dy,z:dz},length+.11)<=length+.06;
+        if(!nav.triangles||!nav.cells){this.localCount=-1;return;}
+        const tris=nav.triangles;
+        const minX=Math.min(x0,x1)-.65, maxX=Math.max(x0,x1)+.65;
+        const minY=Math.min(y0,y1)-.15, maxY=Math.max(y0,y1)+2.75;
+        const minZ=Math.min(z0,z1)-.65, maxZ=Math.max(z0,z1)+.65;
+        const cx0=Math.floor(minX/16), cx1=Math.floor(maxX/16);
+        const cz0=Math.floor(minZ/16), cz1=Math.floor(maxZ/16);
+        const stamp=(this.stamp=(this.stamp+1)|0);
+        const seen=this.seenStamp, out=this.localTris;
+        let count=0;
+        for(let cz=cz0;cz<=cz1;cz++){
+            for(let cx=cx0;cx<=cx1;cx++){
+                const list=nav.cells.get(cx+','+cz);
+                if(!list)continue;
+                for(let i=0,n=list.length;i<n;i++){
+                    const off=list[i], idx=(off/9)|0;
+                    if(seen[idx]===stamp)continue;
+                    seen[idx]=stamp;
+                    if(tris[off]<minX&&tris[off+3]<minX&&tris[off+6]<minX)continue;
+                    if(tris[off]>maxX&&tris[off+3]>maxX&&tris[off+6]>maxX)continue;
+                    if(tris[off+1]<minY&&tris[off+4]<minY&&tris[off+7]<minY)continue;
+                    if(tris[off+1]>maxY&&tris[off+4]>maxY&&tris[off+7]>maxY)continue;
+                    if(tris[off+2]<minZ&&tris[off+5]<minZ&&tris[off+8]<minZ)continue;
+                    if(tris[off+2]>maxZ&&tris[off+5]>maxZ&&tris[off+8]>maxZ)continue;
+                    if(count<out.length)out[count++]=off;
+                }
+            }
         }
-        return !nav.clear({x:ax,y:ay,z:az},{x:bx,y:by,z:bz});
+        this.localCount=count;
+    }
+
+    segmentHitsLocal(ax,ay,az,bx,by,bz){
+        const vx=bx-ax, vy=by-ay, vz=bz-az, len=Math.hypot(vx,vy,vz);
+        if(len<=.00001)return false;
+        const dx=vx/len, dy=vy/len, dz=vz/len;
+        // Shift origin back by 0.03m so any surface at distance >= 0 in front of `a` has h >= 0.03
+        const o={x:ax-dx*.03, y:ay-dy*.03, z:az-dz*.03};
+        const d={x:dx, y:dy, z:dz};
+        const maxHit=len+.06;
+        const tris=this.world.nav.triangles, local=this.localTris, n=this.localCount;
+        for(let i=0;i<n;i++){
+            const h=rayTriangle(o,d,tris,local[i]);
+            if(h!==null&&h>=.03&&h<=maxHit)return true;
+        }
+        return false;
     }
 
     clear(p,x,y,z){
         const nav=this.world.nav;
         if(Math.abs(x)>HALF_SIZE-.6||Math.abs(z)>HALF_SIZE-.6||y<nav.height(x,z)-.03)return false;
-        
-        const hasRay=!!nav.ray;
-        const horizMove=Math.hypot(x-p.x,z-p.z)>.00001;
-        const gCenterA=hasRay?nav.height(p.x,p.z)+.18:-Infinity;
-        const gCenterB=hasRay?nav.height(x,z)+.18:-Infinity;
 
+        // Fast path when real navigation mesh is loaded: use pre-filtered local obstacle triangles
+        if(this.localCount>=0&&nav.triangles&&nav.cells){
+            if(this.localCount===0)return true;
+            const horizMove=Math.hypot(x-p.x,z-p.z)>.00001;
+            for(const h of HEIGHT_OFFSETS){
+                const ay0=p.y+h, by0=y+h;
+                for(const [dx,dz] of SAMPLE_OFFSETS){
+                    if(this.segmentHitsLocal(p.x+dx,ay0,p.z+dz,x+dx,by0,z+dz))return false;
+                    if(horizMove&&(dx!==0||dz!==0)&&this.segmentHitsLocal(x,by0,z,x+dx,by0,z+dz))return false;
+                }
+            }
+            return true;
+        }
+
+        // Fallback path for unit tests with custom nav.ray or nav.clear mocks
         for(const h of HEIGHT_OFFSETS){
-            const cyA=Math.max(p.y+h,gCenterA), cyB=Math.max(y+h,gCenterB);
-            if(this.rayBlocked(p.x,cyA,p.z,x,cyB,z))return false;
-            
-            for(const [dx,dz] of RADIAL_OFFSETS){
-                const ax=p.x+dx, az=p.z+dz, bx=x+dx, bz=z+dz;
-                const ay=hasRay?Math.max(p.y+h,nav.height(ax,az)+.18):p.y+h;
-                const by=hasRay?Math.max(y+h,nav.height(bx,bz)+.18):y+h;
-                if(this.rayBlocked(ax,ay,az,bx,by,bz))return false;
-                if(hasRay&&horizMove&&this.rayBlocked(x,cyB,z,bx,by,bz))return false;
+            for(const [dx,dz] of SAMPLE_OFFSETS){
+                const a={x:p.x+dx,y:p.y+h,z:p.z+dz}, b={x:x+dx,y:y+h,z:z+dz};
+                if(nav.ray){
+                    const vx=b.x-a.x, vy=b.y-a.y, vz=b.z-a.z, length=Math.hypot(vx,vy,vz);
+                    if(length>.00001&&nav.ray(a,{x:vx/length,y:vy/length,z:vz/length},length+.08)<=length+.03)return false;
+                }else if(!nav.clear(a,b))return false;
             }
         }
         return true;
@@ -180,7 +227,6 @@ class DroneLogic {
         if(Math.hypot(dx,dz)<=1e-7)return;
         if(this.tryHorizontal(p,p.x+dx,p.z+dz))return;
 
-        // Axis-aligned wall sliding (try dominant velocity component first)
         if(Math.abs(dx)>=Math.abs(dz)){
             if(Math.abs(dx)>1e-7&&this.tryHorizontal(p,p.x+dx,p.z))return;
             if(Math.abs(dz)>1e-7&&this.tryHorizontal(p,p.x,p.z+dz))return;
@@ -189,16 +235,12 @@ class DroneLogic {
             if(Math.abs(dx)>1e-7&&this.tryHorizontal(p,p.x+dx,p.z))return;
         }
 
-        // Angled obstacle / roof / tree-trunk tangent sliding
-        for(const [c,s,scale] of SLIDE_ANGLES){
+        for(const [c,s,scale] of SLIDE_DIRS){
             const sx=(dx*c-dz*s)*scale, sz=(dx*s+dz*c)*scale;
             if(this.tryHorizontal(p,p.x+sx,p.z+sz))return;
         }
 
-        // Fractional step to close remaining gap smoothly against a perpendicular wall
-        for(const f of [.5,.25]){
-            if(this.tryHorizontal(p,p.x+dx*f,p.z+dz*f))return;
-        }
+        if(this.tryHorizontal(p,p.x+dx*.5,p.z+dz*.5))return;
     }
 
     stepVertical(p,targetY){
@@ -208,7 +250,7 @@ class DroneLogic {
             return;
         }
         let lo=p.y, hi=targetY;
-        for(let i=0;i<6;i++){
+        for(let i=0;i<5;i++){
             const mid=(lo+hi)*.5;
             if(this.clear(p,p.x,mid,p.z))lo=mid;
             else hi=mid;
@@ -242,6 +284,11 @@ class DroneLogic {
             }else{
                 d.state = t<d.mountAt ? 'SUMMON' : t<d.flyAt ? 'MOUNT' : 'FLYING';
                 let remaining=Math.max(0,Math.min(.25,t-d.lastAt)), cursor=t-remaining;
+                const maxReach=CONFIG.normalSpeed*CONFIG.maxMultiplier*remaining+.5;
+                this.prepareLocalTriangles(
+                    p.x-maxReach, p.y-3, p.z-maxReach,
+                    p.x+maxReach, p.y+CONFIG.height+3, p.z+maxReach
+                );
                 
                 while(remaining>1e-8){
                     const dt=Math.min(remaining,1/60);
@@ -254,10 +301,8 @@ class DroneLogic {
                     const vx=active?d.ix*CONFIG.normalSpeed*multiplier:0;
                     const vz=active?d.iz*CONFIG.normalSpeed*multiplier:0;
                     
-                    // 1. Move horizontally at current altitude (decoupled from vertical climb/descent)
                     if(active) this.stepHorizontal(p,vx*dt,vz*dt);
                     
-                    // 2. Smoothly track ground height so drone maintains 6m over uneven terrain without jerks
                     const groundY=this.world.nav.height(p.x,p.z);
                     if(cursor>=d.flyAt){
                         d.floor+=(groundY-d.floor)*(1-Math.exp(-14*dt));
