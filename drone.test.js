@@ -1,0 +1,68 @@
+'use strict';
+const test=require('node:test'),assert=require('node:assert/strict');
+const {DroneLogic,CONFIG}=require('./Server_DroneLogic');
+function setup(){let time=100;const events=[],nav={height:()=>12,walkable:()=>true,clear:()=>true};
+ const p={id:'a',roomId:'one',life:0,alive:true,positioned:true,x:0,y:12,z:0,yaw:0,speed:0};
+ const other={id:'b',roomId:'one'},outsider={id:'c',roomId:'two'};
+ const world={time:0,nav,players:new Map([['a',p],['b',other],['c',outsider]]),
+  rooms:new Map([['one',{players:new Map([['a',p],['b',other]])}],['two',{players:new Map([['c',outsider]])}]]),
+  emit:(id,event,data)=>events.push({id,event,data})};
+ const drone=new DroneLogic(world,{now:()=>time});world.drone=drone;
+ const step=(seconds,input=true)=>{const n=Math.round(seconds*100);for(let i=0;i<n;i++){
+  time+=.01;world.time+=.01;if(input&&p.drone)drone.input('a',{life:p.life,revision:p.drone.revision,sequence:i+Math.round(time*1e6),stickX:0,stickY:1,cameraYaw:0});drone.tick();}};
+ return {p,world,drone,events,step,setTime:t=>{time=t;},now:()=>time};
+}
+test('server owns all parameters and authoritative room scoped StartDrone',()=>{const s=setup();
+ assert(s.drone.request('a',{life:0,height:999,duration:999,speed:999,x:999}));
+ assert.equal(s.p.drone.endsAt-s.p.drone.startedAt,10);assert.equal(CONFIG.height,6);
+ const starts=s.events.filter(e=>e.event==='StartDrone');assert.deepEqual(starts.map(e=>e.id),['a','b']);
+ assert.equal(s.p.y,12);assert.equal(s.p.speed,0);
+});
+test('summon, mounting, flight phases; no translation before mounting completes',()=>{const s=setup();s.drone.request('a',{life:0});
+ s.step(.9);assert.equal(s.p.drone.state,'SUMMON');assert.equal(s.p.z,0);
+ s.step(1);assert.equal(s.p.drone.state,'MOUNT');assert.equal(s.p.z,0);
+ s.step(1);assert.equal(s.p.drone.state,'FLYING');assert(s.p.z<0);assert(s.p.y>12);
+});
+test('feet rise to exactly launch floor + 6 and horizontal cap is 3 x 7.5',()=>{const s=setup();s.drone.request('a',{life:0});s.step(6);
+ assert(Math.abs(s.p.y-18)<1e-8);assert(Math.abs(s.p.speed-22.5)<1e-5);assert(s.p.z<0);
+});
+test('diagonal joystick and packet flood cannot increase speed or advance position',()=>{const s=setup();s.drone.request('a',{life:0});
+ for(let i=0;i<5000;i++)assert(s.drone.input('a',{life:0,revision:s.p.drone.revision,sequence:i,stickX:1,stickY:1,cameraYaw:0}));
+ assert.equal(s.p.x,0);assert.equal(s.p.z,0);assert(Math.abs(Math.hypot(s.p.drone.ix,s.p.drone.iz)-1)<1e-10);
+});
+test('malformed, stale-life, wrong-activation and replayed input rejected',()=>{const s=setup();s.drone.request('a',{life:0});
+ const valid={life:0,revision:s.p.drone.revision,sequence:1,stickX:0,stickY:1,cameraYaw:0};
+ assert(s.drone.input('a',valid));assert(!s.drone.input('a',valid));
+ for(const change of [{life:1},{revision:999},{sequence:NaN},{stickX:NaN},{stickY:Infinity},{stickX:2},{cameraYaw:Infinity},{stickY:'1'}])
+  assert(!s.drone.input('a',{...valid,sequence:2,...change}));
+});
+test('lost input stops horizontal travel instead of continuing a stuck joystick',()=>{const s=setup();s.drone.request('a',{life:0});s.step(5);
+ s.step(.5,false);const z=s.p.z;s.step(1,false);assert.equal(s.p.z,z);assert.equal(s.p.speed,0);
+});
+test('normal movement is blocked during summon, flight and landing',()=>{const s=setup();s.drone.request('a',{life:0});assert(s.drone.rejectMove(s.p,{x:1000,y:100,z:1000}));
+ s.step(10.1);assert.equal(s.p.drone.state,'LANDING');assert(s.drone.rejectMove(s.p,{}));
+});
+test('EndDrone at 10s, cooldown starts at expiry and smooth authoritative landing',()=>{const s=setup();s.drone.request('a',{life:0});s.step(9.99);assert(!s.events.some(e=>e.event==='EndDrone'));
+ s.step(.02);assert.equal(s.p.drone.state,'LANDING');assert.equal(s.drone.cooldowns.get('a'),410);
+ const high=s.p.y;s.step(.69);assert(s.p.y<high&&s.p.y>12);s.step(.72);assert.equal(s.p.drone,null);assert.equal(s.p.y,12);assert(s.p.grounded);
+ const ends=s.events.filter(e=>e.event==='EndDrone');assert.deepEqual(ends.map(e=>e.id),['a','b']);
+});
+test('cooldown cannot be bypassed by repeated requests and becomes ready at 300s after End',()=>{const s=setup();s.drone.request('a',{life:0});s.step(11.5);assert(!s.drone.request('a',{life:0}));
+ s.setTime(409.99);assert(!s.drone.request('a',{life:0}));s.setTime(410.25);assert(s.drone.request('a',{life:0}));
+});
+test('death/cancel removes control, emits End, and keeps cooldown',()=>{const s=setup();s.drone.request('a',{life:0});s.step(4);s.p.alive=false;s.drone.tick();
+ assert.equal(s.p.drone,null);assert(s.drone.cooldowns.get('a')>=404);assert(s.events.some(e=>e.event==='EndDrone'));
+});
+test('spawn spoofed height / unwalkable launch / stale life are rejected',()=>{const s=setup();s.p.y=100;assert(!s.drone.request('a',{life:0}));s.p.y=12;s.setTime(101);
+ s.world.nav.walkable=()=>false;assert(!s.drone.request('a',{life:0}));s.world.nav.walkable=()=>true;s.setTime(102);assert(!s.drone.request('a',{life:1}));
+});
+test('collision sweep prevents wall tunnelling at accelerated speed',()=>{const s=setup();s.world.nav.clear=(a,b)=>b.z>=-3;s.drone.request('a',{life:0});s.step(7);assert(s.p.z>=-3);assert(s.p.y<=18);
+});
+test('ceiling sweep blocks ascending through a roof',()=>{const s=setup();s.world.nav.clear=(a,b)=>b.y<=16;s.drone.request('a',{life:0});s.step(7);assert(s.p.y+2.5<=16+.001);
+});
+test('paused/stalled server cannot extend flight or cooldown',()=>{const s=setup();s.drone.request('a',{life:0});s.setTime(115);s.drone.tick();assert.equal(s.p.drone,null);assert.equal(s.drone.cooldowns.get('a'),410);
+});
+test('periodic owner sync advertises ready/cooldown to HUD without client timer authority',()=>{const s=setup();s.drone.tick();const ready=s.events.find(e=>e.id==='a'&&e.event==='SyncDrone');assert.equal(ready.data.state,'GROUND');
+ s.drone.request('a',{life:0});s.drone.cancel(s.p);s.events.length=0;s.step(1.1,false);
+ assert(s.events.some(e=>e.id==='a'&&e.event==='SyncDrone'&&e.data.cooldownUntil>e.data.serverTime));
+});
