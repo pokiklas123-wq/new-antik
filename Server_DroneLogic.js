@@ -17,8 +17,17 @@ const CONFIG=Object.freeze({
     rise:2,
     acceleration:2,
     landing:1.4,
-    inputTimeout:.6
+    inputTimeout:.45
 });
+
+const HEIGHT_OFFSETS=Object.freeze([.18,.95,1.8,2.5]);
+const RADIAL_OFFSETS=Object.freeze([[.48,0],[-.48,0],[0,.48],[0,-.48]]);
+const SLIDE_ANGLES=Object.freeze([
+    [Math.cos(Math.PI/4),Math.sin(Math.PI/4),Math.cos(Math.PI/4)],
+    [Math.cos(-Math.PI/4),Math.sin(-Math.PI/4),Math.cos(Math.PI/4)],
+    [Math.cos(Math.PI*7/18),Math.sin(Math.PI*7/18),Math.cos(Math.PI*7/18)],
+    [Math.cos(-Math.PI*7/18),Math.sin(-Math.PI*7/18),Math.cos(Math.PI*7/18)]
+]);
 
 class DroneLogic {
     constructor(world,{now=()=>performance.now()/1000}={}){
@@ -33,7 +42,8 @@ class DroneLogic {
         return {
             id:p.id, roomId:p.roomId, life:p.life,
             serverTime:t, revision:d?d.revision:(p.droneRevision||0), state:d?d.state:'GROUND',
-            x:p.x, y:p.y, z:p.z, yaw:p.yaw, speed:p.speed||0, vy:p.vy||0,
+            x:p.x, y:p.y, z:p.z, yaw:p.yaw, speed:p.speed||0,
+            vx:p.vx||0, vy:p.vy||0, vz:p.vz||0,
             startedAt:d?d.startedAt:0, mountAt:d?d.mountAt:0, flyAt:d?d.flyAt:0,
             endsAt:d?d.endsAt:0, landingEndsAt:d?d.landingEndsAt:0,
             cooldownUntil:this.cooldowns.get(p.id)||0,
@@ -67,7 +77,7 @@ class DroneLogic {
         
         p.y=floor;p.positioned=true;p.grounded=false;p.swimming=false;
         p.crouched=p.prone=p.inHands=p.aiming=p.firing=false;p.proneTransition=0;
-        p.vy=p.speed=0;
+        p.vx=p.vy=p.vz=p.speed=0;
         
         p.drone={
             revision:++this.serial, state:'SUMMON', startedAt:t,
@@ -115,24 +125,95 @@ class DroneLogic {
         }
         d.ix=d.iz=0;
         this.cooldowns.set(p.id,d.endsAt+CONFIG.cooldown);
-        p.speed=0;
+        p.vx=p.vz=p.speed=0;
         this.emit(p,'EndDrone');
+    }
+
+    rayBlocked(ax,ay,az,bx,by,bz){
+        const nav=this.world.nav;
+        const vx=bx-ax, vy=by-ay, vz=bz-az, length=Math.hypot(vx,vy,vz);
+        if(length<=.00001)return false;
+        if(nav.ray){
+            const dx=vx/length, dy=vy/length, dz=vz/length;
+            // Shift ray origin back by 0.03m to eliminate the [0, 0.03) rayTriangle blind spot
+            // while ignoring any surface already behind the starting point (h_a < 0 => h_origin < 0.03).
+            const origin={x:ax-dx*.03, y:ay-dy*.03, z:az-dz*.03};
+            return nav.ray(origin,{x:dx,y:dy,z:dz},length+.11)<=length+.06;
+        }
+        return !nav.clear({x:ax,y:ay,z:az},{x:bx,y:by,z:bz});
     }
 
     clear(p,x,y,z){
         const nav=this.world.nav;
         if(Math.abs(x)>HALF_SIZE-.6||Math.abs(z)>HALF_SIZE-.6||y<nav.height(x,z)-.03)return false;
         
-        for(const h of [.18,.95,1.8,2.5]){
-            for(const [dx,dz] of [[0,0],[.48,0],[-.48,0],[0,.48],[0,-.48]]){
-                const a={x:p.x+dx,y:p.y+h,z:p.z+dz}, b={x:x+dx,y:y+h,z:z+dz};
-                if(nav.ray){
-                    const vx=b.x-a.x, vy=b.y-a.y, vz=b.z-a.z, length=Math.hypot(vx,vy,vz);
-                    if(length>.00001&&nav.ray(a,{x:vx/length,y:vy/length,z:vz/length},length+.08)<=length+.03)return false;
-                }else if(!nav.clear(a,b))return false;
+        const hasRay=!!nav.ray;
+        const horizMove=Math.hypot(x-p.x,z-p.z)>.00001;
+        const gCenterA=hasRay?nav.height(p.x,p.z)+.18:-Infinity;
+        const gCenterB=hasRay?nav.height(x,z)+.18:-Infinity;
+
+        for(const h of HEIGHT_OFFSETS){
+            const cyA=Math.max(p.y+h,gCenterA), cyB=Math.max(y+h,gCenterB);
+            if(this.rayBlocked(p.x,cyA,p.z,x,cyB,z))return false;
+            
+            for(const [dx,dz] of RADIAL_OFFSETS){
+                const ax=p.x+dx, az=p.z+dz, bx=x+dx, bz=z+dz;
+                const ay=hasRay?Math.max(p.y+h,nav.height(ax,az)+.18):p.y+h;
+                const by=hasRay?Math.max(y+h,nav.height(bx,bz)+.18):y+h;
+                if(this.rayBlocked(ax,ay,az,bx,by,bz))return false;
+                if(hasRay&&horizMove&&this.rayBlocked(x,cyB,z,bx,by,bz))return false;
             }
         }
         return true;
+    }
+
+    tryHorizontal(p,nx,nz){
+        const hy=Math.max(p.y,this.world.nav.height(nx,nz));
+        if(this.clear(p,nx,hy,nz)){
+            p.x=nx; p.z=nz; p.y=hy;
+            return true;
+        }
+        return false;
+    }
+
+    stepHorizontal(p,dx,dz){
+        if(Math.hypot(dx,dz)<=1e-7)return;
+        if(this.tryHorizontal(p,p.x+dx,p.z+dz))return;
+
+        // Axis-aligned wall sliding (try dominant velocity component first)
+        if(Math.abs(dx)>=Math.abs(dz)){
+            if(Math.abs(dx)>1e-7&&this.tryHorizontal(p,p.x+dx,p.z))return;
+            if(Math.abs(dz)>1e-7&&this.tryHorizontal(p,p.x,p.z+dz))return;
+        }else{
+            if(Math.abs(dz)>1e-7&&this.tryHorizontal(p,p.x,p.z+dz))return;
+            if(Math.abs(dx)>1e-7&&this.tryHorizontal(p,p.x+dx,p.z))return;
+        }
+
+        // Angled obstacle / roof / tree-trunk tangent sliding
+        for(const [c,s,scale] of SLIDE_ANGLES){
+            const sx=(dx*c-dz*s)*scale, sz=(dx*s+dz*c)*scale;
+            if(this.tryHorizontal(p,p.x+sx,p.z+sz))return;
+        }
+
+        // Fractional step to close remaining gap smoothly against a perpendicular wall
+        for(const f of [.5,.25]){
+            if(this.tryHorizontal(p,p.x+dx*f,p.z+dz*f))return;
+        }
+    }
+
+    stepVertical(p,targetY){
+        if(Math.abs(targetY-p.y)<=1e-7)return;
+        if(this.clear(p,p.x,targetY,p.z)){
+            p.y=targetY;
+            return;
+        }
+        let lo=p.y, hi=targetY;
+        for(let i=0;i<6;i++){
+            const mid=(lo+hi)*.5;
+            if(this.clear(p,p.x,mid,p.z))lo=mid;
+            else hi=mid;
+        }
+        p.y=lo;
     }
 
     tick(){
@@ -146,13 +227,13 @@ class DroneLogic {
             if(!p.alive||p.escaped){this.cancel(p);continue;}
             if(t>=d.endsAt&&d.state!=='LANDING')this.beginLanding(p,t);
             
-            let oldY=p.y, oldX=p.x, oldZ=p.z;
+            const oldY=p.y, oldX=p.x, oldZ=p.z;
             
             if(d.state==='LANDING'){
                 const y=d.landY+(d.floor-d.landY)*smooth((t-d.landAt)/CONFIG.landing);
-                p.y=y;p.speed=0;
+                p.y=y;p.vx=p.vz=p.speed=0;
                 if(t>=d.landingEndsAt){
-                    p.y=d.floor;p.grounded=true;p.vy=0;p.lastMove=this.world.time;
+                    p.y=d.floor;p.grounded=true;p.vx=p.vy=p.vz=p.speed=0;p.lastMove=this.world.time;
                     p.droneHandoffUntil=this.world.time+.3;
                     p.drone=null;
                     this.emit(p,'SyncDrone');
@@ -172,33 +253,36 @@ class DroneLogic {
                     
                     const vx=active?d.ix*CONFIG.normalSpeed*multiplier:0;
                     const vz=active?d.iz*CONFIG.normalSpeed*multiplier:0;
-                    const x=p.x+vx*dt, z=p.z+vz*dt;
                     
-                    // 🟢 إصلاح: الارتفاع المستهدف لا يتأثر بالتضاريس المفاجئة
-                    let target = d.floor + CONFIG.height * smooth(age/CONFIG.rise);
-                    let groundY = this.world.nav.height(x, z);
-                    let finalTarget = Math.max(target, groundY + 0.8);
+                    // 1. Move horizontally at current altitude (decoupled from vertical climb/descent)
+                    if(active) this.stepHorizontal(p,vx*dt,vz*dt);
                     
-                    // 🟢 إصلاح: منع القفز للسماء عن طريق وضع حد أقصى لسرعة الصعود
-                    let maxClimb = 8.0 * dt;
-                    if (finalTarget > p.y + maxClimb) finalTarget = p.y + maxClimb;
-
-                    // 🟢 إصلاح: السماح بالانزلاق على الجدران بدلاً من التوقف أو الطيران فوقها
-                    if(this.clear(p, x, finalTarget, z)) { p.x=x; p.z=z; }
-                    else if(this.clear(p, x, finalTarget, p.z)) { p.x=x; }
-                    else if(this.clear(p, p.x, finalTarget, z)) { p.z=z; }
-
-                    // تحريك عمودي
-                    if(this.clear(p, p.x, finalTarget, p.z)) { p.y=finalTarget; }
+                    // 2. Smoothly track ground height so drone maintains 6m over uneven terrain without jerks
+                    const groundY=this.world.nav.height(p.x,p.z);
+                    if(cursor>=d.flyAt){
+                        d.floor+=(groundY-d.floor)*(1-Math.exp(-14*dt));
+                    }else{
+                        d.floor=groundY;
+                    }
+                    const rise=smooth(age/CONFIG.rise);
+                    let targetY=Math.max(d.floor+CONFIG.height*rise,groundY+Math.min(1.2,CONFIG.height*rise));
+                    const maxVert=24*dt;
+                    if(targetY>p.y+maxVert)targetY=p.y+maxVert;
+                    else if(targetY<p.y-maxVert)targetY=p.y-maxVert;
+                    
+                    this.stepVertical(p,targetY);
+                    if(p.y<groundY)p.y=groundY;
                     
                     if(Math.hypot(vx,vz)>.01) p.yaw=Math.atan2(vx,vz)*180/Math.PI;
                 }
                 const elapsed=Math.max(.001,t-d.lastAt);
-                p.speed=Math.hypot(p.x-oldX,p.z-oldZ)/elapsed;
+                p.vx=(p.x-oldX)/elapsed;
+                p.vz=(p.z-oldZ)/elapsed;
+                p.speed=Math.hypot(p.vx,p.vz);
             }
             
-            // 🟢 إصلاح: منع سرعة الارتفاع من القفز (لحماية كاميرا العميل)
-            p.vy = (p.y - oldY) / Math.max(.05, t - d.lastAt); 
+            const elapsed=Math.max(.01,t-d.lastAt);
+            p.vy=Math.max(-25,Math.min(25,(p.y-oldY)/elapsed));
             p.grounded=false;
             p.positioned=true; p.lastMove=this.world.time; d.lastAt=t;
             this.emit(p,'SyncDrone');
@@ -212,7 +296,7 @@ class DroneLogic {
         this.cooldowns.set(p.id,Math.max(this.cooldowns.get(p.id)||0,this.now()+CONFIG.cooldown));
         d.state='LANDING'; d.endsAt=this.now(); d.landingEndsAt=this.now();
         this.emit(p,'EndDrone');
-        p.drone=null; p.speed=p.vy=0;
+        p.drone=null; p.vx=p.vy=p.vz=p.speed=0;
         this.emit(p,'SyncDrone');
     }
 
