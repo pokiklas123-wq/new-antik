@@ -7,7 +7,8 @@
     "start": "node server.js",
     "test": "node --test --test-concurrency=1 drone.test.js drone.integration.test.js combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js patrol-melee.test.js cemetery.test.js forest.test.js objectives.test.js objectives.integration.test.js",
     "test:drone": "node --test --test-concurrency=1 drone.test.js drone.integration.test.js",
-    "test:legacy": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js patrol-melee.test.js cemetery.test.js forest.test.js objectives.test.js objectives.integration.test.js"
+    "test:legacy": "node --test --test-concurrency=1 combat.test.js integration.test.js strategic.test.js performance.test.js dark-survival.test.js patrol-melee.test.js cemetery.test.js forest.test.js objectives.test.js objectives.integration.test.js",
+    "test:dash": "node --test --test-concurrency=1 dash.test.js dash.integration.test.js"
   },
   "keywords": [],
   "author": "",
