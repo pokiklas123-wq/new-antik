@@ -13,7 +13,7 @@ class DashLogic {
  sync(p,reason=''){if(p)this.world.emit(p.id,'DashState',this.packet(p,reason));}
  locked(p){return !!(p&&p.dash);}
  // The serial is a hand-off barrier: queued pre-dash movement cannot rewind the player.
- rejectMove(p,data){return !!(p&&(p.dash||((p.dashSerial||0)>0&&data?.dashSerial!==p.dashSerial)));}
+ rejectMove(p,data){return !!(p&&(p.dash||((p.dashSerial||0)>0&&(!data||typeof data.dashSerial!=='number'||data.dashSerial<p.dashSerial))));}
  clear(a,b){
   const nav=this.world.nav,r=CONFIG.radius;
   if(Math.abs(b.x)>HALF_SIZE-r||Math.abs(b.z)>HALF_SIZE-r)return false;
@@ -32,8 +32,10 @@ class DashLogic {
   if(![o.dx,o.dz].every(finite)||Math.abs(o.dx)>1.001||Math.abs(o.dz)>1.001){this.sync(p,'DIRECTION');return false;}
   const length=Math.hypot(o.dx,o.dz);
   if(length<.13||length>1.42){this.sync(p,'DIRECTION');return false;}
-  const dx=o.dx/length,dz=o.dz/length,from={x:p.x,y:p.y,z:p.z};
-  if(Math.abs(p.y-this.world.nav.height(p.x,p.z))>.55){this.sync(p,'GROUND');return false;}
+  const dx=o.dx/length,dz=o.dz/length;
+  const groundY=this.world.nav.height(p.x,p.z);
+  if(!finite(groundY)||Math.abs(p.y-groundY)>2.2){this.sync(p,'GROUND');return false;}
+  const from={x:p.x,y:groundY,z:p.z};
   let end={...from};const steps=Math.ceil(CONFIG.distance/CONFIG.step);
   for(let i=1;i<=steps;i++){
    const dist=CONFIG.distance*i/steps;
@@ -43,13 +45,14 @@ class DashLogic {
   }
   const distance=Math.hypot(end.x-from.x,end.z-from.z);
   if(distance<.08){this.sync(p,'BLOCKED');return false;}
+  const startedAt=this.now();
   // Client distance/duration/timestamps are deliberately ignored.
   p.dashSerial=++this.serial;
   p.dash={fromX:from.x,fromY:from.y,fromZ:from.z,toX:end.x,toY:end.y,toZ:end.z,
-   startedAt:t,endsAt:t+CONFIG.duration,distance};
+   startedAt,endsAt:startedAt+CONFIG.duration,distance};
   p.firing=p.aiming=false;p.speed=distance/CONFIG.duration;
   p.vx=dx*p.speed;p.vz=dz*p.speed;p.vy=0;
-  this.cooldowns.set(id,t+CONFIG.cooldown);
+  this.cooldowns.set(id,startedAt+CONFIG.cooldown);
   const packet=this.packet(p),room=this.world.rooms.get(p.roomId);
   if(room)for(const q of room.players.values())this.world.emit(q.id,'DashState',packet);
   return true;
