@@ -43,10 +43,10 @@ createRoom(){
  if(!this.spawnTemplate)this.spawnTemplate=room.monsters.map(m=>({...m,home:{...m.home}}));
  objectives.init(this,room);this.rooms.set(room.id,room);return room;
 }
- join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,initialSpawn:Object.freeze({...start}),life:0,gateArmed:false,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{id:p.id,droneProtocol:1,roomId:room.id,hp:100,serverTime:this.time,spawn:start,life:p.life,objectiveProtocol:1,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
+ join(id,roomId,fresh=false){this.leave(id);let room=this.rooms.get(roomId);if(!roomId&&!fresh)room=[...this.rooms.values()].find(r=>!r.closed&&r.players.size<MAX_PLAYERS);if(!room||room.closed||room.players.size>=MAX_PLAYERS)room=this.createRoom();let used=new Set([...room.players.values()].map(p=>p.spawnSlot)),slot=0;while(used.has(slot))slot++;let start=spawn(slot);let p={id,roomId:room.id,...start,spawnSlot:slot,initialSpawn:Object.freeze({...start}),life:0,gateArmed:false,hp:100,alive:true,positioned:false,lastMove:this.time,lastShot:-100,sequence:0,equipped:-1,inHands:false,aiming:false,firing:false,grounded:true,proneTransition:0,speed:0,localForward:0,vy:0,pitch:0,flashlight:null,yaw:0,crouched:false,prone:false,swimming:true};room.players.set(id,p);this.players.set(id,p);this.emit(id,'roomJoined',{id:p.id,droneProtocol:1,dashProtocol:1,roomId:room.id,hp:100,serverTime:this.time,spawn:start,life:p.life,objectiveProtocol:1,spawnSlot:slot,layout:VERSION,maxPlayers:MAX_PLAYERS,protocol:2,seed:48391,halfSize:HALF_SIZE,terrainSignature:this.nav.data?.terrainSignature||""});this.sendSnapshot(p);return room;}
  leave(id){let p=this.players.get(id);if(!p)return;if(this.drone)this.drone.cancel(p);this.players.delete(id);let r=this.rooms.get(p.roomId);if(!r)return;objectives.drop(this,r,p);r.players.delete(id);this.checkClose(r);}
  checkClose(r){if(![...r.players.values()].some(p=>p.alive)){r.closed=true;this.rooms.delete(r.id);for(let p of r.players.values())this.emit(p.id,'roomClosed',{roomId:r.id});}}
- move(id,data){let p=this.players.get(id);if(this.drone&&this.drone.rejectMove(p,data))return false;if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
+ move(id,data){let p=this.players.get(id);if(this.dash&&this.dash.rejectMove(p,data))return false;if(this.drone&&this.drone.rejectMove(p,data))return false;if(!p||!p.alive||!data||![data.x,data.y,data.z].every(finite)||Math.abs(data.x)>HALF_SIZE||Math.abs(data.z)>HALF_SIZE||data.y< -50||data.y>400)return false;
   if((data.life===undefined?0:data.life)!==p.life)return false;
   let dt=Math.max(.05,Math.min(1,this.time-p.lastMove));if(distance(p,data)>85*dt+2)return false;
   const nextWeapon=Number.isInteger(data.weapon)&&data.weapon>=-1&&data.weapon<5?data.weapon:-1;
@@ -75,20 +75,21 @@ createRoom(){
   if(!p.alive||this.time<(p.invulnerableUntil||0))return;
   const r=this.rooms.get(p.roomId);p.hp=Math.max(0,p.hp-amount);if(p.hp===0&&this.drone)this.drone.cancel(p);
   if(p.hp===0&&r&&objectives.held(r,p).length>0){
-   objectives.drop(this,r,p);p.life++;p.hp=100;p.alive=true;p.escaped=false;
+   objectives.drop(this,r,p);p.dash=null;p.life++;p.hp=100;p.alive=true;p.escaped=false;
    Object.assign(p,p.initialSpawn);
    p.positioned=false;p.lastMove=this.time;p.equipped=-1;p.inHands=p.aiming=p.firing=false;
    p.crouched=p.prone=false;p.grounded=false;p.swimming=true;p.proneTransition=0;
    p.vy=p.speed=p.localForward=0;p.flashlight=null;p.gateArmed=false;
    p.invulnerableUntil=this.time+.35;
    this.emit(p.id,'playerState',{hp:100,alive:true,respawn:true,spawn:{...p.initialSpawn},life:p.life,clearWeapons:true});
+   if(this.dash)this.dash.sync(p);
    this.emit(p.id,'objectiveSnapshot',objectives.snapshot(this,r,p));return;
   }
   if(p.hp===0){p.alive=false;p.equipped=-1;p.inHands=p.aiming=p.firing=false;p.flashlight=null;}
   this.emit(p.id,'playerState',{hp:p.hp,alive:p.alive,life:p.life});
   if(r)this.checkClose(r);
  }
- shoot(id,data){let p=this.players.get(id);if(this.drone&&this.drone.locked(p))return false;let r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;if((data.life===undefined?0:data.life)!==p.life)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
+ shoot(id,data){let p=this.players.get(id);if(this.dash&&this.dash.locked(p))return false;if(this.drone&&this.drone.locked(p))return false;let r=p&&this.rooms.get(p.roomId);if(!p||!p.alive||!r||!data)return false;if((data.life===undefined?0:data.life)!==p.life)return false;let w=WEAPONS[data.weapon];if(!w||data.weapon!==p.equipped||!Number.isInteger(data.sequence)||data.sequence<=p.sequence||![data.x,data.y,data.z,data.dx,data.dy,data.dz,data.range].every(finite))return false;
   p.sequence=data.sequence;if(this.time-p.lastShot<w.interval-.015)return false;
   let origin={x:data.x,y:data.y,z:data.z},dir={x:data.dx,y:data.dy,z:data.dz},l=Math.hypot(dir.x,dir.y,dir.z);if(l<.98||l>1.02||Math.hypot(origin.x-p.x,origin.y-(p.y+1),origin.z-p.z)>8)return false;
   if(!this.nav.clear({x:p.x,y:p.y+1,z:p.z},origin))return false;
@@ -235,7 +236,7 @@ createRoom(){
    weapon:q.equipped,inHands:q.inHands,aiming:q.aiming,
    firing:q.firing||(this.time-q.lastShot<.38),
    proneTransition:q.proneTransition,speed:q.speed,localForward:q.localForward,vy:q.vy,
-   drone:this.drone?this.drone.packet(q):null,light:q.flashlight
+   dash:this.dash?this.dash.packet(q):null,drone:this.drone?this.drone.packet(q):null,light:q.flashlight
   }));
   this.emit(p.id,'playerSnapshot',{serverTime:this.time,roomId:r.id,players});
  }
