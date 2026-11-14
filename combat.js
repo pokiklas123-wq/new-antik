@@ -72,7 +72,7 @@ createRoom(){
  pickupShield(id,data){
   const p=this.players.get(id);
   if(!p||!p.alive||p.escaped||!data||(data.life===undefined?0:data.life)!==p.life)return false;
-  if((p.shieldPickups||0)>=15)return false;
+  if((p.shieldPickups||0)>=70)return false;
   p.shieldPickups=(p.shieldPickups||0)+1;
   if((p.maxShield||0)<100){
    p.maxShield=Math.min(100,(p.maxShield||0)+10);
@@ -99,13 +99,14 @@ createRoom(){
   p.hp=Math.max(0,p.hp-(amount-absorbed));
   if(p.hp===0&&this.drone)this.drone.cancel(p);
   if(p.hp===0&&r&&objectives.held(r,p).length>0){
-   objectives.drop(this,r,p);p.dash=null;p.life++;p.hp=100;p.shield=0;p.maxShield=0;p.shieldPickups=0;p.healingUntil=0;p.lastDamageAt=this.time;p.alive=true;p.escaped=false;
+   // Preserve permanent maxShield across key-carrier respawns and restore shield to maxShield!
+   objectives.drop(this,r,p);p.dash=null;p.life++;p.hp=100;p.maxShield=p.maxShield||0;p.shield=p.maxShield;p.healingUntil=0;p.lastDamageAt=this.time;p.alive=true;p.escaped=false;
    Object.assign(p,p.initialSpawn);
    p.positioned=false;p.lastMove=this.time;p.equipped=-1;p.inHands=p.aiming=p.firing=false;
    p.crouched=p.prone=false;p.grounded=false;p.swimming=true;p.proneTransition=0;
    p.vy=p.speed=p.localForward=0;p.flashlight=null;p.gateArmed=false;
    p.invulnerableUntil=this.time+.35;
-   this.emit(p.id,'playerState',{hp:100,shield:0,maxShield:0,alive:true,respawn:true,spawn:{...p.initialSpawn},life:p.life,clearWeapons:true});
+   this.emit(p.id,'playerState',{hp:100,shield:p.shield,maxShield:p.maxShield,alive:true,respawn:true,spawn:{...p.initialSpawn},life:p.life,clearWeapons:true});
    if(this.dash)this.dash.sync(p);
    this.emit(p.id,'objectiveSnapshot',objectives.snapshot(this,r,p));return;
   }
@@ -153,7 +154,7 @@ createRoom(){
     if(p.healingUntil>0&&this.time>=p.healingUntil){
      p.healingUntil=0;
      if(p.hp>0&&p.hp<100){
-      p.hp=Math.min(100,p.hp+50);
+      p.hp=Math.min(100,p.hp+30);
       this.emit(p.id,'playerState',{hp:p.hp,shield:p.shield||0,maxShield:p.maxShield||0,alive:p.alive,life:p.life});
      }
     }
