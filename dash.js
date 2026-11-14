@@ -1,7 +1,7 @@
 'use strict';
 const {performance}=require('node:perf_hooks');
 const {HALF_SIZE}=require('./world-layout');
-const CONFIG=Object.freeze({distance:5,duration:.20,cooldown:30,radius:.30,step:.08});
+const CONFIG=Object.freeze({distance:10,duration:.25,cooldown:30,radius:.30,step:.08});
 const finite=n=>typeof n==='number'&&Number.isFinite(n);
 class DashLogic {
  constructor(world){this.world=world;this.now=()=>performance.now()/1000;this.cooldowns=new Map();this.serial=0;}
