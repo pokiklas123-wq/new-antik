@@ -13,6 +13,8 @@ function createServer(){
  io.on('connection',socket=>{
   socket.on('joinRoom',d=>{const old=world.players.get(socket.id);if(old&&old.alive)return;world.join(socket.id,d&&d.roomId,Boolean(d&&d.fresh));drone.sync(world.players.get(socket.id));dash.sync(world.players.get(socket.id));});
   socket.on('RequestDash',d=>dash.request(socket.id,d));
+  socket.on('PickupShield',d=>world.pickupShield(socket.id,d));
+  socket.on('RequestHeal',d=>world.heal(socket.id,d));
   socket.on('leaveRoom',()=>world.leave(socket.id));
   socket.on('RequestDrone',d=>{if(!dash.locked(world.players.get(socket.id)))drone.request(socket.id,d);});
   socket.on('DroneInput',d=>drone.input(socket.id,d));
