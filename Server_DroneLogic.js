@@ -53,13 +53,37 @@ class DroneLogic {
   const a=o.cameraYaw*Math.PI/180,s=Math.sin(a),c=Math.cos(a);
   d.ix=x*c-y*s;d.iz=-x*s-y*c;d.inputSequence=o.sequence;d.inputAt=t;return true;
  }
+ // Verify that a ground landing coordinate (x, z) is walkable and free of rocks/roofs/walls.
+ safeLandingSpot(x,z,topY){
+  const nav=this.world.nav;
+  if(!nav.ray||!nav.data)return {x,z,floor:nav.height(x,z)};
+  const isSpotClear=(cx,cz)=>{
+   if(Math.abs(cx)>HALF_SIZE-1||Math.abs(cz)>HALF_SIZE-1||!nav.walkable(cx,cz,false))return false;
+   const g=nav.height(cx,cz);
+   if(!finite(g))return false;
+   const startY=Math.max(topY+.5,g+6.5),range=Math.max(.1,startY-g+.1);
+   for(const [ox,oz] of [[0,0],[.48,0],[-.48,0],[0,.48],[0,-.48],[.34,.34],[-.34,.34],[.34,-.34],[-.34,-.34]]){
+    const hit=nav.ray({x:cx+ox,y:startY,z:cz+oz},{x:0,y:-1,z:0},range);
+    const surfaceY=startY-hit;
+    if(surfaceY>g+.35)return false;
+   }
+   return true;
+  };
+  if(isSpotClear(x,z))return {x,z,floor:nav.height(x,z)};
+  for(let r=1.0;r<=16.0;r+=1.0){
+   for(let k=0;k<16;k++){
+    const ang=(k*Math.PI*2)/16;
+    const nx=x+Math.cos(ang)*r,nz=z+Math.sin(ang)*r;
+    if(isSpotClear(nx,nz))return {x:nx,z:nz,floor:nav.height(nx,nz)};
+   }
+  }
+  return {x,z,floor:nav.height(x,z)};
+ }
  beginLanding(p,t){const d=p.drone;if(!d||d.state==='LANDING')return;
   d.state='LANDING';d.landAt=d.endsAt;d.landingEndsAt=d.endsAt+CONFIG.landing;
-  d.landY=p.y;d.floor=this.world.nav.height(p.x,p.z);
-  // A roof/platform under the player is a landing surface, never tunnel down through it.
-  if(this.world.nav.ray){const range=Math.max(.1,p.y-d.floor+.1);
-   const hit=this.world.nav.ray({x:p.x,y:p.y+.1,z:p.z},{x:0,y:-1,z:0},range);
-   d.floor=Math.min(p.y,Math.max(d.floor,p.y+.1-hit));}
+  d.landX=p.x;d.landY=p.y;d.landZ=p.z;
+  const spot=this.safeLandingSpot(p.x,p.z,p.y);
+  d.targetX=spot.x;d.targetZ=spot.z;d.floor=spot.floor;
   d.ix=d.iz=0;
   this.cooldowns.set(p.id,d.endsAt+CONFIG.cooldown);
   p.speed=0;this.emit(p,'EndDrone');
@@ -83,10 +107,14 @@ class DroneLogic {
    if(t>=d.endsAt&&d.state!=='LANDING')this.beginLanding(p,t);
    let oldY=p.y,oldX=p.x,oldZ=p.z;
    if(d.state==='LANDING'){
-    const y=d.landY+(d.floor-d.landY)*smooth((t-d.landAt)/CONFIG.landing);
-    // Reverse a previously checked ascent corridor; no horizontal drift during landing.
-    p.y=y;p.speed=0;
-    if(t>=d.landingEndsAt){p.y=d.floor;p.grounded=true;p.vy=0;p.lastMove=this.world.time;
+    const u=smooth((t-d.landAt)/CONFIG.landing);
+    p.x=d.landX+((d.targetX??d.landX)-d.landX)*u;
+    p.z=d.landZ+((d.targetZ??d.landZ)-d.landZ)*u;
+    p.y=d.landY+(d.floor-d.landY)*u;
+    p.speed=0;
+    if(t>=d.landingEndsAt){
+     p.x=d.targetX??p.x;p.z=d.targetZ??p.z;p.y=d.floor;
+     p.grounded=true;p.vy=0;p.lastMove=this.world.time;
      p.droneHandoffUntil=this.world.time+.3;
      p.drone=null;this.emit(p,'SyncDrone');continue;}
    }else{
@@ -98,8 +126,9 @@ class DroneLogic {
      const active=cursor>=d.flyAt&&t-d.inputAt<CONFIG.inputTimeout;
      const vx=active?d.ix*CONFIG.normalSpeed*multiplier:0,vz=active?d.iz*CONFIG.normalSpeed*multiplier:0;
      const x=p.x+vx*dt,z=p.z+vz*dt;
-     // 6m is the maximum feet altitude above the server launch floor (not global Y=6).
-     const target=d.floor+CONFIG.height*smooth(age/CONFIG.rise);
+     // Keep drone at least 6m above local terrain height so it flies over rocks/slopes cleanly.
+     const localFloor=Math.max(d.floor,this.world.nav.height(x,z));
+     const target=localFloor+CONFIG.height*smooth(age/CONFIG.rise);
      // Stop at terrain/solid geometry rather than tunnel through an obstacle or cliff.
      if(this.clear(p,x,target,z)){p.x=x;p.y=target;p.z=z;}
      else if(this.clear(p,p.x,target,p.z))p.y=target;
@@ -115,6 +144,8 @@ class DroneLogic {
  }
  cancel(p){if(!p||!p.drone)return;const d=p.drone;
   this.cooldowns.set(p.id,Math.max(this.cooldowns.get(p.id)||0,this.now()+CONFIG.cooldown));
+  const spot=this.safeLandingSpot(p.x,p.z,p.y);
+  p.x=spot.x;p.z=spot.z;p.y=spot.floor;
   d.state='LANDING';d.endsAt=this.now();d.landingEndsAt=this.now();this.emit(p,'EndDrone');
   p.drone=null;p.speed=p.vy=0;this.emit(p,'SyncDrone');
  }
