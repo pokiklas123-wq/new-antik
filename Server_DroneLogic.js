@@ -4,7 +4,7 @@ const {HALF_SIZE}=require('./world-layout');
 const finite=n=>typeof n==='number'&&Number.isFinite(n);
 const smooth=t=>{t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);};
 // Seconds/metres. No value below is accepted from a client packet.
-const CONFIG=Object.freeze({duration:10,cooldown:300,height:6,normalSpeed:7.5,
+const CONFIG=Object.freeze({duration:15,cooldown:150,height:6,normalSpeed:7.5,
  maxMultiplier:3,assemble:.8,idle:.2,mount:1.7,rise:2,acceleration:2,landing:1.4,inputTimeout:.25});
 class DroneLogic {
  constructor(world,{now=()=>performance.now()/1000}={}){
